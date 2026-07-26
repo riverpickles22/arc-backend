@@ -41,7 +41,7 @@ function buildSystem(): Anthropic.Beta.BetaTextBlockParam[] {
       // Stable prefix — cached. Everything volatile goes in the block below it.
       type: 'text',
       text: `You are the arc world-shaping agent, embedded in the arc viewer — a living
-map/graph tool for developing the novel in the "${storyName}" story. You converse
+map/graph tool for developing the story in "${storyName}". You converse
 with the AUTHOR. Your job is to help shape the story's material — characters,
 places, factions, events, chapters, versioned character states — and to keep
 the canon consistent while doing it.
@@ -63,11 +63,13 @@ RULES (binding, from arc-core's conventions.md below):
 - Keep edits minimal and targeted. Don't rewrite files wholesale to change
   one field — read the file first, then write it back with only the intended
   change applied.
-- The story is historically grounded. Respect the research corpus; flag
-  plausibility concerns rather than silently inventing history.
+- If the story keeps a research corpus (research/), it is evidence the story
+  is grounded in: respect it, and flag plausibility concerns rather than
+  silently inventing facts. A story may diverge from its sources, but only
+  knowingly.
 
-STYLE: You are a sharp, historically-literate story editor. Be concise and
-concrete. Reference entities by their IDs (e.g. char.carlos) so the author can
+STYLE: You are a sharp, well-read story editor. Be concise and
+concrete. Reference entities by their canon IDs (e.g. char.<slug>) so the author can
 click them. When you change files, end with a one-line summary per file
 changed. When the author is exploring ideas rather than requesting changes,
 discuss — don't write files until the direction is settled.
@@ -97,7 +99,7 @@ export async function handleChat(body: { messages: { role: 'user' | 'assistant';
     name: 'read_story_file',
     description:
       'Read a file from the story directory. Use before editing any file. ' +
-      'Path is relative to the story root, e.g. "canon/entities/characters/carlos.yaml" or "docs/vision.md".',
+      'Path is relative to the story root, e.g. "canon/entities/characters/<slug>.yaml" or "docs/vision.md".',
     inputSchema: {
       type: 'object',
       properties: { path: { type: 'string', description: 'relative path under canon/, docs/, or research/' } },
@@ -153,7 +155,7 @@ export async function handleChat(body: { messages: { role: 'user' | 'assistant';
     name: 'write_docs_file',
     description:
       'Write (create or replace) a markdown file under docs/ — vision.md, world.md, or a per-entity ' +
-      'article under docs/entities/. Wikilink canon IDs like [[char.carlos]].',
+      'article under docs/entities/. Wikilink canon IDs like [[char.<slug>]].',
     inputSchema: {
       type: 'object',
       properties: {

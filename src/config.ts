@@ -23,8 +23,14 @@ function resolveDir(envVar: string, fallback: string, mustContain: string, what:
 /** arc-core: schemas, conventions, and the python tools. */
 export const CORE = resolveDir('ARC_CORE_PATH', '../arc-core', 'schema', 'arc-core')
 
-/** The story being edited: canon/, docs/, research/, prose/. */
-export const STORY = resolveDir('ARC_STORY_PATH', '../feral-dogs-of-cuba', 'canon', 'the story')
+/**
+ * The story being edited: canon/, docs/, research/, prose/.
+ * Defaults to arc-core's worked example so a fresh checkout runs with no
+ * configuration; point ARC_STORY_PATH at your own story to use it.
+ */
+export const STORY = resolveDir(
+  'ARC_STORY_PATH', '../arc-core/examples/example-story', 'canon', 'the story',
+)
 
 /** Python with pyyaml + jsonschema installed — arc-core's venv, or whatever is on PATH. */
 export const PYTHON = process.env.ARC_PYTHON

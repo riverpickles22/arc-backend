@@ -6,23 +6,25 @@ It serves a story's canon as a JSON graph, and exposes an AI agent that converse
 
 ## What it needs
 
-Two sibling checkouts, because the backend is a service over them, not an owner of them:
+**arc-core**, checked out as a sibling — the backend is a service over it, not an owner of it:
 
 ```
 your-workspace/
-  arc-core/            schemas, conventions, python tools
+  arc-core/            schemas, conventions, python tools, worked example
   arc-backend/         this repo
-  <your-story>/        canon/, docs/, research/, prose/
+  <your-story>/        canon/, docs/, research/, prose/   (optional)
 ```
 
-Both paths are configurable — see the table below — so the layout is a default, not a requirement.
+With no story configured it serves arc-core's worked example, so a fresh checkout runs immediately. Point `ARC_STORY_PATH` at your own story when you have one. Both paths are configurable, so the layout above is a default rather than a requirement.
 
 ## Setup
 
 ```sh
 npm install
-cp .env.example .env      # add ANTHROPIC_API_KEY
-npm run dev               # http://localhost:8787
+npm run dev               # http://localhost:8787 — serves the example story
+
+# to use your own story and enable the agent:
+cp .env.example .env      # add ANTHROPIC_API_KEY, set ARC_STORY_PATH
 ```
 
 Startup resolves and checks both repo paths and prints them, so a missing or mispointed checkout fails immediately with a message naming the variable to set, rather than throwing on the first request.
@@ -33,7 +35,7 @@ Startup resolves and checks both repo paths and prints them, so a missing or mis
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | Required for `/api/chat` only |
 | `ARC_CORE_PATH` | `../arc-core` | Schemas, conventions, python tools |
-| `ARC_STORY_PATH` | `../feral-dogs-of-cuba` | The story to serve and edit |
+| `ARC_STORY_PATH` | `../arc-core/examples/example-story` | The story to serve and edit |
 | `ARC_PYTHON` | arc-core's `.venv`, else `python3` | Needs pyyaml + jsonschema |
 | `ARC_MODEL` | `claude-opus-5` | Model for the agent |
 | `PORT` | `8787` | |
