@@ -6,6 +6,7 @@
 import http from 'node:http'
 import { describeConfig, PORT } from './config'
 import { canonJson, validateStory } from './canon'
+import { readAsset, viewConfig } from './story'
 import { handleChat } from './agent'
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
@@ -46,6 +47,23 @@ const server = http.createServer(async (req, res) => {
       const payload = canonJson()
       res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) })
       return res.end(payload)
+    }
+
+    // How the story is drawn — presentation config, kept out of canon.
+    if (url.pathname === '/api/view') {
+      if (req.method !== 'GET') return json(res, 405, { error: 'GET only' })
+      return json(res, 200, viewConfig())
+    }
+
+    // Story-owned rendering assets (the basemap coastline, and whatever else
+    // a story needs drawn). Lives in the story repo, not the viewer.
+    if (url.pathname.startsWith('/api/assets/')) {
+      if (req.method !== 'GET') return json(res, 405, { error: 'GET only' })
+      const name = decodeURIComponent(url.pathname.slice('/api/assets/'.length))
+      const asset = readAsset(name)
+      if (!asset) return json(res, 404, { error: `no such story asset: ${name}` })
+      res.writeHead(200, { 'content-type': asset.contentType, 'content-length': asset.body.length })
+      return res.end(asset.body)
     }
 
     if (url.pathname === '/api/chat') {
