@@ -5,10 +5,27 @@
 // neither python nor the canon — so the backend generates it on demand and
 // serves it at GET /api/canon, invalidating whenever the agent writes canon.
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
 import path from 'node:path'
 import { CORE, PYTHON, STORY } from './config'
 
 let cached: string | null = null
+let cachedStamp = ''
+
+/** Newest mtime across canon/, so a hand-edit to the YAML is picked up too —
+ *  not just writes made through the agent. Cheap: ~40 stats on this story. */
+function canonStamp(dir = path.join(STORY, 'canon')): string {
+  let newest = 0
+  const walk = (d: string) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name)
+      if (e.isDirectory()) walk(p)
+      else if (e.name.endsWith('.yaml')) newest = Math.max(newest, fs.statSync(p).mtimeMs)
+    }
+  }
+  walk(dir)
+  return String(newest)
+}
 
 /** Run one of arc-core's python tools against the configured story. */
 export function runTool(script: string, args: string[] = []): { ok: boolean; output: string } {
@@ -22,17 +39,20 @@ export function runTool(script: string, args: string[] = []): { ok: boolean; out
   }
 }
 
-/** The canon graph as a JSON string. Cached until invalidateCanon(). */
+/** The canon graph as a JSON string, re-exported whenever canon/ changes. */
 export function canonJson(): string {
-  if (cached !== null) return cached
+  const stamp = canonStamp()
+  if (cached !== null && stamp === cachedStamp) return cached
   const res = runTool('export-canon.py')   // no out path — writes the graph to stdout
   if (!res.ok) throw new Error(`export-canon.py failed:\n${res.output}`)
   cached = res.output
+  cachedStamp = stamp
   return cached
 }
 
 export function invalidateCanon(): void {
   cached = null
+  cachedStamp = ''
 }
 
 export function validateStory(): { ok: boolean; output: string } {
