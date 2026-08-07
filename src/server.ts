@@ -6,7 +6,7 @@
 import http from 'node:http'
 import { describeConfig, PORT } from './config'
 import { canonJson, validateStory } from './canon'
-import { readAsset, viewConfig } from './story'
+import { docsArticles, proseScenes, readAsset, viewConfig } from './story'
 import { handleChat } from './agent'
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
@@ -53,6 +53,18 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/view') {
       if (req.method !== 'GET') return json(res, 405, { error: 'GET only' })
       return json(res, 200, viewConfig())
+    }
+
+    // The story encyclopedia: docs/ articles with their canon bindings.
+    if (url.pathname === '/api/docs') {
+      if (req.method !== 'GET') return json(res, 405, { error: 'GET only' })
+      return json(res, 200, { articles: docsArticles() })
+    }
+
+    // The manuscript: bound prose scenes (conventions §10).
+    if (url.pathname === '/api/prose') {
+      if (req.method !== 'GET') return json(res, 405, { error: 'GET only' })
+      return json(res, 200, { scenes: proseScenes() })
     }
 
     // Story-owned rendering assets (the basemap coastline, and whatever else

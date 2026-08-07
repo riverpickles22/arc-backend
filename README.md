@@ -57,6 +57,10 @@ Every path is resolved and checked against the story root before use, so no tool
 
 `canonChanged: true` means the client should refetch `/api/canon`.
 
+**`GET /api/docs`** — the story encyclopedia: every `docs/` article with its `canon:` frontmatter binding, for the viewer's Wiki page.
+
+**`GET /api/prose`** — the manuscript: every bound scene in `prose/` (conventions §10 frontmatter + body), for the viewer's Manuscript page.
+
 **`GET /api/health`** — runs the validator against the configured story. `200` when canon is clean, `503` with the findings when it isn't.
 
 ## Notes
