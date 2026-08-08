@@ -6,10 +6,13 @@ import path from 'node:path'
 import Anthropic from '@anthropic-ai/sdk'
 import { betaTool } from '@anthropic-ai/sdk/helpers/beta/json-schema'
 import { load as yamlLoad } from 'js-yaml'
+import type { ChatAction, ChatRequest, ChatResponse } from 'arc-canon-graph'
 import { CORE, MODEL, STORY } from './config'
 import { canonJson, invalidateCanon, validateStory } from './canon'
 
-export interface Action { tool: string; path: string; ok: boolean; detail?: string }
+// The chat wire contract lives in arc-canon-graph (graph/api-types.ts),
+// shared with the frontend. Alias kept for existing importers.
+export type { ChatAction as Action }
 
 function safeStoryPath(rel: string, allowedRoots: string[], exts: string[]): string {
   const abs = path.resolve(STORY, rel)
@@ -91,9 +94,9 @@ ${files}`,
   ]
 }
 
-export async function handleChat(body: { messages: { role: 'user' | 'assistant'; content: string }[] }) {
+export async function handleChat(body: ChatRequest): Promise<ChatResponse> {
   const client = new Anthropic()
-  const actions: Action[] = []
+  const actions: ChatAction[] = []
 
   const readStoryFile = betaTool({
     name: 'read_story_file',

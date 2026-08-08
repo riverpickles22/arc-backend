@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.3",
+    "arc-canon-graph": "file:../arc-core/graph",
     "js-yaml": "^4.1.0"
   },
   "devDependencies": {

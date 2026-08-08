@@ -8,7 +8,13 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { load as yamlLoad } from 'js-yaml'
+import type { DocArticle, ProseChange, ProseDraft, ProseScene, SceneContract } from 'arc-canon-graph'
 import { STORY } from './config'
+
+// The wire types live in arc-canon-graph (graph/api-types.ts) — one source
+// of truth shared with the frontend. Re-exported so importers of this
+// module keep working.
+export type { DocArticle, ProseChange, ProseDraft, ProseScene, SceneContract }
 
 const ASSETS = path.join(STORY, 'assets')
 
@@ -45,8 +51,6 @@ function mdFiles(root: string): string[] {
   return out
 }
 
-export interface DocArticle { path: string; canon: string | null; body: string }
-
 /** Every docs/ article, with its canon binding when the frontmatter has one.
  *  The corpus is small (dozens of files) — read fresh, no cache to invalidate. */
 export function docsArticles(): DocArticle[] {
@@ -61,20 +65,6 @@ export function docsArticles(): DocArticle[] {
       body: fm ? text.slice(fm[0].length) : text,
     }
   })
-}
-
-export interface SceneContract {
-  purpose?: string; reader_before?: string; reader_after?: string
-  wants?: Record<string, string>
-  must_establish?: string[]; must_withhold?: string[]; motifs?: string[]
-  constraints?: string
-}
-
-export interface ProseScene {
-  scene: string; chapter: string; status: string
-  pov: string | null; events: string[]; facts: string[]
-  contract: SceneContract | null
-  file: string; body: string
 }
 
 /** Parse one scene file (conventions §10). Files without scene frontmatter
@@ -117,18 +107,6 @@ export function proseScenes(): ProseScene[] {
 
 function git(...args: string[]): string {
   return execFileSync('git', ['-C', STORY, ...args], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
-}
-
-export interface ProseChange {
-  file: string                                  // story-relative, matches ProseScene.file
-  status: 'added' | 'modified' | 'deleted'
-  main: ProseScene | null                       // the scene as of HEAD; null for added files
-}
-
-export interface ProseDraft {
-  git: boolean
-  changes: ProseChange[]
-  history: { hash: string; date: string; subject: string }[]
 }
 
 /** The draft state: every prose file that differs from HEAD, with the main
