@@ -8,6 +8,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { CORE, PYTHON, STORY } from './config'
+import { HttpError } from './http'
 
 let cached: string | null = null
 let cachedStamp = ''
@@ -44,7 +45,12 @@ export function canonJson(): string {
   const stamp = canonStamp()
   if (cached !== null && stamp === cachedStamp) return cached
   const res = runTool('export-canon.py')   // no out path — writes the graph to stdout
-  if (!res.ok) throw new Error(`export-canon.py failed:\n${res.output}`)
+  if (!res.ok) {
+    // The full tool output (often a python traceback) belongs in the backend
+    // log, not the browser.
+    console.error('[error] export-canon.py failed:\n' + res.output)
+    throw new HttpError(500, 'canon export failed — see the backend log, or run tools/validate.py on the story')
+  }
   cached = res.output
   cachedStamp = stamp
   return cached

@@ -10,6 +10,8 @@ import path from 'node:path'
 import { load as yamlLoad } from 'js-yaml'
 import type { DocArticle, ProseChange, ProseDraft, ProseScene, SceneContract } from 'arc-canon-graph'
 import { STORY } from './config'
+import { HttpError } from './http'
+import { resolveWithin } from './safe-path'
 
 // The wire types live in arc-canon-graph (graph/api-types.ts) — one source
 // of truth shared with the frontend. Re-exported so importers of this
@@ -69,7 +71,7 @@ export function docsArticles(): DocArticle[] {
 
 /** Parse one scene file (conventions §10). Files without scene frontmatter
  *  (READMEs, loose drafts) are not part of the manuscript. */
-function parseScene(text: string, file: string): ProseScene | null {
+export function parseScene(text: string, file: string): ProseScene | null {
   const fm = text.match(FM_RE)
   if (!fm) return null
   const meta = (yamlLoad(fm[1]) ?? {}) as Record<string, unknown>
@@ -147,8 +149,8 @@ export function proseDraft(): ProseDraft {
  *  sitting in the story's working tree (canon edits, notes) is untouched. */
 export function proseAccept(message?: string): { hash: string; files: string[] } {
   const draft = proseDraft()
-  if (!draft.git) throw new Error('this story is not a git repository — there is no draft layer to accept')
-  if (!draft.changes.length) throw new Error('no draft changes to accept')
+  if (!draft.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer to accept')
+  if (!draft.changes.length) throw new HttpError(409, 'no draft changes to accept')
   git('add', '-A', '--', 'prose')
   const n = draft.changes.length
   const msg = message?.trim() || `prose: accept draft (${n} scene${n === 1 ? '' : 's'})`
@@ -157,13 +159,12 @@ export function proseAccept(message?: string): { hash: string; files: string[] }
 }
 
 /** Roll one file back to main. The path arrives from the browser — reject
- *  anything that escapes prose/. */
+ *  anything that escapes prose/, including symlink escapes. */
 export function proseDiscard(file: string): void {
-  const abs = path.resolve(STORY, file)
-  const proseRoot = path.resolve(STORY, 'prose')
-  if (!abs.startsWith(proseRoot + path.sep)) throw new Error(`not a prose file: ${file}`)
+  if (!file.startsWith('prose/')) throw new HttpError(400, `not a prose file: ${file}`)
+  const abs = resolveWithin(path.join(STORY, 'prose'), file.slice('prose/'.length))
   const change = proseDraft().changes.find(c => c.file === file)
-  if (!change) throw new Error(`no draft change for ${file}`)
+  if (!change) throw new HttpError(404, `no draft change for ${file}`)
   if (change.status === 'added') fs.rmSync(abs)
   else git('checkout', 'HEAD', '--', file)
 }
@@ -173,11 +174,16 @@ export interface Asset { body: Buffer; contentType: string }
 /**
  * Read a file from the story's assets/ directory.
  * Returns null when it doesn't exist or isn't a servable type.
- * Rejects any name that escapes assets/ — the name arrives from the browser.
+ * Rejects any name that escapes assets/ (incl. symlink escapes) — the name
+ * arrives from the browser; null keeps the existing 404 behavior.
  */
 export function readAsset(name: string): Asset | null {
-  const abs = path.resolve(ASSETS, name)
-  if (abs !== ASSETS && !abs.startsWith(ASSETS + path.sep)) return null
+  let abs: string
+  try {
+    abs = resolveWithin(ASSETS, name)
+  } catch {
+    return null
+  }
   const contentType = CONTENT_TYPES[path.extname(abs).toLowerCase()]
   if (!contentType) return null
   if (!fs.existsSync(abs) || !fs.statSync(abs).isFile()) return null

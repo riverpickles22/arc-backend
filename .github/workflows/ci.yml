@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # config.ts resolves arc-core as a sibling checkout; the file: dep
+      # on arc-canon-graph needs it too.
+      - uses: actions/checkout@v4
+        with:
+          path: arc-backend
+
+      - uses: actions/checkout@v4
+        with:
+          repository: riverpickles22/arc-core
+          path: arc-core
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci
+        working-directory: arc-backend
+
+      - run: npm run typecheck
+        working-directory: arc-backend
+
+      - run: npm run lint
+        working-directory: arc-backend
+
+      - run: npm test
+        working-directory: arc-backend

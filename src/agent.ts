@@ -9,15 +9,21 @@ import { load as yamlLoad } from 'js-yaml'
 import type { ChatAction, ChatRequest, ChatResponse } from 'arc-canon-graph'
 import { CORE, MODEL, STORY } from './config'
 import { canonJson, invalidateCanon, validateStory } from './canon'
+import { resolveWithin } from './safe-path'
 
 // The chat wire contract lives in arc-canon-graph (graph/api-types.ts),
 // shared with the frontend. Alias kept for existing importers.
 export type { ChatAction as Action }
 
+// Constructed lazily: the SDK throws without credentials, and the route
+// already answers 503 before calling handleChat when none are set.
+let client: Anthropic | undefined
+const getClient = () => (client ??= new Anthropic())
+
 function safeStoryPath(rel: string, allowedRoots: string[], exts: string[]): string {
-  const abs = path.resolve(STORY, rel)
-  if (!abs.startsWith(STORY + path.sep)) throw new Error(`path escapes story dir: ${rel}`)
-  if (!allowedRoots.some(r => abs.startsWith(path.join(STORY, r) + path.sep) || path.dirname(abs) === path.join(STORY, r)))
+  const abs = resolveWithin(STORY, rel)   // realpath-aware; throws on any escape
+  const realStory = fs.realpathSync(STORY)
+  if (!allowedRoots.some(r => abs.startsWith(path.join(realStory, r) + path.sep) || path.dirname(abs) === path.join(realStory, r)))
     throw new Error(`path must be under ${allowedRoots.join(' or ')}: ${rel}`)
   if (!exts.some(e => abs.endsWith(e))) throw new Error(`file must end with ${exts.join(' or ')}: ${rel}`)
   return abs
@@ -82,20 +88,22 @@ ${conventions}`,
       cache_control: { type: 'ephemeral' },
     },
     {
-      // Volatile — the canon changes as the agent writes. Kept after the
-      // cache breakpoint so a canon write doesn't invalidate the prefix.
+      // Volatile — the canon changes as the agent writes. Its own cache
+      // breakpoint: multi-turn conversations without writes reuse this
+      // (large, growing) block too; a write invalidates only this one,
+      // never the stable prefix above.
       type: 'text',
       text: `=== CURRENT CANON (generated JSON export; YAML files are authoritative) ===
 ${canonJson()}
 
 === STORY FILES ===
 ${files}`,
+      cache_control: { type: 'ephemeral' },
     },
   ]
 }
 
 export async function handleChat(body: ChatRequest): Promise<ChatResponse> {
-  const client = new Anthropic()
   const actions: ChatAction[] = []
 
   const readStoryFile = betaTool({
@@ -170,15 +178,27 @@ export async function handleChat(body: ChatRequest): Promise<ChatResponse> {
     } as const,
     run: async (input: any) => {
       const abs = safeStoryPath(input.path, ['docs'], ['.md'])
+      // Same discipline as canon writes, guarded: revert only when the write
+      // itself broke a previously-clean story — pre-existing findings must
+      // not wedge every docs write.
+      const cleanBefore = validateStory().ok
+      const existed = fs.existsSync(abs)
+      const prev = existed ? fs.readFileSync(abs, 'utf8') : null
       fs.mkdirSync(path.dirname(abs), { recursive: true })
       fs.writeFileSync(abs, input.content)
       const check = validateStory() // catches broken wikilinks / missing-article drift
+      if (!check.ok && cleanBefore) {
+        if (prev !== null) fs.writeFileSync(abs, prev)
+        else fs.unlinkSync(abs)
+        actions.push({ tool: 'write_docs_file', path: input.path, ok: false, detail: 'validation failed, reverted' })
+        return `VALIDATION FAILED — write reverted. Fix these and retry:\n${check.output}`
+      }
       actions.push({ tool: 'write_docs_file', path: input.path, ok: check.ok, detail: check.ok ? undefined : 'validator warnings' })
       return check.ok ? 'OK — written' : `Written, but the validator now reports:\n${check.output}\nFix canon or the doc so these clear.`
     },
   })
 
-  const finalMessage = await client.beta.messages.toolRunner({
+  const finalMessage = await getClient().beta.messages.toolRunner({
     model: MODEL,
     max_tokens: 16000,
     thinking: { type: 'adaptive' },

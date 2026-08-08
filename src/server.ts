@@ -1,123 +1,158 @@
 // arc-backend: the canon API and the embedded world-shaping agent.
 //
-// In the monorepo this was a Vite dev-server plugin, so it only existed while
-// the frontend was running. It is now a standalone service the frontend
-// proxies to, which is what lets the two repos version independently.
+// Routing is a plain table — path → method → handler — dispatched by one
+// function that also owns the error mapping: HttpError becomes its status
+// with a clean {error} body; anything else is logged in full to stderr and
+// answered with a generic 500, so tool output and stack traces never reach
+// the browser. Every JSON payload is checked against the shared wire types
+// (arc-canon-graph/api-types.ts) with `satisfies`.
 import http from 'node:http'
-import { describeConfig, PORT } from './config'
+import type {
+  ApiErrorResponse, ChatMessage, ChatRequest, DocsResponse, HealthResponse,
+  OkResponse, ProseAcceptResponse, ProseResponse,
+} from 'arc-canon-graph'
+import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
 import { docsArticles, proseAccept, proseDiscard, proseDraft, proseScenes, readAsset, viewConfig } from './story'
 import { handleChat } from './agent'
 
-function json(res: http.ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body)
-  res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) })
-  res.end(payload)
-}
+type Handler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => void | Promise<void>
 
-function readBody(req: http.IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = []
-    req.on('data', c => chunks.push(c))
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
-    req.on('error', reject)
-  })
-}
-
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
-
-  // The frontend dev server proxies /api, so same-origin in practice; CORS is
-  // here so the app can also be served from a different host in production.
-  res.setHeader('access-control-allow-origin', process.env.ARC_CORS_ORIGIN ?? '*')
-  res.setHeader('access-control-allow-headers', 'content-type')
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204)
-    return res.end()
-  }
-
+async function parsedBody(req: http.IncomingMessage): Promise<unknown> {
+  const raw = await readBody(req)
   try {
-    if (url.pathname === '/api/health') {
-      const check = validateStory()
-      return json(res, check.ok ? 200 : 503, { ok: check.ok, validator: check.output })
-    }
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    throw new HttpError(400, 'request body is not valid JSON')
+  }
+}
 
-    if (url.pathname === '/api/canon') {
-      if (req.method !== 'GET') return json(res, 405, { error: 'GET only' })
+/** Validate the chat request shape before it goes anywhere near the SDK. */
+function chatRequest(body: unknown): ChatRequest {
+  const b = body as { messages?: unknown }
+  if (!b || !Array.isArray(b.messages) || b.messages.length === 0 || b.messages.length > 200) {
+    throw new HttpError(400, 'messages must be a non-empty array of at most 200 items')
+  }
+  for (const m of b.messages as { role?: unknown; content?: unknown }[]) {
+    if ((m?.role !== 'user' && m?.role !== 'assistant') || typeof m?.content !== 'string') {
+      throw new HttpError(400, 'each message needs role "user"|"assistant" and string content')
+    }
+  }
+  return { messages: b.messages as ChatMessage[] }
+}
+
+const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
+  '/api/health': {
+    GET: (_req, res) => {
+      const check = validateStory()
+      json(res, check.ok ? 200 : 503, { ok: check.ok, validator: check.output } satisfies HealthResponse)
+    },
+  },
+
+  '/api/canon': {
+    GET: (_req, res) => {
+      // The export JSON is served verbatim — the backend holds no canon types.
       const payload = canonJson()
       res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(payload) })
-      return res.end(payload)
-    }
+      res.end(payload)
+    },
+  },
 
-    // How the story is drawn — presentation config, kept out of canon.
-    if (url.pathname === '/api/view') {
-      if (req.method !== 'GET') return json(res, 405, { error: 'GET only' })
-      return json(res, 200, viewConfig())
-    }
+  // How the story is drawn — presentation config, kept out of canon.
+  '/api/view': {
+    GET: (_req, res) => json(res, 200, viewConfig()),
+  },
 
-    // The story encyclopedia: docs/ articles with their canon bindings.
-    if (url.pathname === '/api/docs') {
-      if (req.method !== 'GET') return json(res, 405, { error: 'GET only' })
-      return json(res, 200, { articles: docsArticles() })
-    }
+  // The story encyclopedia: docs/ articles with their canon bindings.
+  '/api/docs': {
+    GET: (_req, res) => json(res, 200, { articles: docsArticles() } satisfies DocsResponse),
+  },
 
-    // The manuscript: bound prose scenes (conventions §10).
-    if (url.pathname === '/api/prose') {
-      if (req.method !== 'GET') return json(res, 405, { error: 'GET only' })
-      return json(res, 200, { scenes: proseScenes() })
-    }
+  // The manuscript: bound prose scenes (conventions §10).
+  '/api/prose': {
+    GET: (_req, res) => json(res, 200, { scenes: proseScenes() } satisfies ProseResponse),
+  },
 
-    // The draft layer: working tree vs HEAD, plus ratification history.
-    if (url.pathname === '/api/prose/draft') {
-      if (req.method !== 'GET') return json(res, 405, { error: 'GET only' })
-      return json(res, 200, proseDraft())
-    }
+  // The draft layer: working tree vs HEAD, plus ratification history.
+  '/api/prose/draft': {
+    GET: (_req, res) => json(res, 200, proseDraft()),
+  },
 
-    // Accept ratifies the draft into main (a git commit scoped to prose/).
-    if (url.pathname === '/api/prose/accept') {
-      if (req.method !== 'POST') return json(res, 405, { error: 'POST only' })
-      const body = JSON.parse((await readBody(req)) || '{}')
-      return json(res, 200, proseAccept(typeof body.message === 'string' ? body.message : undefined))
-    }
+  // Accept ratifies the draft into main (a git commit scoped to prose/).
+  '/api/prose/accept': {
+    POST: async (req, res) => {
+      const body = (await parsedBody(req)) as { message?: unknown }
+      const result = proseAccept(typeof body.message === 'string' ? body.message : undefined)
+      json(res, 200, result satisfies ProseAcceptResponse)
+    },
+  },
 
-    // Discard rolls one draft file back to main (a surfaced git checkout).
-    if (url.pathname === '/api/prose/discard') {
-      if (req.method !== 'POST') return json(res, 405, { error: 'POST only' })
-      const body = JSON.parse((await readBody(req)) || '{}')
-      if (typeof body.file !== 'string') return json(res, 400, { error: 'file required' })
+  // Discard rolls one draft file back to main (a surfaced git checkout).
+  '/api/prose/discard': {
+    POST: async (req, res) => {
+      const body = (await parsedBody(req)) as { file?: unknown }
+      if (typeof body.file !== 'string') throw new HttpError(400, 'file required')
       proseDiscard(body.file)
-      return json(res, 200, { ok: true })
-    }
+      json(res, 200, { ok: true } satisfies OkResponse)
+    },
+  },
 
-    // Story-owned rendering assets (the basemap coastline, and whatever else
-    // a story needs drawn). Lives in the story repo, not the viewer.
-    if (url.pathname.startsWith('/api/assets/')) {
-      if (req.method !== 'GET') return json(res, 405, { error: 'GET only' })
-      const name = decodeURIComponent(url.pathname.slice('/api/assets/'.length))
-      const asset = readAsset(name)
-      if (!asset) return json(res, 404, { error: `no such story asset: ${name}` })
-      res.writeHead(200, { 'content-type': asset.contentType, 'content-length': asset.body.length })
-      return res.end(asset.body)
-    }
-
-    if (url.pathname === '/api/chat') {
-      if (req.method !== 'POST') return json(res, 405, { error: 'POST only' })
+  '/api/chat': {
+    POST: async (req, res) => {
       if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
-        return json(res, 500, {
-          error: 'No Anthropic credentials. Set ANTHROPIC_API_KEY in the environment and restart the backend.',
-        })
+        throw new HttpError(503, 'No Anthropic credentials. Set ANTHROPIC_API_KEY in the environment and restart the backend.')
       }
-      const body = JSON.parse(await readBody(req))
-      return json(res, 200, await handleChat(body))
+      json(res, 200, await handleChat(chatRequest(await parsedBody(req))))
+    },
+  },
+}
+
+// Story-owned rendering assets (the basemap coastline, and whatever else a
+// story needs drawn). Lives in the story repo, not the viewer.
+const assetHandler: Handler = (req, res, url) => {
+  if (req.method !== 'GET') throw new HttpError(405, 'GET only')
+  const name = decodeURIComponent(url.pathname.slice('/api/assets/'.length))
+  const asset = readAsset(name)
+  if (!asset) throw new HttpError(404, `no such story asset: ${name}`)
+  res.writeHead(200, { 'content-type': asset.contentType, 'content-length': asset.body.length })
+  res.end(asset.body)
+}
+
+/** The server, unstarted — main.ts listens; tests listen on port 0. */
+export function createArcServer(): http.Server {
+  return http.createServer(async (req, res) => {
+    const started = Date.now()
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
+
+    const origin = corsOrigin(req)
+    if (origin) res.setHeader('access-control-allow-origin', origin)
+    res.setHeader('access-control-allow-headers', 'content-type')
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204)
+      res.end()
+      return
     }
 
-    return json(res, 404, { error: `no route for ${url.pathname}` })
-  } catch (e: any) {
-    return json(res, 500, { error: e?.message ?? String(e) })
-  }
-})
+    try {
+      if (url.pathname.startsWith('/api/assets/')) {
+        await assetHandler(req, res, url)
+      } else {
+        const route = routes[url.pathname]
+        if (!route) throw new HttpError(404, `no route for ${url.pathname}`)
+        const handler = route[req.method as 'GET' | 'POST']
+        if (!handler) throw new HttpError(405, `${Object.keys(route).join('/')} only`)
+        await handler(req, res, url)
+      }
+    } catch (e) {
+      if (e instanceof HttpError) {
+        json(res, e.status, { error: e.message } satisfies ApiErrorResponse)
+      } else {
+        console.error(`[error] ${req.method} ${url.pathname}:`, e)
+        json(res, 500, { error: 'internal error — see backend log' } satisfies ApiErrorResponse)
+      }
+    }
 
-// Fail at startup rather than mid-request: importing config resolves and
-// checks both repo paths, so a missing checkout is reported here.
-console.log('arc-backend\n' + describeConfig())
-server.listen(PORT, () => console.log(`  listening on http://localhost:${PORT}`))
+    console.log(`${req.method} ${url.pathname} ${res.statusCode} ${Date.now() - started}ms`)
+  })
+}
