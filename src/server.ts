@@ -6,7 +6,7 @@
 import http from 'node:http'
 import { describeConfig, PORT } from './config'
 import { canonJson, validateStory } from './canon'
-import { docsArticles, proseScenes, readAsset, viewConfig } from './story'
+import { docsArticles, proseAccept, proseDiscard, proseDraft, proseScenes, readAsset, viewConfig } from './story'
 import { handleChat } from './agent'
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
@@ -65,6 +65,28 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/prose') {
       if (req.method !== 'GET') return json(res, 405, { error: 'GET only' })
       return json(res, 200, { scenes: proseScenes() })
+    }
+
+    // The draft layer: working tree vs HEAD, plus ratification history.
+    if (url.pathname === '/api/prose/draft') {
+      if (req.method !== 'GET') return json(res, 405, { error: 'GET only' })
+      return json(res, 200, proseDraft())
+    }
+
+    // Accept ratifies the draft into main (a git commit scoped to prose/).
+    if (url.pathname === '/api/prose/accept') {
+      if (req.method !== 'POST') return json(res, 405, { error: 'POST only' })
+      const body = JSON.parse((await readBody(req)) || '{}')
+      return json(res, 200, proseAccept(typeof body.message === 'string' ? body.message : undefined))
+    }
+
+    // Discard rolls one draft file back to main (a surfaced git checkout).
+    if (url.pathname === '/api/prose/discard') {
+      if (req.method !== 'POST') return json(res, 405, { error: 'POST only' })
+      const body = JSON.parse((await readBody(req)) || '{}')
+      if (typeof body.file !== 'string') return json(res, 400, { error: 'file required' })
+      proseDiscard(body.file)
+      return json(res, 200, { ok: true })
     }
 
     // Story-owned rendering assets (the basemap coastline, and whatever else
