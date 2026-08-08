@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import Anthropic from '@anthropic-ai/sdk'
 import { betaTool } from '@anthropic-ai/sdk/helpers/beta/json-schema'
-import { load as yamlLoad } from 'js-yaml'
+import { dump as yamlDump, load as yamlLoad } from 'js-yaml'
 import type { ChatAction, ChatRequest, ChatResponse } from 'arc-canon-graph'
 import { CORE, MODEL, STORY } from './config'
 import { canonJson, invalidateCanon, validateStory } from './canon'
@@ -19,6 +19,15 @@ export type { ChatAction as Action }
 // already answers 503 before calling handleChat when none are set.
 let client: Anthropic | undefined
 export const getClient = () => (client ??= new Anthropic())
+
+/** Canonical YAML for agent writes (multi-author early lock 3): whatever
+ *  shape the model emits, the file lands deterministically formatted —
+ *  insertion-order keys, 2-space indent, consistent quoting, no refs — so
+ *  every diff is semantic, never cosmetic. Human-authored files are never
+ *  reformatted; only the agent write path passes through here. */
+export function canonicalYaml(parsed: unknown): string {
+  return yamlDump(parsed, { indent: 2, lineWidth: 100, noRefs: true, sortKeys: false })
+}
 
 function safeStoryPath(rel: string, allowedRoots: string[], exts: string[]): string {
   const abs = resolveWithin(STORY, rel)   // realpath-aware; throws on any escape
@@ -103,10 +112,10 @@ ${files}`,
   ]
 }
 
-/** The story tools, closed over an actions collector — shared by the chat
- *  agent and the capture pass so both write through the same validated gate. */
-export function makeStoryTools(actions: ChatAction[]) {
-  const readStoryFile = betaTool({
+/** The read tool alone — shared with passes (drafting) that need story
+ *  reads but their own restricted write surface. */
+export function makeReadStoryTool() {
+  return betaTool({
     name: 'read_story_file',
     description:
       'Read a file from the story directory. Use before editing any file. ' +
@@ -122,6 +131,12 @@ export function makeStoryTools(actions: ChatAction[]) {
       return fs.readFileSync(abs, 'utf8')
     },
   })
+}
+
+/** The story tools, closed over an actions collector — shared by the chat
+ *  agent and the capture pass so both write through the same validated gate. */
+export function makeStoryTools(actions: ChatAction[]) {
+  const readStoryFile = makeReadStoryTool()
 
   const writeCanonFile = betaTool({
     name: 'write_canon_file',
@@ -140,15 +155,16 @@ export function makeStoryTools(actions: ChatAction[]) {
     } as const,
     run: async (input: any) => {
       const abs = safeStoryPath(input.path, ['canon'], ['.yaml'])
+      let parsed: unknown
       try {
-        yamlLoad(input.content)
+        parsed = yamlLoad(input.content)
       } catch (e: any) {
         return `YAML SYNTAX ERROR (nothing written): ${e.message}`
       }
       const existed = fs.existsSync(abs)
       const prev = existed ? fs.readFileSync(abs, 'utf8') : null
       fs.mkdirSync(path.dirname(abs), { recursive: true })
-      fs.writeFileSync(abs, input.content)
+      fs.writeFileSync(abs, canonicalYaml(parsed))
       const check = validateStory()
       if (!check.ok) {
         if (prev !== null) fs.writeFileSync(abs, prev)

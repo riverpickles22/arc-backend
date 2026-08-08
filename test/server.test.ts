@@ -106,6 +106,21 @@ test('accept with capture requested but no credentials skips capture gracefully'
   }
 })
 
+test('draft-scene guards: 503 without credentials, 400 without a chapter', async () => {
+  const savedKey = process.env.ANTHROPIC_API_KEY
+  delete process.env.ANTHROPIC_API_KEY
+  try {
+    const res = await post('/api/prose/draft-scene', { chapter: 'ch.01' })
+    assert.equal(res.status, 503)
+    assert.match((await res.json()).error, /credentials/)
+  } finally {
+    if (savedKey !== undefined) process.env.ANTHROPIC_API_KEY = savedKey
+  }
+  const bad = await post('/api/prose/draft-scene', {})
+  assert.equal(bad.status, 400)
+  assert.equal((await bad.json()).error, 'chapter required')
+})
+
 test('CORS: localhost reflected, anything else gets no header', async () => {
   const ok = await get('/api/docs', { origin: 'http://localhost:5173' })
   assert.equal(ok.headers.get('access-control-allow-origin'), 'http://localhost:5173')

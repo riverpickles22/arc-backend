@@ -8,8 +8,8 @@
 // (arc-canon-graph/api-types.ts) with `satisfies`.
 import http from 'node:http'
 import type {
-  ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, HealthResponse,
-  MaterialResponse, OkResponse, ProseAcceptResponse, ProseResponse,
+  ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, DraftSceneResponse,
+  HealthResponse, MaterialResponse, OkResponse, ProseAcceptResponse, ProseResponse,
 } from 'arc-canon-graph'
 import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
@@ -17,6 +17,7 @@ import { docsArticles, materialItems, proseAccept, proseDiscard, proseDraft, pro
 import { handleChat } from './agent'
 import { attention } from './attention'
 import { runCapture } from './capture'
+import { runDraft } from './draft'
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => void | Promise<void>
 
@@ -127,6 +128,21 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         throw new HttpError(503, 'No Anthropic credentials. Set ANTHROPIC_API_KEY in the environment and restart the backend.')
       }
       json(res, 200, await handleChat(chatRequest(await parsedBody(req))))
+    },
+  },
+
+  // The drafting pass: generate one scene into the working tree. The result
+  // is an ordinary draft in /api/prose/draft — the author's accept or
+  // discard stays the only gate.
+  '/api/prose/draft-scene': {
+    POST: async (req, res) => {
+      if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
+        throw new HttpError(503, 'No Anthropic credentials. Set ANTHROPIC_API_KEY in the environment and restart the backend.')
+      }
+      const body = (await parsedBody(req)) as { chapter?: unknown; guidance?: unknown }
+      if (typeof body.chapter !== 'string' || !body.chapter) throw new HttpError(400, 'chapter required')
+      const guidance = typeof body.guidance === 'string' ? body.guidance : undefined
+      json(res, 200, await runDraft(body.chapter, guidance) satisfies DraftSceneResponse)
     },
   },
 }
