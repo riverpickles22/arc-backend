@@ -8,13 +8,15 @@
 // (arc-canon-graph/api-types.ts) with `satisfies`.
 import http from 'node:http'
 import type {
-  ApiErrorResponse, ChatMessage, ChatRequest, DocsResponse, HealthResponse,
-  OkResponse, ProseAcceptResponse, ProseResponse,
+  ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, HealthResponse,
+  MaterialResponse, OkResponse, ProseAcceptResponse, ProseResponse,
 } from 'arc-canon-graph'
 import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
-import { docsArticles, proseAccept, proseDiscard, proseDraft, proseScenes, readAsset, viewConfig } from './story'
+import { docsArticles, materialItems, proseAccept, proseDiscard, proseDraft, proseScenes, readAsset, viewConfig } from './story'
 import { handleChat } from './agent'
+import { attention } from './attention'
+import { runCapture } from './capture'
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => void | Promise<void>
 
@@ -58,6 +60,17 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     },
   },
 
+  // The attention inbox: checks findings, the proposal queue, unfired
+  // payoffs — everything needing the author's review, in one response.
+  '/api/attention': {
+    GET: (_req, res) => json(res, 200, attention() satisfies AttentionResponse),
+  },
+
+  // Story material: the unplaced layer (conventions §12).
+  '/api/material': {
+    GET: (_req, res) => json(res, 200, { items: materialItems() } satisfies MaterialResponse),
+  },
+
   // How the story is drawn — presentation config, kept out of canon.
   '/api/view': {
     GET: (_req, res) => json(res, 200, viewConfig()),
@@ -79,11 +92,22 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   },
 
   // Accept ratifies the draft into main (a git commit scoped to prose/).
+  // With capture: true and credentials present, the capture pass then
+  // extracts what the accepted scenes changed and files proposals — its
+  // failure is logged, never fatal: capture must never un-accept prose.
   '/api/prose/accept': {
     POST: async (req, res) => {
-      const body = (await parsedBody(req)) as { message?: unknown }
+      const body = (await parsedBody(req)) as { message?: unknown; capture?: unknown }
       const result = proseAccept(typeof body.message === 'string' ? body.message : undefined)
-      json(res, 200, result satisfies ProseAcceptResponse)
+      let capture
+      if (body.capture === true && (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN)) {
+        try {
+          capture = await runCapture(result.files)
+        } catch (e) {
+          console.error('[error] capture pass failed (the accept itself succeeded):', e)
+        }
+      }
+      json(res, 200, { ...result, ...(capture ? { capture } : {}) } satisfies ProseAcceptResponse)
     },
   },
 

@@ -88,12 +88,37 @@ test('oversize body → 413', async () => {
   assert.equal(res.status, 413)
 })
 
+test('accept with capture requested but no credentials skips capture gracefully', async () => {
+  const savedKey = process.env.ANTHROPIC_API_KEY
+  const savedToken = process.env.ANTHROPIC_AUTH_TOKEN
+  delete process.env.ANTHROPIC_API_KEY
+  delete process.env.ANTHROPIC_AUTH_TOKEN
+  try {
+    writeScene(story, 'prose/ch-01/scene-01.md', 'sc.01-1', 'Capture-skip revision.')
+    const res = await post('/api/prose/accept', { message: 'prose: capture skip', capture: true })
+    assert.equal(res.status, 200)
+    const body = await res.json()
+    assert.match(body.hash, /^[0-9a-f]{7,}$/)
+    assert.equal(body.capture, undefined)
+  } finally {
+    if (savedKey !== undefined) process.env.ANTHROPIC_API_KEY = savedKey
+    if (savedToken !== undefined) process.env.ANTHROPIC_AUTH_TOKEN = savedToken
+  }
+})
+
 test('CORS: localhost reflected, anything else gets no header', async () => {
   const ok = await get('/api/docs', { origin: 'http://localhost:5173' })
   assert.equal(ok.headers.get('access-control-allow-origin'), 'http://localhost:5173')
 
   const evil = await get('/api/docs', { origin: 'https://evil.example' })
   assert.equal(evil.headers.get('access-control-allow-origin'), null)
+})
+
+test('attention on a broken canon is a clean 500 (same contract as /api/canon)', async () => {
+  const res = await get('/api/attention')   // fixture canon cannot export
+  assert.equal(res.status, 500)
+  const body = await res.json()
+  assert.doesNotMatch(body.error, /Traceback/)
 })
 
 test('canon export failure is a clean 500, not a traceback', async () => {

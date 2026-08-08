@@ -18,7 +18,7 @@ export type { ChatAction as Action }
 // Constructed lazily: the SDK throws without credentials, and the route
 // already answers 503 before calling handleChat when none are set.
 let client: Anthropic | undefined
-const getClient = () => (client ??= new Anthropic())
+export const getClient = () => (client ??= new Anthropic())
 
 function safeStoryPath(rel: string, allowedRoots: string[], exts: string[]): string {
   const abs = resolveWithin(STORY, rel)   // realpath-aware; throws on any escape
@@ -103,9 +103,9 @@ ${files}`,
   ]
 }
 
-export async function handleChat(body: ChatRequest): Promise<ChatResponse> {
-  const actions: ChatAction[] = []
-
+/** The story tools, closed over an actions collector — shared by the chat
+ *  agent and the capture pass so both write through the same validated gate. */
+export function makeStoryTools(actions: ChatAction[]) {
   const readStoryFile = betaTool({
     name: 'read_story_file',
     description:
@@ -198,12 +198,18 @@ export async function handleChat(body: ChatRequest): Promise<ChatResponse> {
     },
   })
 
+  return [readStoryFile, writeCanonFile, writeDocsFile]
+}
+
+export async function handleChat(body: ChatRequest): Promise<ChatResponse> {
+  const actions: ChatAction[] = []
+
   const finalMessage = await getClient().beta.messages.toolRunner({
     model: MODEL,
     max_tokens: 16000,
     thinking: { type: 'adaptive' },
     system: buildSystem(),
-    tools: [readStoryFile, writeCanonFile, writeDocsFile],
+    tools: makeStoryTools(actions),
     messages: body.messages,
     max_iterations: 12,
   })

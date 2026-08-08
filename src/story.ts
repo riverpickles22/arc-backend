@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { load as yamlLoad } from 'js-yaml'
-import type { DocArticle, ProseChange, ProseDraft, ProseScene, SceneContract } from 'arc-canon-graph'
+import type { DocArticle, MaterialItem, ProseChange, ProseDraft, ProseScene, SceneContract } from 'arc-canon-graph'
 import { STORY } from './config'
 import { HttpError } from './http'
 import { resolveWithin } from './safe-path'
@@ -95,6 +95,20 @@ export function proseScenes(): ProseScene[] {
   for (const abs of mdFiles(path.join(STORY, 'prose'))) {
     const scene = parseScene(fs.readFileSync(abs, 'utf8'), path.relative(STORY, abs))
     if (scene) out.push(scene)
+  }
+  return out
+}
+
+/** Story material (conventions §12): the unplaced layer, read fresh like
+ *  docs and prose — the corpus is small by nature. */
+export function materialItems(): MaterialItem[] {
+  const root = path.join(STORY, 'material')
+  if (!fs.existsSync(root)) return []
+  const out: MaterialItem[] = []
+  for (const name of fs.readdirSync(root).sort()) {
+    if (!name.endsWith('.yaml')) continue
+    const item = yamlLoad(fs.readFileSync(path.join(root, name), 'utf8')) as MaterialItem | null
+    if (item && typeof item.id === 'string') out.push(item)
   }
   return out
 }
