@@ -87,3 +87,13 @@ test('discard rejects traversal and unknown files', () => {
   assert.throws(() => proseDiscard('prose/../canon/story.yaml'), (e: unknown) => e instanceof HttpError && e.status === 400)
   assert.throws(() => proseDiscard('prose/ch-01/scene-01.md'), (e: unknown) => e instanceof HttpError && e.status === 404)
 })
+
+test('a scene in a brand-new chapter directory reports as added (not swallowed as `?? dir/`)', () => {
+  reset()
+  writeScene(story, 'prose/ch-09/scene-01.md', 'sc.09-1', 'First scene of a new chapter.')
+  const d = proseDraft()
+  const change = d.changes.find(c => c.file === 'prose/ch-09/scene-01.md')
+  assert.ok(change, 'the new-directory scene must appear in the draft changes')
+  assert.equal(change.status, 'added')
+  fs.rmSync(path.join(story, 'prose/ch-09'), { recursive: true })
+})

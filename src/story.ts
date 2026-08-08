@@ -134,7 +134,9 @@ export function proseDraft(): ProseDraft {
   }
 
   const changes: ProseChange[] = []
-  for (const line of git('status', '--porcelain', '--', 'prose').split('\n')) {
+  // -uall: list untracked FILES, not their directory — a scene in a brand-new
+  // chapter dir otherwise reports as `?? prose/ch-01/` and vanishes here.
+  for (const line of git('status', '--porcelain', '-uall', '--', 'prose').split('\n')) {
     if (!line.trim()) continue
     const xy = line.slice(0, 2)
     let repoRel = line.slice(3).trim()
