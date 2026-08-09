@@ -16,6 +16,7 @@ import { MODEL, STORY } from './config'
 import { canonJson, validateStory } from './canon'
 import { getClient, makeReadStoryTool } from './agent'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
+import { styleContract } from './style'
 import { proseScenes } from './story'
 import { HttpError } from './http'
 import { resolveWithin } from './safe-path'
@@ -58,7 +59,7 @@ THE BRIEFING (your final message — keep it tight):
 2. Style-contract check — each checklist item, held or knowingly bent.
 3. To verify — inventions or borderline claims a human should confirm.
 
-=== STYLE CONTRACT (docs/style.md) ===
+=== THE STYLE CONTRACT (conventions §10) ===
 `
 
 /** Scene file slot for a chapter: directory from the chapter id's number
@@ -99,8 +100,7 @@ export async function runDraft(chapterId: string, guidance?: string): Promise<Dr
   if (!chapter) throw new HttpError(400, `no chapter ${chapterId}`)
 
   const pack = buildContextPack(canon, { chapter: chapterId })
-  const stylePath = path.join(STORY, 'docs', 'style.md')
-  const style = fs.existsSync(stylePath) ? fs.readFileSync(stylePath, 'utf8') : '(this story has no docs/style.md — write clean, restrained literary prose)'
+  const style = styleContract()
 
   const scenes = proseScenes()
   const { file, sceneId } = sceneSlot(chapterId, chapter.order, scenes.map(s => s.file))

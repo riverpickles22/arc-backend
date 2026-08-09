@@ -9,6 +9,7 @@ import { dump as yamlDump, load as yamlLoad } from 'js-yaml'
 import type { ChatAction, ChatRequest, ChatResponse } from 'arc-canon-graph'
 import { CORE, MODEL, STORY } from './config'
 import { canonJson, invalidateCanon, validateStory } from './canon'
+import { styleContract } from './style'
 import { resolveWithin } from './safe-path'
 
 // The chat wire contract lives in arc-canon-graph (graph/api-types.ts),
@@ -104,6 +105,8 @@ ${conventions}`,
       type: 'text',
       text: `=== CURRENT CANON (generated JSON export; YAML files are authoritative) ===
 ${canonJson()}
+
+${styleContract()}
 
 === STORY FILES ===
 ${files}`,

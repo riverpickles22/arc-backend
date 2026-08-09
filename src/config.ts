@@ -44,6 +44,8 @@ export const PORT = Number(process.env.PORT ?? 8787)
 export const MODEL = process.env.ARC_MODEL ?? 'claude-opus-5'
 
 export function describeConfig(): string {
+  // style is resolved in style.ts (two layers); imported lazily so config has
+  // no import cycle with a module that reads STORY from it.
   return [
     `  core   ${CORE}`,
     `  story  ${STORY}`,

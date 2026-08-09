@@ -18,6 +18,7 @@ import { MODEL, STORY } from './config'
 import { canonJson } from './canon'
 import { getClient } from './agent'
 import { currentEngine, runCliPrompt } from './engine'
+import { styleContract } from './style'
 import { proseDraft, proseScenes } from './story'
 import { HttpError } from './http'
 
@@ -66,7 +67,7 @@ voice contract, not generic craft advice.
 Be concrete and short. A briefing the author can read in two minutes and
 act on beats an essay.
 
-=== STYLE CONTRACT (docs/style.md) ===
+=== THE STYLE CONTRACT (conventions §10) ===
 `
 
 /** The prompt for a set of draft changes. Pure — the caller supplies the
@@ -111,9 +112,8 @@ export async function runAnalysis(): Promise<AnalyzeResponse> {
   if (!draft.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer to analyze')
   if (!draft.changes.length) throw new HttpError(409, 'no draft changes to analyze')
 
-  const stylePath = path.join(STORY, 'docs', 'style.md')
   const prompt = buildAnalysisPrompt({
-    style: fs.existsSync(stylePath) ? fs.readFileSync(stylePath, 'utf8') : '(this story has no docs/style.md — judge only against canon and the contract)',
+    style: styleContract(),
     canon: canonJson(),
     changes: draft.changes,
     scenes: proseScenes(),
