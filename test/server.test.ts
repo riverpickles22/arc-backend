@@ -38,6 +38,14 @@ test('GET shapes match the shared envelopes', async () => {
   assert.equal(view.status, 200)
 })
 
+test('style: both layers in one read, proposed always present', async () => {
+  const res = await get('/api/style')
+  assert.equal(res.status, 200)
+  const body = await res.json()
+  assert.ok('author' in body && 'story' in body)      // null is a legitimate answer for either
+  assert.deepEqual(body.proposed, [])                 // the shape exists before the learning pass does
+})
+
 test('unknown route → 404, wrong method → 405, both with clean {error}', async () => {
   const missing = await get('/api/nope')
   assert.equal(missing.status, 404)

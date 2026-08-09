@@ -9,7 +9,7 @@
 import http from 'node:http'
 import type {
   AnalyzeResponse, ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, DraftSceneResponse,
-  HealthResponse, MaterialResponse, OkResponse, ProseAcceptResponse, ProseResponse,
+  HealthResponse, MaterialResponse, OkResponse, ProseAcceptResponse, ProseResponse, StyleResponse,
 } from 'arc-canon-graph'
 import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
@@ -20,6 +20,7 @@ import { runCapture } from './capture'
 import { runAnalysis } from './analyze'
 import { runDraft } from './draft'
 import { currentEngine } from './engine'
+import { loadStyleLayers } from './style'
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => void | Promise<void>
 
@@ -82,6 +83,16 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // The story encyclopedia: docs/ articles with their canon bindings.
   '/api/docs': {
     GET: (_req, res) => json(res, 200, { articles: docsArticles() } satisfies DocsResponse),
+  },
+
+  // The style contract (conventions §10): both layers, as they are on disk.
+  // A read — no engine guard. `proposed` is empty until the learning pass
+  // ships; it is in the shape now so the page never has to change.
+  '/api/style': {
+    GET: (_req, res) => {
+      const { author, story } = loadStyleLayers()
+      json(res, 200, { author, story, proposed: [] } satisfies StyleResponse)
+    },
   },
 
   // The manuscript: bound prose scenes (conventions §10).
