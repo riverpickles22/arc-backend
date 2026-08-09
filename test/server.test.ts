@@ -106,15 +106,14 @@ test('accept with capture requested but no credentials skips capture gracefully'
   }
 })
 
-test('draft-scene guards: 503 without credentials, 400 without a chapter', async () => {
-  const savedKey = process.env.ANTHROPIC_API_KEY
-  delete process.env.ANTHROPIC_API_KEY
+test('draft-scene guards: 503 with no engine, 400 without a chapter', async () => {
+  process.env.ARC_DRAFT_ENGINE = 'none'   // a live CLI on the test machine must not count
   try {
     const res = await post('/api/prose/draft-scene', { chapter: 'ch.01' })
     assert.equal(res.status, 503)
-    assert.match((await res.json()).error, /credentials/)
+    assert.match((await res.json()).error, /No generation engine/)
   } finally {
-    if (savedKey !== undefined) process.env.ANTHROPIC_API_KEY = savedKey
+    delete process.env.ARC_DRAFT_ENGINE
   }
   const bad = await post('/api/prose/draft-scene', {})
   assert.equal(bad.status, 400)
