@@ -10,6 +10,7 @@ import path from 'node:path'
 import { load as yamlLoad } from 'js-yaml'
 import type { DocArticle, MaterialItem, ProseChange, ProseDraft, ProseScene, SceneContract } from 'arc-canon-graph'
 import { STORY } from './config'
+import { clearGenerated } from './ledger'
 import { HttpError } from './http'
 import { resolveWithin } from './safe-path'
 
@@ -183,6 +184,9 @@ export function proseDiscard(file: string): void {
   if (!change) throw new HttpError(404, `no draft change for ${file}`)
   if (change.status === 'added') fs.rmSync(abs)
   else git('checkout', 'HEAD', '--', file)
+  // A generation the author threw away must never be diffed against a later
+  // hand-written scene at the same path.
+  clearGenerated([file])
 }
 
 export interface Asset { body: Buffer; contentType: string }

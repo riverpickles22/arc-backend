@@ -24,6 +24,9 @@ WHAT TO EXTRACT: genuinely new facts the prose establishes — new entities,
 new events, state changes (a NEW snapshot appended to the entity's states,
 never editing old ones), relationship shifts. File them with
 write_canon_file as status: proposed. Read a file before extending it.
+State snapshots use the structured fields (conventions §4): beliefs, wants,
+fears as lists — a want or fear the prose establishes goes in its field,
+never buried in psychology prose where no diff can see it.
 
 SUPPRESSION (the binding rule): before filing anything, read each scene's
 frontmatter contract (must_withhold) and the narrative_notes of the events

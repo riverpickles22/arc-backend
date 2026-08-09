@@ -17,6 +17,7 @@ import { canonJson, validateStory } from './canon'
 import { getClient, makeReadStoryTool } from './agent'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { styleContract } from './style'
+import { recordGenerated } from './ledger'
 import { proseScenes } from './story'
 import { HttpError } from './http'
 import { resolveWithin } from './safe-path'
@@ -144,6 +145,7 @@ export async function runDraft(chapterId: string, guidance?: string): Promise<Dr
         actions.push({ tool: 'write_scene_file', path: input.path, ok: false, detail: 'validation failed, reverted' })
         return `VALIDATION FAILED — write reverted. Fix these and retry:\n${check.output}`
       }
+      recordGenerated(input.path, input.content, { engine: 'sdk', scene: sceneId })
       actions.push({ tool: 'write_scene_file', path: input.path, ok: true })
       written = input.path
       return `OK — written and validated (${check.output})`
@@ -180,8 +182,16 @@ export async function runDraft(chapterId: string, guidance?: string): Promise<Dr
   return { reply, actions, file: written }
 }
 
-/** Write scene content through the same gate the SDK tool uses: write,
- *  validate the whole story, revert on failure. */
+/** Write scene content through the gate both engines share: record what
+ *  arc wrote to the generation ledger, write, validate the whole story,
+ *  revert on failure. The ledger entry is only kept when the write survives
+ *  — a reverted generation never happened, and must not be mined later. */
+function writeScene(rel: string, content: string, engine: string, scene?: string): { ok: boolean; output: string } {
+  const check = writeValidated(rel, content)
+  if (check.ok) recordGenerated(rel, content, { engine, scene })
+  return check
+}
+
 function writeValidated(rel: string, content: string): { ok: boolean; output: string } {
   const abs = resolveWithin(STORY, rel)
   const existed = fs.existsSync(abs)
@@ -218,7 +228,7 @@ function runDraftCli(a: {
   const actions: ChatAction[] = []
   const first = runCliPrompt(prompt, { cwd: STORY })
   let content = stripFences(first.text)
-  let check = writeValidated(a.file, content)
+  let check = writeScene(a.file, content, 'claude-cli', a.sceneId)
   actions.push({ tool: 'write_scene_file', path: a.file, ok: check.ok, detail: check.ok ? undefined : 'validation failed, reverted' })
 
   if (!check.ok && first.sessionId) {
@@ -226,7 +236,7 @@ function runDraftCli(a: {
       `VALIDATION FAILED — the scene was reverted. Fix these and reply with ONLY the corrected complete file content:\n${check.output}`,
       { cwd: STORY, resume: first.sessionId })
     content = stripFences(repair.text)
-    check = writeValidated(a.file, content)
+    check = writeScene(a.file, content, 'claude-cli', a.sceneId)
     actions.push({ tool: 'write_scene_file', path: a.file, ok: check.ok, detail: check.ok ? 'repaired after validator errors' : 'validation failed again, reverted' })
   }
 
