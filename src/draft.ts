@@ -15,6 +15,7 @@ import { buildContextPack } from 'arc-canon-graph/context-pack-lib.ts'
 import { MODEL, STORY } from './config'
 import { canonJson, validateStory } from './canon'
 import { getClient, makeReadStoryTool } from './agent'
+import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { proseScenes } from './story'
 import { HttpError } from './http'
 import { resolveWithin } from './safe-path'
@@ -106,6 +107,10 @@ export async function runDraft(chapterId: string, guidance?: string): Promise<Dr
   const chapterScenes = scenes.filter(s => s.chapter === chapterId)
   const scenesText = chapterScenes.map(s => `=== ${s.file} ===\n${fs.readFileSync(path.join(STORY, s.file), 'utf8')}`).join('\n\n')
 
+  if (currentEngine() === 'claude-cli') {
+    return runDraftCli({ chapterId, guidance, pack, style, file, sceneId, chapterScenes, scenesText })
+  }
+
   const actions: ChatAction[] = []
   let written: string | null = null
 
@@ -173,4 +178,63 @@ export async function runDraft(chapterId: string, guidance?: string): Promise<Dr
     .join('\n')
 
   return { reply, actions, file: written }
+}
+
+/** Write scene content through the same gate the SDK tool uses: write,
+ *  validate the whole story, revert on failure. */
+function writeValidated(rel: string, content: string): { ok: boolean; output: string } {
+  const abs = resolveWithin(STORY, rel)
+  const existed = fs.existsSync(abs)
+  const prev = existed ? fs.readFileSync(abs, 'utf8') : null
+  fs.mkdirSync(path.dirname(abs), { recursive: true })
+  fs.writeFileSync(abs, content)
+  const check = validateStory()
+  if (!check.ok) {
+    if (prev !== null) fs.writeFileSync(abs, prev)
+    else fs.unlinkSync(abs)
+  }
+  return check
+}
+
+/** The claude-cli engine: one shot of headless `claude -p` on the author's
+ *  subscription login, plus one repair retry (--resume) when the validator
+ *  rejects the scene. Slower and toolless next to the SDK path — the model
+ *  replies with the complete file; the gate runs here in Node. */
+function runDraftCli(a: {
+  chapterId: string; guidance?: string
+  pack: string; style: string; file: string; sceneId: string
+  chapterScenes: { scene: string; file: string }[]; scenesText: string
+}): DraftSceneResponse {
+  const prompt = [
+    DRAFT_RULES + a.style,
+    `=== CONTEXT PACK (traversal-selected; every item carries its inclusion reason) ===\n${a.pack}`,
+    a.scenesText ? `=== THIS CHAPTER'S EXISTING SCENES ===\n${a.scenesText}` : '',
+    draftUserMessage(a.chapterId, a.sceneId, a.file, a.guidance, a.chapterScenes),
+    'ENGINE NOTE: you have no tools in this mode. Do not attempt tool calls. ' +
+    'Reply with ONLY the complete scene file content — the --- frontmatter block, then the prose body. ' +
+    'No preamble, no commentary, no code fences.',
+  ].filter(Boolean).join('\n\n')
+
+  const actions: ChatAction[] = []
+  const first = runCliPrompt(prompt, { cwd: STORY })
+  let content = stripFences(first.text)
+  let check = writeValidated(a.file, content)
+  actions.push({ tool: 'write_scene_file', path: a.file, ok: check.ok, detail: check.ok ? undefined : 'validation failed, reverted' })
+
+  if (!check.ok && first.sessionId) {
+    const repair = runCliPrompt(
+      `VALIDATION FAILED — the scene was reverted. Fix these and reply with ONLY the corrected complete file content:\n${check.output}`,
+      { cwd: STORY, resume: first.sessionId })
+    content = stripFences(repair.text)
+    check = writeValidated(a.file, content)
+    actions.push({ tool: 'write_scene_file', path: a.file, ok: check.ok, detail: check.ok ? 'repaired after validator errors' : 'validation failed again, reverted' })
+  }
+
+  return {
+    reply: check.ok
+      ? `Drafted ${a.sceneId} via the claude CLI on the subscription login (no API key). Written and validated: ${a.file}.`
+      : `The claude CLI engine could not produce a valid scene — the write was reverted.\n\nValidator output:\n${check.output}`,
+    actions,
+    file: check.ok ? a.file : null,
+  }
 }

@@ -8,7 +8,7 @@
 // (arc-canon-graph/api-types.ts) with `satisfies`.
 import http from 'node:http'
 import type {
-  ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, DraftSceneResponse,
+  AnalyzeResponse, ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, DraftSceneResponse,
   HealthResponse, MaterialResponse, OkResponse, ProseAcceptResponse, ProseResponse,
 } from 'arc-canon-graph'
 import { HttpError, corsOrigin, json, readBody } from './http'
@@ -17,7 +17,9 @@ import { docsArticles, materialItems, proseAccept, proseDiscard, proseDraft, pro
 import { handleChat } from './agent'
 import { attention } from './attention'
 import { runCapture } from './capture'
+import { runAnalysis } from './analyze'
 import { runDraft } from './draft'
+import { currentEngine } from './engine'
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => void | Promise<void>
 
@@ -133,16 +135,33 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
 
   // The drafting pass: generate one scene into the working tree. The result
   // is an ordinary draft in /api/prose/draft — the author's accept or
-  // discard stays the only gate.
+  // discard stays the only gate. Engine: the SDK when a key is set, else
+  // headless `claude -p` on the author's subscription login.
   '/api/prose/draft-scene': {
     POST: async (req, res) => {
-      if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
-        throw new HttpError(503, 'No Anthropic credentials. Set ANTHROPIC_API_KEY in the environment and restart the backend.')
+      if (!currentEngine()) {
+        throw new HttpError(503,
+          'No generation engine. Either set ANTHROPIC_API_KEY in the environment, ' +
+          'or install and log in the claude CLI (its subscription login works — no key needed), then restart the backend.')
       }
       const body = (await parsedBody(req)) as { chapter?: unknown; guidance?: unknown }
       if (typeof body.chapter !== 'string' || !body.chapter) throw new HttpError(400, 'chapter required')
       const guidance = typeof body.guidance === 'string' ? body.guidance : undefined
       json(res, 200, await runDraft(body.chapter, guidance) satisfies DraftSceneResponse)
+    },
+  },
+
+  // The analysis pass: what would this pending draft do to the story? Runs
+  // before the accept decision and writes nothing — its briefing is wholly
+  // in the argued register (conventions §11).
+  '/api/prose/analyze': {
+    POST: async (_req, res) => {
+      if (!currentEngine()) {
+        throw new HttpError(503,
+          'No generation engine. Either set ANTHROPIC_API_KEY in the environment, ' +
+          'or install and log in the claude CLI (its subscription login works — no key needed), then restart the backend.')
+      }
+      json(res, 200, await runAnalysis() satisfies AnalyzeResponse)
     },
   },
 }

@@ -7,7 +7,8 @@ import { makeStory } from './fixture.ts'
 
 const story = makeStory()
 process.env.ARC_STORY_PATH = story
-const { sceneSlot, draftUserMessage } = await import('../src/draft.ts')
+const draftMod = await import('../src/draft.ts')
+const { sceneSlot, draftUserMessage } = draftMod
 
 test('first scene of a chapter: slot 01, id from the chapter number', () => {
   const slot = sceneSlot('ch.02-dogs-of-the-neighborhood', 2, [])
