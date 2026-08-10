@@ -5,6 +5,7 @@
 import { loadGraph } from 'arc-canon-graph'
 import type { AttentionResponse, CanonDoc } from 'arc-canon-graph'
 import { canonJson } from './canon'
+import { orphaned } from './annotations'
 import { materialItems, proseScenes } from './story'
 
 export function attention(): AttentionResponse {
@@ -32,6 +33,13 @@ export function attention(): AttentionResponse {
     ...(doc.chapters ?? []).filter(c => c.status === 'proposed').map(c => ({ id: c.id, type: 'chapter' })),
   ].sort((a, b) => a.id.localeCompare(b.id))
 
+  // A note whose passage is gone is a proven finding: it is a fact that the
+  // anchor does not resolve. Where the thought now belongs is the author's.
+  const orphans = orphaned().map(n => ({
+    id: n.id, body: n.body, scene: n.anchor.scene, quote: n.anchor.quote,
+    why: n.resolution.note ?? 'the anchor no longer resolves',
+  }))
+
   return {
     errors: findings.filter(f => f.severity === 'error').length,
     warnings: findings.filter(f => f.severity === 'warning').length,
@@ -42,5 +50,7 @@ export function attention(): AttentionResponse {
     proposedRecords,
     danglingPayoffs: dangling,
     unmetObligations: unmet,
+    orphanedNotes: orphans.length,
+    orphanedAnnotations: orphans,
   }
 }

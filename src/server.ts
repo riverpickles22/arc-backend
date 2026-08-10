@@ -9,12 +9,13 @@
 import http from 'node:http'
 import type {
   AnalyzeResponse, ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, DraftSceneResponse,
-  HealthResponse, MaterialResponse, OkResponse, ProseAcceptResponse, ProseResponse, StyleResponse,
+  AnnotationsResponse, HealthResponse, MaterialResponse, OkResponse, ProseAcceptResponse, ProseResponse, StyleResponse,
 } from 'arc-canon-graph'
 import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
 import { docsArticles, materialItems, proseAccept, proseDiscard, proseDraft, proseScenes, readAsset, viewConfig } from './story'
 import { handleChat } from './agent'
+import { annotations, createAnnotation, updateAnnotation } from './annotations'
 import { attention } from './attention'
 import { runCapture } from './capture'
 import { runAnalysis } from './analyze'
@@ -83,6 +84,30 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // The story encyclopedia: docs/ articles with their canon bindings.
   '/api/docs': {
     GET: (_req, res) => json(res, 200, { articles: docsArticles() } satisfies DocsResponse),
+  },
+
+  // Annotations (conventions §14): the author's thoughts, anchored to the
+  // prose that provoked them, resolved against the manuscript as it stands.
+  '/api/annotations': {
+    GET: (_req, res) => json(res, 200, { annotations: annotations() } satisfies AnnotationsResponse),
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as Record<string, unknown>
+      json(res, 200, createAnnotation({
+        scene: String(b.scene ?? ''),
+        paragraph: Number(b.paragraph ?? -1),
+        quote: String(b.quote ?? ''),
+        body: String(b.body ?? ''),
+      }))
+    },
+  },
+
+  // Status only — resolving or dropping a note is the author's act.
+  '/api/annotations/update': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { id?: unknown; status?: unknown }
+      if (typeof b.id !== 'string' || typeof b.status !== 'string') throw new HttpError(400, 'id and status required')
+      json(res, 200, updateAnnotation(b.id, b.status))
+    },
   },
 
   // The style contract (conventions §10): both layers, as they are on disk.
