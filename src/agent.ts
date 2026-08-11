@@ -11,6 +11,18 @@ import { CORE, MODEL, STORY } from './config'
 import { canonJson, invalidateCanon, validateStory } from './canon'
 import { styleContract } from './style'
 import { resolveWithin } from './safe-path'
+import { idsInFile, listFiles, takenIds } from './records'
+import {
+  type Capability,
+  UNRESTRICTED,
+  checkRecordWrite,
+  checkPathWrite,
+  checkRead,
+  covered,
+  diffRecords,
+  mintId,
+  recordsIn,
+} from './capability'
 
 // The chat wire contract lives in arc-canon-graph (graph/api-types.ts),
 // shared with the frontend. Alias kept for existing importers.
@@ -39,18 +51,6 @@ function safeStoryPath(rel: string, allowedRoots: string[], exts: string[]): str
   return abs
 }
 
-function listFiles(dir: string, base = ''): string[] {
-  const out: string[] = []
-  const root = path.join(STORY, dir, base)
-  if (!fs.existsSync(root)) return out
-  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-    const rel = path.join(dir, base, entry.name)
-    if (entry.isDirectory()) out.push(...listFiles(dir, path.join(base, entry.name)))
-    else out.push(rel)
-  }
-  return out
-}
-
 function buildSystem(): Anthropic.Beta.BetaTextBlockParam[] {
   const conventions = fs.readFileSync(path.join(CORE, 'conventions.md'), 'utf8')
   const files = [...listFiles('canon'), ...listFiles('docs')].join('\n')
@@ -77,8 +77,13 @@ RULES (binding, from arc-core's conventions.md below):
 - Character development = a NEW state snapshot at a timepoint, never editing
   an old snapshot (except to fix errors).
 - Wire causality: events get causes/leads_to; states get caused_by.
-- Mint IDs as type.slug kebab-case (char. place. faction. obj. event. ch.).
-  When you create an entity, also create its docs article (write_docs_file).
+- Never invent a permanent ID. Call mint_id and use what it returns — arc
+  allocates under the ID conventions and checks the whole story for
+  collisions. When you create an entity, also create its docs article
+  (write_docs_file).
+- You hold a scope. A write outside it returns SCOPE_EXCEEDED and touches
+  nothing; the refusal names how to widen the scope. Follow it rather than
+  working around it.
 - Keep edits minimal and targeted. Don't rewrite files wholesale to change
   one field — read the file first, then write it back with only the intended
   change applied.
@@ -117,7 +122,7 @@ ${files}`,
 
 /** The read tool alone — shared with passes (drafting) that need story
  *  reads but their own restricted write surface. */
-export function makeReadStoryTool() {
+export function makeReadStoryTool(cap: Capability = UNRESTRICTED) {
   return betaTool({
     name: 'read_story_file',
     description:
@@ -131,15 +136,23 @@ export function makeReadStoryTool() {
     } as const,
     run: async (input: any) => {
       const abs = safeStoryPath(input.path, ['canon', 'docs', 'research'], ['.yaml', '.md'])
+      const scope = checkRead(cap, input.path, idsInFile(abs, input.path))
+      if (!scope.ok) return scope.message!
       return fs.readFileSync(abs, 'utf8')
     },
   })
 }
 
-/** The story tools, closed over an actions collector — shared by the chat
- *  agent and the capture pass so both write through the same validated gate. */
-export function makeStoryTools(actions: ChatAction[]) {
-  const readStoryFile = makeReadStoryTool()
+/** The story tools, closed over an actions collector and a capability —
+ *  shared by the chat agent and the capture pass so both write through the
+ *  same validated gate. The capability is checked BEFORE validation, so an
+ *  out-of-scope write never touches the disk at all; it defaults to
+ *  UNRESTRICTED, which is what the author's own chat holds.
+ *
+ *  `cap` is mutated in place by mint_id — that is the audited widening of
+ *  work-graph.md §4, and the caller keeps the object to record it. */
+export function makeStoryTools(actions: ChatAction[], cap: Capability = UNRESTRICTED) {
+  const readStoryFile = makeReadStoryTool(cap)
 
   const writeCanonFile = betaTool({
     name: 'write_canon_file',
@@ -166,6 +179,20 @@ export function makeStoryTools(actions: ChatAction[]) {
       }
       const existed = fs.existsSync(abs)
       const prev = existed ? fs.readFileSync(abs, 'utf8') : null
+
+      // Scope before validation: an out-of-scope write never reaches disk.
+      const before = prev === null ? [] : recordsIn(yamlLoad(prev), input.path)
+      const scope = checkRecordWrite(cap, diffRecords(before, recordsIn(parsed, input.path)))
+      if (!scope.ok) {
+        actions.push({
+          tool: 'write_canon_file',
+          path: input.path,
+          ok: false,
+          detail: `scope exceeded: ${scope.denied!.join(', ')}`,
+        })
+        return scope.message!
+      }
+
       fs.mkdirSync(path.dirname(abs), { recursive: true })
       fs.writeFileSync(abs, canonicalYaml(parsed))
       const check = validateStory()
@@ -197,6 +224,11 @@ export function makeStoryTools(actions: ChatAction[]) {
     } as const,
     run: async (input: any) => {
       const abs = safeStoryPath(input.path, ['docs'], ['.md'])
+      const scope = checkPathWrite(cap, input.path)
+      if (!scope.ok) {
+        actions.push({ tool: 'write_docs_file', path: input.path, ok: false, detail: 'scope exceeded' })
+        return scope.message!
+      }
       // Same discipline as canon writes, guarded: revert only when the write
       // itself broke a previously-clean story — pre-existing findings must
       // not wedge every docs write.
@@ -217,7 +249,46 @@ export function makeStoryTools(actions: ChatAction[]) {
     },
   })
 
-  return [readStoryFile, writeCanonFile, writeDocsFile]
+  const mintIdTool = betaTool({
+    name: 'mint_id',
+    description:
+      'Ask arc for a new permanent canon ID before creating an entity. arc allocates it under the ID ' +
+      'conventions, checks it against every ID the story already holds, and grants you permission to ' +
+      'propose it. Never invent a permanent ID yourself — IDs are forever, and collisions are silent.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        type: {
+          type: 'string',
+          description: 'character | place | faction | object | event | era | timepoint | relationship | chapter | theme',
+        },
+        hint: { type: 'string', description: 'the name to slugify, e.g. "Rafael" or "Carlos and Rafael"' },
+      },
+      required: ['type', 'hint'],
+      additionalProperties: false,
+    } as const,
+    run: async (input: any) => {
+      // Authority first: it is free, and a worker with no grant should not
+      // cause a scan of the story.
+      if (!cap.creates.some(g => g.type === '*' || g.type === input.type)) {
+        actions.push({ tool: 'mint_id', path: input.type, ok: false, detail: `no create grant for ${input.type}` })
+        return `SCOPE_EXCEEDED — no CREATE grant for ${input.type}. Ask the planner to widen the claim.`
+      }
+      let id: string
+      try {
+        id = mintId(input.type, input.hint, takenIds())
+      } catch (e: any) {
+        return `MINT FAILED: ${e.message}`
+      }
+      // The audited widening. Skipped when already covered, which is also
+      // what keeps the frozen UNRESTRICTED singleton safe to pass in.
+      if (!covered(cap.proposes, id)) cap.proposes = [...cap.proposes, id]
+      actions.push({ tool: 'mint_id', path: id, ok: true, detail: `granted propose ${id}` })
+      return `OK — minted ${id}. You may now propose it (status: proposed).`
+    },
+  })
+
+  return [readStoryFile, writeCanonFile, writeDocsFile, mintIdTool]
 }
 
 export async function handleChat(body: ChatRequest): Promise<ChatResponse> {
