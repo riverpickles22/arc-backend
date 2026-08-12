@@ -7,7 +7,7 @@ import { git, makeStory, writeScene } from './fixture.ts'
 
 const story = makeStory()
 process.env.ARC_STORY_PATH = story
-const { proseAccept, proseDiscard, proseDraft } = await import('../src/story.ts')
+const { proseAccept, proseAcceptParagraph, proseDiscard, proseDraft, proseScenes, proseWrite } = await import('../src/story.ts')
 const { HttpError } = await import('../src/http.ts')
 
 function reset(): void {
@@ -96,4 +96,77 @@ test('a scene in a brand-new chapter directory reports as added (not swallowed a
   assert.ok(change, 'the new-directory scene must appear in the draft changes')
   assert.equal(change.status, 'added')
   fs.rmSync(path.join(story, 'prose/ch-09'), { recursive: true })
+})
+
+test('proseWrite replaces the body and leaves the frontmatter byte-identical', () => {
+  const file = 'prose/ch-01/scene-01.md'
+  const before = fs.readFileSync(path.join(story, file), 'utf8')
+  const fm = before.slice(0, before.indexOf('---', 3) + 4)
+  proseWrite(file, 'A wholly new body.\n')
+  const after = fs.readFileSync(path.join(story, file), 'utf8')
+  assert.ok(after.startsWith(fm), 'frontmatter untouched')
+  assert.match(after, /A wholly new body\./)
+  assert.doesNotMatch(after, /Original first paragraph/)
+})
+
+test('proseWrite refuses when the file moved underneath the edit', () => {
+  const file = 'prose/ch-01/scene-01.md'
+  assert.throws(() => proseWrite(file, 'x', 'a baseline that is not what is on disk'), HttpError)
+})
+
+test('proseWrite accepts a baseline that matches, ignoring trailing whitespace', () => {
+  const file = 'prose/ch-01/scene-01.md'
+  const current = proseScenes().find(s => s.file === file)!.body
+  proseWrite(file, 'Second edit.\n', current.trimEnd() + '\n\n')
+  assert.match(fs.readFileSync(path.join(story, file), 'utf8'), /Second edit\./)
+})
+
+test('proseWrite guards the path and the extension', () => {
+  assert.throws(() => proseWrite('canon/story.yaml', 'x'), HttpError)
+  assert.throws(() => proseWrite('prose/../canon/story.yaml', 'x'), HttpError)
+  assert.throws(() => proseWrite('prose/ch-01/nope.md', 'x'), HttpError)
+})
+
+test('accepting one paragraph commits it and leaves the rest pending', () => {
+  reset()
+  const file = 'prose/ch-01/scene-01.md'
+  const abs = path.join(story, file)
+  const before = fs.readFileSync(abs, 'utf8')
+  const fm = before.slice(0, before.indexOf('---', 3) + 4)
+  fs.writeFileSync(abs, fm + 'FIRST changed.\n\nSECOND changed.\n')
+
+  proseAcceptParagraph(file, 0)
+
+  // HEAD took paragraph 0 only
+  const head = git(story, 'show', `HEAD:${file}`)
+  assert.match(head, /FIRST changed\./)
+  assert.doesNotMatch(head, /SECOND changed\./)
+  // the working tree still holds everything the author wrote
+  const wt = fs.readFileSync(abs, 'utf8')
+  assert.match(wt, /FIRST changed\./)
+  assert.match(wt, /SECOND changed\./)
+  // and the remaining diff is exactly the paragraph not yet accepted
+  assert.equal(proseDraft().changes.filter(c => c.file === file).length, 1)
+})
+
+test('accepting the last pending paragraph leaves the scene matching main', () => {
+  reset()
+  const file = 'prose/ch-01/scene-01.md'
+  const abs = path.join(story, file)
+  const before = fs.readFileSync(abs, 'utf8')
+  const fm = before.slice(0, before.indexOf('---', 3) + 4)
+  fs.writeFileSync(abs, fm + 'Only one paragraph, changed.\n')
+  proseAcceptParagraph(file, 0)
+  assert.equal(proseDraft().changes.filter(c => c.file === file).length, 0)
+})
+
+test('a paragraph accept is refused on an added scene, and on a bad index', () => {
+  reset()
+  writeScene(story, 'prose/ch-01/scene-09.md', 'sc.01-9', 'Brand new.')
+  assert.throws(() => proseAcceptParagraph('prose/ch-01/scene-09.md', 0), HttpError)
+  const file = 'prose/ch-01/scene-01.md'
+  const abs = path.join(story, file)
+  fs.writeFileSync(abs, fs.readFileSync(abs, 'utf8') + '\n\nAn extra line.\n')
+  assert.throws(() => proseAcceptParagraph(file, 99), HttpError)
+  reset()
 })

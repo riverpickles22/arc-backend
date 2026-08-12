@@ -175,6 +175,94 @@ export function proseAccept(message?: string): { hash: string; files: string[] }
   return { hash: git('rev-parse', '--short', 'HEAD').trim(), files: draft.changes.map(c => c.file) }
 }
 
+/** Write a scene's body back, leaving its frontmatter byte-identical.
+ *
+ *  The edit lands in the working tree, which IS the draft layer — so it needs
+ *  no new gate, no new store, and shows up as an ordinary pending change the
+ *  author accepts or discards like any other.
+ *
+ *  `baseline` is the body the edit started from. arc has no file watcher, so
+ *  the viewer cannot know the author also has this scene open in their own
+ *  editor; comparing against what they started from is what turns a silent
+ *  clobber into a refusal. Whitespace-insensitive, because a trailing newline
+ *  is not a conflict.
+ */
+export function proseWrite(file: string, body: string, baseline?: string): ProseScene {
+  if (!file.startsWith('prose/')) throw new HttpError(400, `not a prose file: ${file}`)
+  const abs = resolveWithin(path.join(STORY, 'prose'), file.slice('prose/'.length))
+  if (!abs.endsWith('.md')) throw new HttpError(400, `not a scene file: ${file}`)
+  if (!fs.existsSync(abs)) throw new HttpError(404, `no such scene: ${file}`)
+
+  const before = fs.readFileSync(abs, 'utf8')
+  const fm = before.match(FM_RE)
+  if (!fm) throw new HttpError(400, `${file} has no scene frontmatter`)
+
+  const current = before.slice(fm[0].length)
+  const settle = (t: string) => t.replace(/\r\n/g, '\n').trimEnd()
+  if (baseline !== undefined && settle(baseline) !== settle(current)) {
+    throw new HttpError(409, `${file} changed underneath this edit — reload the manuscript and reapply it`)
+  }
+
+  const next = fm[0] + (body.endsWith('\n') ? body : body + '\n')
+  fs.writeFileSync(abs, next)
+  const scene = parseScene(next, file)
+  if (!scene) {
+    fs.writeFileSync(abs, before)   // the author's words are never the casualty
+    throw new HttpError(400, `${file} no longer parses as a scene — reverted`)
+  }
+  return scene
+}
+
+/** Accept ONE paragraph of a scene, leaving every other change pending.
+ *
+ *  Accept has been all-or-nothing: `git add -A -- prose` takes every edit in
+ *  every scene as a single judgment, which is the opposite of what a review
+ *  gate is for. A chapter with four changes is four decisions.
+ *
+ *  The mechanism is partial staging with the paragraph as the unit, because a
+ *  paragraph is what an author actually judges. Build a version of the scene
+ *  carrying the accepted paragraph's new text and main's text everywhere else,
+ *  commit that, then put the author's full working tree back. HEAD gains the
+ *  one change; the working tree keeps the rest, so the remaining diff is
+ *  exactly what has not been decided yet.
+ *
+ *  The working tree is restored in a finally: a failure here must never cost
+ *  the author words they have not accepted.
+ */
+export function proseAcceptParagraph(file: string, index: number, message?: string): { hash: string; file: string } {
+  const draft = proseDraft()
+  if (!draft.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer to accept')
+  const change = draft.changes.find(c => c.file === file)
+  if (!change) throw new HttpError(404, `no draft change for ${file}`)
+  if (change.status !== 'modified' || !change.main) {
+    throw new HttpError(400, 'a paragraph can only be accepted on a modified scene — accept an added or deleted scene whole')
+  }
+  const abs = resolveWithin(path.join(STORY, 'prose'), file.slice('prose/'.length))
+  const working = fs.readFileSync(abs, 'utf8')
+  const fm = working.match(FM_RE)
+  if (!fm) throw new HttpError(400, `${file} has no scene frontmatter`)
+
+  const split = (body: string) => body.split(/\n{2,}/).map(x => x.trim()).filter(Boolean)
+  const draftParas = split(working.slice(fm[0].length))
+  const mainParas = split(change.main.body)
+  if (index < 0 || index >= draftParas.length) throw new HttpError(400, `no paragraph ${index} in ${file}`)
+
+  // main's paragraphs, with the accepted one carrying the draft's text. A
+  // paragraph the draft added sits at the end of what main had.
+  const merged = [...mainParas]
+  if (index < merged.length) merged[index] = draftParas[index]
+  else merged.push(draftParas[index])
+
+  try {
+    fs.writeFileSync(abs, fm[0] + merged.join('\n\n') + '\n')
+    git('add', '--', file)
+    git('commit', '-m', message?.trim() || `prose: accept one change in ${path.basename(file)}`, '--', file)
+    return { hash: git('rev-parse', '--short', 'HEAD').trim(), file }
+  } finally {
+    fs.writeFileSync(abs, working)   // the author's unaccepted words, always
+  }
+}
+
 /** Roll one file back to main. The path arrives from the browser — reject
  *  anything that escapes prose/, including symlink escapes. */
 export function proseDiscard(file: string): void {

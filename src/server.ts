@@ -13,7 +13,7 @@ import type {
 } from 'arc-canon-graph'
 import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
-import { docsArticles, materialItems, proseAccept, proseDiscard, proseDraft, proseScenes, readAsset, viewConfig } from './story'
+import { docsArticles, materialItems, proseAccept, proseAcceptParagraph, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig } from './story'
 import { handleChat } from './agent'
 import { annotations, createAnnotation, updateAnnotation } from './annotations'
 import { attention } from './attention'
@@ -149,6 +149,27 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         }
       }
       json(res, 200, { ...result, ...(capture ? { capture } : {}) } satisfies ProseAcceptResponse)
+    },
+  },
+
+  // Write a scene's body back into the working tree — the draft layer. The
+  // baseline is what the edit started from: without a file watcher it is the
+  // only way to tell an edit apart from a clobber.
+  '/api/prose/scene': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { file?: unknown; body?: unknown; baseline?: unknown }
+      if (typeof b.file !== 'string' || typeof b.body !== 'string') throw new HttpError(400, 'file and body required')
+      if (b.baseline !== undefined && typeof b.baseline !== 'string') throw new HttpError(400, 'baseline must be a string')
+      json(res, 200, proseWrite(b.file, b.body, b.baseline))
+    },
+  },
+
+  // Accept one paragraph, leaving the rest of the draft pending.
+  '/api/prose/accept-paragraph': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { file?: unknown; paragraph?: unknown; message?: unknown }
+      if (typeof b.file !== 'string' || typeof b.paragraph !== 'number') throw new HttpError(400, 'file and paragraph required')
+      json(res, 200, proseAcceptParagraph(b.file, b.paragraph, typeof b.message === 'string' ? b.message : undefined))
     },
   },
 
