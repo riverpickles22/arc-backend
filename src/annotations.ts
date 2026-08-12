@@ -83,14 +83,33 @@ const STATUSES = ['open', 'working', 'resolved', 'dropped'] as const
 
 /** Change a note's status. Resolving or dropping is the author's act — a
  *  machine may propose against a note but never closes one (§14). */
-export function updateAnnotation(id: string, status: string): ResolvedAnnotation {
-  if (!(STATUSES as readonly string[]).includes(status)) {
+/** Change a note's status, its body, or both.
+ *
+ *  The anchor is never touched: revising a thought is not re-anchoring it, and
+ *  a note that quietly moved would be exactly the silent relocation §14
+ *  refuses to do. No edit timestamp either — annotations are committed with
+ *  the story, so git already holds when a thought changed and what it said
+ *  before, and a schema field would say it worse. */
+export function updateAnnotation(
+  id: string,
+  patch: { status?: string; body?: string },
+): ResolvedAnnotation {
+  const { status, body } = patch
+  if (status === undefined && body === undefined) {
+    throw new HttpError(400, 'nothing to update: pass a status, a body, or both')
+  }
+  if (status !== undefined && !(STATUSES as readonly string[]).includes(status)) {
     throw new HttpError(400, `status must be one of ${STATUSES.join(', ')}`)
+  }
+  // An emptied note is a dropped note; making it say nothing is not an edit.
+  if (body !== undefined && !body.trim()) {
+    throw new HttpError(400, 'a note cannot be emptied — drop it instead')
   }
   const file = fileFor(id)
   if (!id.startsWith('note.') || !fs.existsSync(file)) throw new HttpError(404, `no such note: ${id}`)
   const note = yamlLoad(fs.readFileSync(file, 'utf8')) as AnnotationLike
-  note.status = status as AnnotationLike['status']
+  if (status !== undefined) note.status = status as AnnotationLike['status']
+  if (body !== undefined) note.body = body.trim()
   fs.writeFileSync(file, yamlDump(note, { indent: 2, lineWidth: 100, noRefs: true, sortKeys: false }))
   return resolveAnnotations([note], sceneBodies())[0]
 }

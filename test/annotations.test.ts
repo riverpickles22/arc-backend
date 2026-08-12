@@ -44,7 +44,7 @@ test('when the passage is rewritten away the note orphans, keeping its quote', (
 
 test('a dropped note leaves the orphan list — it is no longer the author’s problem', () => {
   const n = annotations()[0]
-  updateAnnotation(n.id, 'dropped')
+  updateAnnotation(n.id, { status: 'dropped' })
   assert.equal(orphaned().length, 0)
   assert.equal(annotations()[0].status, 'dropped')
 })
@@ -52,8 +52,33 @@ test('a dropped note leaves the orphan list — it is no longer the author’s p
 test('guards: unknown scene, empty body, bad status, unknown id', () => {
   assert.throws(() => createAnnotation({ scene: 'sc.99-9', paragraph: 0, quote: 'x', body: 'y' }), HttpError)
   assert.throws(() => createAnnotation({ scene: 'sc.01-1', paragraph: 0, quote: 'x', body: '   ' }), HttpError)
-  assert.throws(() => updateAnnotation('note.001', 'nonsense'), HttpError)
-  assert.throws(() => updateAnnotation('note.999', 'open'), HttpError)
+  assert.throws(() => updateAnnotation('note.001', { status: 'nonsense' }), HttpError)
+  assert.throws(() => updateAnnotation('note.999', { status: 'open' }), HttpError)
+})
+
+test('a note can be revised — the thought changes, the anchor does not', () => {
+  const before = annotations()[0]
+  const after = updateAnnotation(before.id, { body: '  Sharper on the second reading.  ' })
+  assert.equal(after.body, 'Sharper on the second reading.')   // trimmed
+  assert.deepEqual(after.anchor, before.anchor)                // never re-anchored
+  assert.equal(after.status, before.status)
+  assert.equal(after.id, before.id)
+})
+
+test('status and body can move together, or one without the other', () => {
+  const id = annotations()[0].id
+  const both = updateAnnotation(id, { status: 'working', body: 'Revised while working.' })
+  assert.equal(both.status, 'working')
+  assert.equal(both.body, 'Revised while working.')
+  assert.equal(updateAnnotation(id, { body: 'Body only.' }).status, 'working')
+  assert.equal(updateAnnotation(id, { status: 'open' }).body, 'Body only.')
+})
+
+test('an edit cannot empty a note, and an empty patch is refused', () => {
+  const id = annotations()[0].id
+  assert.throws(() => updateAnnotation(id, { body: '   ' }), HttpError)   // that is what drop is for
+  assert.throws(() => updateAnnotation(id, {}), HttpError)
+  assert.ok(annotations()[0].body.trim().length > 0)
 })
 
 test('notes live in annotations/ as ordinary editable yaml', () => {

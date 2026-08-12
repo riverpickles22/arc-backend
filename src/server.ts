@@ -104,9 +104,11 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // Status only — resolving or dropping a note is the author's act.
   '/api/annotations/update': {
     POST: async (req, res) => {
-      const b = (await parsedBody(req)) as { id?: unknown; status?: unknown }
-      if (typeof b.id !== 'string' || typeof b.status !== 'string') throw new HttpError(400, 'id and status required')
-      json(res, 200, updateAnnotation(b.id, b.status))
+      const b = (await parsedBody(req)) as { id?: unknown; status?: unknown; body?: unknown }
+      if (typeof b.id !== 'string') throw new HttpError(400, 'id required')
+      if (b.status !== undefined && typeof b.status !== 'string') throw new HttpError(400, 'status must be a string')
+      if (b.body !== undefined && typeof b.body !== 'string') throw new HttpError(400, 'body must be a string')
+      json(res, 200, updateAnnotation(b.id, { status: b.status, body: b.body }))
     },
   },
 
