@@ -11,14 +11,15 @@ import os from 'node:os'
 import path from 'node:path'
 import type {
   AnalyzeResponse, ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, DraftSceneResponse,
-  AnnotationsResponse, DumpDecisionResponse, DumpResponse, HealthResponse, MaterialResponse, OkResponse,
+  AnnotationsResponse, DumpDecisionResponse, DumpResponse, DumpsResponse, HealthResponse, MaterialResponse,
+  OkResponse, UpdateMaterialResponse,
   ProseAcceptResponse, ProseResponse,
   RatifyRuleResponse, StyleResponse,
 } from 'arc-canon-graph'
 import { STORY } from './config'
 import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
-import { docsArticles, git, materialItems, proseAccept, proseAcceptParagraph, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig } from './story'
+import { docsArticles, git, materialItems, updateMaterial, proseAccept, proseAcceptParagraph, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig } from './story'
 import { handleChat } from './agent'
 import { annotations, createAnnotation, updateAnnotation } from './annotations'
 import { attention } from './attention'
@@ -30,7 +31,7 @@ import { currentEngine } from './engine'
 import { authorStylePath, loadStyleLayers } from './style'
 import { QUEUE_REL, ratifyRule, readQueue } from './style-queue'
 import { runLearnStyle } from './learn-style'
-import { decideDump, fileDump } from './dump'
+import { decideDump, deleteDump, fileDump, listDumps } from './dump'
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => void | Promise<void>
 
@@ -83,6 +84,37 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // Story material: the unplaced layer (conventions §12).
   '/api/material': {
     GET: (_req, res) => json(res, 200, { items: materialItems() } satisfies MaterialResponse),
+  },
+
+  // The raw dumps: what the author typed, before any model read it.
+  '/api/dumps': {
+    GET: (_req, res) => json(res, 200, { dumps: listDumps() } satisfies DumpsResponse),
+  },
+
+  // Delete one raw dump. Real deletion, unlike material — a dump is transient
+  // telemetry that has done its job once the thought is filed, where a
+  // material item is a record of intent and §12 keeps those.
+  '/api/dumps/delete': {
+    POST: async (req, res) => {
+      const body = (await parsedBody(req)) as { file?: unknown }
+      if (typeof body.file !== 'string') throw new HttpError(400, 'file required')
+      deleteDump(body.file)
+      json(res, 200, { ok: true } satisfies OkResponse)
+    },
+  },
+
+  // Correct a filed thought, or drop it. Deterministic — no model here.
+  '/api/material/update': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { id?: unknown; body?: unknown; purpose?: unknown; status?: unknown }
+      if (typeof b.id !== 'string' || !b.id) throw new HttpError(400, 'id required')
+      for (const k of ['body', 'purpose', 'status'] as const) {
+        if (b[k] !== undefined && typeof b[k] !== 'string') throw new HttpError(400, `${k} must be a string`)
+      }
+      json(res, 200, {
+        item: updateMaterial(b.id, { body: b.body as string | undefined, purpose: b.purpose as string | undefined, status: b.status as string | undefined }),
+      } satisfies UpdateMaterialResponse)
+    },
   },
 
   // The brain dump: free text filed as material. The author's front door to

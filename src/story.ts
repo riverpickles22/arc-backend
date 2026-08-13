@@ -13,6 +13,8 @@ import { STORY } from './config'
 import { clearGenerated } from './ledger'
 import { HttpError } from './http'
 import { resolveWithin } from './safe-path'
+import { canonicalYaml } from './agent'
+import { validateStory } from './canon'
 
 // The wire types live in arc-canon-graph (graph/api-types.ts) — one source
 // of truth shared with the frontend. Re-exported so importers of this
@@ -112,6 +114,77 @@ export function materialItems(): MaterialItem[] {
     if (item && typeof item.id === 'string') out.push(item)
   }
   return out
+}
+
+/** The statuses a material item may hold (conventions §12). */
+const MATERIAL_STATUS = ['unplaced', 'placed', 'absorbed', 'dropped'] as const
+export type MaterialStatus = (typeof MATERIAL_STATUS)[number]
+
+/** Correct a filed thought, or change where it sits in its lifecycle.
+ *
+ *  Arc files a thought in its OWN words, and sometimes reads it slightly
+ *  wrong; without this the author's only recourse is opening the YAML in an
+ *  editor, which is exactly the errand the capture box exists to remove.
+ *
+ *  Only `body`, `purpose` and `status` are writable. Type, id and related are
+ *  structural: changing them is a canon-shaped act and this path holds no such
+ *  authority — the same discipline the material worker's claim enforces.
+ *
+ *  DROP, NEVER DELETE. A dropped item keeps its file and its id and stops
+ *  counting as unplaced: "dropped beats deletion — intent history is story
+ *  history" (§12). Restoring it is setting the status back.
+ */
+export function updateMaterial(
+  id: string,
+  patch: { body?: string; purpose?: string; status?: string },
+): MaterialItem {
+  const root = path.join(STORY, 'material')
+  if (!fs.existsSync(root)) throw new HttpError(404, 'this story has no material layer yet')
+
+  // Match by the id INSIDE the file rather than trusting the filename to
+  // encode it — hand-written material need not follow the minting convention.
+  let hit: { abs: string; item: Record<string, unknown> } | null = null
+  for (const name of fs.readdirSync(root).sort()) {
+    if (!name.endsWith('.yaml')) continue
+    const abs = path.join(root, name)
+    try {
+      const item = yamlLoad(fs.readFileSync(abs, 'utf8')) as Record<string, unknown> | null
+      if (item && item.id === id) { hit = { abs, item }; break }
+    } catch { /* an unreadable file is not the one we are looking for */ }
+  }
+  if (!hit) throw new HttpError(404, `no material item ${id}`)
+
+  if (patch.status !== undefined && !MATERIAL_STATUS.includes(patch.status as MaterialStatus)) {
+    throw new HttpError(400, `status must be one of ${MATERIAL_STATUS.join(', ')}`)
+  }
+  if (patch.body !== undefined && !patch.body.trim()) {
+    throw new HttpError(400, 'a thought with no body is a deletion — drop it instead')
+  }
+
+  const next = { ...hit.item }
+  if (patch.body !== undefined) next.body = patch.body.trim()
+  if (patch.purpose !== undefined) {
+    if (patch.purpose.trim()) next.purpose = patch.purpose.trim()
+    else delete next.purpose
+  }
+  if (patch.status !== undefined) next.status = patch.status
+
+  const prev = fs.readFileSync(hit.abs, 'utf8')
+  fs.writeFileSync(hit.abs, canonicalYaml(next))
+  if (!validateStory().ok) {
+    // The change MIGHT have broken the story — or the story might have been
+    // broken already, in which case blaming this edit would lock the author
+    // out of their own notes over a fault somewhere else entirely. So put the
+    // file back and ask: was it failing before?
+    fs.writeFileSync(hit.abs, prev)
+    const wasBroken = validateStory()
+    if (wasBroken.ok) {
+      throw new HttpError(422, `that change does not validate — nothing was written:\n${wasBroken.output}`)
+    }
+    // Already failing. Not this edit's doing, and not this route's business.
+    fs.writeFileSync(hit.abs, canonicalYaml(next))
+  }
+  return next as unknown as MaterialItem
 }
 
 // ---- the draft layer -----------------------------------------------------

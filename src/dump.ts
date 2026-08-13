@@ -57,6 +57,52 @@ export function saveRaw(text: string, at: string): string {
   }
 }
 
+export interface RawDump { file: string; at: string; text: string }
+
+/** Every raw dump still on disk, newest first.
+ *
+ *  These are what the author actually typed, saved before any model ran. They
+ *  are deliberately transient — under .arc/, gitignored — and exist so a
+ *  failed pass costs a retry rather than a thought. */
+export function listDumps(): RawDump[] {
+  let names: string[]
+  try {
+    names = fs.readdirSync(dumpDir()).filter(n => n.endsWith('.md'))
+  } catch {
+    return []
+  }
+  const out: RawDump[] = []
+  for (const file of names) {
+    try {
+      const body = fs.readFileSync(path.join(dumpDir(), file), 'utf8')
+      // saveRaw writes "<iso>\n\n<text>\n" — split on the first blank line so
+      // a dump that itself contains blank lines survives intact.
+      const gap = body.indexOf('\n\n')
+      const at = gap > 0 ? body.slice(0, gap).trim() : ''
+      out.push({ file, at, text: (gap > 0 ? body.slice(gap + 2) : body).trimEnd() })
+    } catch { /* a dump that cannot be read is not worth failing the list over */ }
+  }
+  return out.sort((a, b) => b.file.localeCompare(a.file))
+}
+
+/** Delete one raw dump.
+ *
+ *  Real deletion, unlike material — and the difference is principled. A raw
+ *  dump is transient telemetry that has already done its job once the thought
+ *  is filed; a material item is a record of intent, and conventions §12 keeps
+ *  those ("dropped beats deletion — intent history is story history").
+ *
+ *  Takes a NAME, never a path: the traversal question does not arise if the
+ *  caller was never able to ask it. */
+export function deleteDump(file: string): void {
+  if (!file || file.includes('/') || file.includes('\\') || file.includes('..') || !file.endsWith('.md')) {
+    throw new HttpError(400, 'not a dump file name')
+  }
+  const abs = path.join(dumpDir(), file)
+  if (!fs.existsSync(abs)) throw new HttpError(404, 'no such dump — it may already be gone')
+  fs.unlinkSync(abs)
+}
+
 /** What the worker actually put on disk, read back from the files themselves
  *  rather than from anything the model said it did. The viewer shows the
  *  author what arc understood, so it has to be the record, not the claim. */
