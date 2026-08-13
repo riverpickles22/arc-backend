@@ -122,7 +122,7 @@ export function materialItems(): MaterialItem[] {
 // canon uses); discarding a file is a surfaced git checkout. A story that
 // isn't a git repository simply has no draft layer.
 
-function git(...args: string[]): string {
+export function git(...args: string[]): string {
   return execFileSync('git', ['-C', STORY, ...args], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
 }
 

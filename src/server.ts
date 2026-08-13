@@ -7,13 +7,17 @@
 // the browser. Every JSON payload is checked against the shared wire types
 // (arc-canon-graph/api-types.ts) with `satisfies`.
 import http from 'node:http'
+import os from 'node:os'
+import path from 'node:path'
 import type {
   AnalyzeResponse, ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, DraftSceneResponse,
-  AnnotationsResponse, HealthResponse, MaterialResponse, OkResponse, ProseAcceptResponse, ProseResponse, StyleResponse,
+  AnnotationsResponse, HealthResponse, MaterialResponse, OkResponse, ProseAcceptResponse, ProseResponse,
+  RatifyRuleResponse, StyleResponse,
 } from 'arc-canon-graph'
+import { STORY } from './config'
 import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
-import { docsArticles, materialItems, proseAccept, proseAcceptParagraph, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig } from './story'
+import { docsArticles, git, materialItems, proseAccept, proseAcceptParagraph, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig } from './story'
 import { handleChat } from './agent'
 import { annotations, createAnnotation, updateAnnotation } from './annotations'
 import { attention } from './attention'
@@ -22,7 +26,9 @@ import { runAnalysis } from './analyze'
 import { runSuggest } from './suggest'
 import { runDraft } from './draft'
 import { currentEngine } from './engine'
-import { loadStyleLayers } from './style'
+import { authorStylePath, loadStyleLayers } from './style'
+import { QUEUE_REL, ratifyRule, readQueue } from './style-queue'
+import { runLearnStyle } from './learn-style'
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => void | Promise<void>
 
@@ -113,13 +119,43 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     },
   },
 
-  // The style contract (conventions §10): both layers, as they are on disk.
-  // A read — no engine guard. `proposed` is empty until the learning pass
-  // ships; it is in the shape now so the page never has to change.
+  // The style contract (conventions §10): both layers, as they are on disk,
+  // plus the queue of rules arc has argued for and the author has not
+  // ratified. A read — no engine guard.
   '/api/style': {
     GET: (_req, res) => {
       const { author, story } = loadStyleLayers()
-      json(res, 200, { author, story, proposed: [] } satisfies StyleResponse)
+      json(res, 200, { author, story, proposed: readQueue() } satisfies StyleResponse)
+    },
+  },
+
+  // Ratify a proposed rule into a layer, or dismiss it. Deterministic: no
+  // model runs here. Ratifying commits the two style files — the contract's
+  // visible history (git log --follow -- docs/style.md) IS the "grows slowly"
+  // goal — but a story without git simply keeps the change in its working
+  // tree, which is a ratification too.
+  '/api/style/proposed': {
+    POST: async (req, res) => {
+      const body = (await parsedBody(req)) as { id?: unknown; action?: unknown; layer?: unknown }
+      if (typeof body.id !== 'string' || !body.id) throw new HttpError(400, 'id required')
+      if (body.action !== 'ratify' && body.action !== 'dismiss') throw new HttpError(400, "action must be 'ratify' or 'dismiss'")
+      const layer = body.layer === 'author' ? 'author' : 'story'
+
+      const { path: target, remaining } = ratifyRule(body.id, body.action, layer, l =>
+        l === 'author' ? authorStylePath(process.env, os.homedir()) : path.join(STORY, 'docs', 'style.md'))
+
+      // Only the story layer lives in the story repo; the author layer is in
+      // the user's home and is not arc's to commit.
+      let committed = false
+      try {
+        git('add', '--', 'docs/style.md', QUEUE_REL)
+        git('commit', '-m', `style: ${body.action} proposed rule ${body.id}`, '--', 'docs/style.md', QUEUE_REL)
+        committed = true
+      } catch {
+        committed = false // not a git repo, or nothing staged — the file change stands either way
+      }
+
+      json(res, 200, { ok: true, action: body.action, path: target, remaining: remaining.length, committed } satisfies RatifyRuleResponse)
     },
   },
 
@@ -149,7 +185,22 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
           console.error('[error] capture pass failed (the accept itself succeeded):', e)
         }
       }
-      json(res, 200, { ...result, ...(capture ? { capture } : {}) } satisfies ProseAcceptResponse)
+
+      // The learning pass: what did the author change about what arc wrote?
+      // Non-fatal on the same contract as capture — losing a style proposal is
+      // a smaller harm than failing an accept that already committed. It runs
+      // on every accept, not behind the capture flag: it costs nothing when
+      // the scene was written by hand or kept unedited, because it never
+      // reaches the model in those cases.
+      let learned
+      try {
+        const r = await runLearnStyle(result.files)
+        if (r.added.length) learned = { proposed: r.added.length }
+      } catch (e) {
+        console.error('[error] style learning pass failed (the accept itself succeeded):', e)
+      }
+
+      json(res, 200, { ...result, ...(capture ? { capture } : {}), ...(learned ?? {}) } satisfies ProseAcceptResponse)
     },
   },
 
