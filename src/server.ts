@@ -19,6 +19,7 @@ import { annotations, createAnnotation, updateAnnotation } from './annotations'
 import { attention } from './attention'
 import { runCapture } from './capture'
 import { runAnalysis } from './analyze'
+import { runSuggest } from './suggest'
 import { runDraft } from './draft'
 import { currentEngine } from './engine'
 import { loadStyleLayers } from './style'
@@ -213,6 +214,19 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // The analysis pass: what would this pending draft do to the story? Runs
   // before the accept decision and writes nothing — its briefing is wholly
   // in the argued register (conventions §11).
+  // Selection suggestions: rephrase against the style contract, or synonyms
+  // with nuance. Read-only; argued register; never applied by the machine.
+  '/api/prose/suggest': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { kind?: unknown; selection?: unknown; paragraph?: unknown; file?: unknown }
+      if (b.kind !== 'rephrase' && b.kind !== 'synonyms') throw new HttpError(400, "kind must be 'rephrase' or 'synonyms'")
+      if (typeof b.selection !== 'string' || !b.selection.trim()) throw new HttpError(400, 'selection required')
+      if (b.paragraph !== undefined && typeof b.paragraph !== 'string') throw new HttpError(400, 'paragraph must be a string')
+      if (b.file !== undefined && typeof b.file !== 'string') throw new HttpError(400, 'file must be a string')
+      json(res, 200, await runSuggest({ kind: b.kind, selection: b.selection, paragraph: b.paragraph, file: b.file }))
+    },
+  },
+
   '/api/prose/analyze': {
     POST: async (_req, res) => {
       if (!currentEngine()) {
