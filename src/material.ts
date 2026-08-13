@@ -36,8 +36,21 @@ import type { IntentEnvelope } from './intent'
 import type { Run } from './run'
 
 const WORKER_RULES = `You are arc's MATERIAL WORKER. The author said something about their story
-that is not yet a decision. Your job is to file it as ONE material item so it
-is not lost — and to leave it exactly as undecided as they left it.
+that is not yet a decision. Your job is to file it so it is not lost — and to
+leave it exactly as undecided as they left it.
+
+ONE ITEM PER DISTINCT IDEA. Not one per message. A message from the terminal
+usually holds a single considered thought; a message typed into the capture
+box is often a brain dump holding several at once. File every distinct idea,
+each as its own item with its own minted id.
+
+  - Never merge two unrelated ideas into one item to keep the count down. A
+    hunt that rhymes with the prologue and a radio station that goes off the
+    air are two items, however casually the author ran them together.
+  - Never split one idea into several to raise it. A need, its purpose and
+    its constraints are one item, not three.
+  - If the author trails off mid-thought, file what is there. Half an idea
+    they can finish later beats an idea they have to remember.
 
 WHAT MATERIAL IS (conventions §12): the first rung of the ladder — material,
 proposed, canon, manuscript. Material is never load-bearing. Nothing in the
@@ -53,7 +66,8 @@ placement is unresolved. You are capturing creative intent, not committing
 story truth. If you find yourself naming a person the author did not name,
 stop.
 
-THE FILE. Write exactly one file to material/<slug>.yaml with write_material_file:
+THE FILE. Write one file per idea to material/<slug>.yaml with write_material_file,
+calling it once for each. Mint each id separately:
 
   id: mat.<slug>          — from mint_id, never invented
   type: character-need | unplaced-scene | motif-idea | relationship | obligation | gap
@@ -72,7 +86,8 @@ should change, do NOT try: say so in your final message and let the author
 decide. A refused write is a correct outcome, not an error to work around.
 
 Finish with two or three sentences: what you filed, and what you deliberately
-left open.`
+left open. If you decided two things in the message were one idea, or one was
+two, say which — that judgment is the author's to overturn.`
 
 /** Write one material item, under capability. Material is not canon: it has
  *  its own lifecycle (unplaced → placed → absorbed | dropped) and no
@@ -184,10 +199,16 @@ export interface WorkerResult {
 const CLI_NOTE = `ENGINE NOTE: you have no tools in this mode. Do not attempt tool calls, and
 do not write a file. Reply with ONLY one JSON object:
 
-{"slug_hint":"a short kebab-case name for this item, e.g. carlos-childhood-friend",
- "item":{"type":"character-need","status":"unplaced","body":"...","purpose":"...",
-         "constraints":["..."],"related":["char.carlos"]},
+{"items":[
+   {"slug_hint":"a short kebab-case name, e.g. carlos-childhood-friend",
+    "type":"character-need","status":"unplaced","body":"...","purpose":"...",
+    "constraints":["..."],"related":["char.carlos"]}
+ ],
  "account":"two or three sentences: what you filed and what you deliberately left open"}
+
+ONE ENTRY PER DISTINCT IDEA. Most messages hold one, so "items" usually has a
+single entry; a brain dump may hold several, and every one of them belongs in
+the list. Never drop an idea because another is already there.
 
 Omit any field you do not honestly know — especially "window". Do NOT include
 an "id": arc assigns it. No prose outside the JSON, no code fence.`
@@ -216,26 +237,41 @@ function runMaterialWorkerCli(
   const end = raw.lastIndexOf('}')
   if (start < 0 || end < start) throw new Error(`material worker did not return JSON: ${raw.slice(0, 200)}`)
   const out = JSON.parse(raw.slice(start, end + 1)) as {
+    items?: Record<string, unknown>[]
+    /** The pre-A18-4 shape: one item, beside its slug hint. Still accepted, so
+     *  a worker that answers in the old form files correctly rather than
+     *  failing the run. */
     slug_hint?: string
     item?: Record<string, unknown>
     account?: string
   }
-  if (!out.item) throw new Error('material worker returned no item')
+  const items = Array.isArray(out.items) && out.items.length
+    ? out.items
+    : out.item ? [{ ...out.item, slug_hint: out.slug_hint }] : []
+  if (!items.length) throw new Error('material worker returned no items')
 
   if (!cap.creates.some(g => g.type === '*' || g.type === 'material'))
     return { reply: 'SCOPE_EXCEEDED — this claim grants no CREATE material.', actions }
 
-  const id = mintId('material', out.slug_hint || envelope.requested_outcome || 'untitled', takenIds())
-  if (!covered(cap.writes, id)) {
-    cap.writes = [...cap.writes, id]
-    run.recordExpansion(node, `WRITE ${id}`)
-  }
-  actions.push({ tool: 'mint_id', path: id, ok: true, detail: `granted writes ${id}` })
+  // One mint, one grant, one file per idea. The ids are minted here in Node
+  // rather than by the model — the same invariant the tool path enforces, and
+  // the reason this path cannot invent a permanent id even in principle. Each
+  // pass through takenIds() sees the ids already written by this loop, so two
+  // ideas with similar slugs cannot collide.
+  const results: string[] = []
+  for (const entry of items) {
+    const { slug_hint: hint, ...item } = entry
+    const id = mintId('material', (typeof hint === 'string' && hint) || envelope.requested_outcome || 'untitled', takenIds())
+    if (!covered(cap.writes, id)) {
+      cap.writes = [...cap.writes, id]
+      run.recordExpansion(node, `WRITE ${id}`)
+    }
+    actions.push({ tool: 'mint_id', path: id, ok: true, detail: `granted writes ${id}` })
 
-  delete out.item.id
-  const rel = `material/${id.slice('mat.'.length)}.yaml`
-  const result = writeMaterial(rel, { id, ...out.item }, cap, actions)
-  return { reply: `${out.account ?? ''}\n\n${result}`.trim(), actions }
+    delete item.id
+    results.push(writeMaterial(`material/${id.slice('mat.'.length)}.yaml`, { id, ...item }, cap, actions))
+  }
+  return { reply: `${out.account ?? ''}\n\n${results.join('\n')}`.trim(), actions }
 }
 
 export async function runMaterialWorker(
@@ -252,7 +288,7 @@ export async function runMaterialWorker(
     `=== THE AUTHOR'S REQUEST, AS INTAKE READ IT ===\n${JSON.stringify(envelope, null, 2)}`,
     `=== WHAT THE AUTHOR ACTUALLY SAID ===\n${run.root.raw_author_input}`,
     `=== YOUR CONTEXT (every fact here carries the reason it was included) ===\n${context}`,
-    'File the material item.',
+    'File the material. One write_material_file call per distinct idea.',
   ].join('\n\n')
 
   const final = await getClient().beta.messages.toolRunner({

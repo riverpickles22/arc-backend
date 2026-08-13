@@ -11,7 +11,8 @@ import os from 'node:os'
 import path from 'node:path'
 import type {
   AnalyzeResponse, ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, DraftSceneResponse,
-  AnnotationsResponse, HealthResponse, MaterialResponse, OkResponse, ProseAcceptResponse, ProseResponse,
+  AnnotationsResponse, DumpDecisionResponse, DumpResponse, HealthResponse, MaterialResponse, OkResponse,
+  ProseAcceptResponse, ProseResponse,
   RatifyRuleResponse, StyleResponse,
 } from 'arc-canon-graph'
 import { STORY } from './config'
@@ -29,6 +30,7 @@ import { currentEngine } from './engine'
 import { authorStylePath, loadStyleLayers } from './style'
 import { QUEUE_REL, ratifyRule, readQueue } from './style-queue'
 import { runLearnStyle } from './learn-style'
+import { decideDump, fileDump } from './dump'
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => void | Promise<void>
 
@@ -59,7 +61,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   '/api/health': {
     GET: (_req, res) => {
       const check = validateStory()
-      json(res, check.ok ? 200 : 503, { ok: check.ok, validator: check.output } satisfies HealthResponse)
+      json(res, check.ok ? 200 : 503, { ok: check.ok, validator: check.output, engine: currentEngine() } satisfies HealthResponse)
     },
   },
 
@@ -81,6 +83,29 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // Story material: the unplaced layer (conventions §12).
   '/api/material': {
     GET: (_req, res) => json(res, 200, { items: materialItems() } satisfies MaterialResponse),
+  },
+
+  // The brain dump: free text filed as material. The author's front door to
+  // the work graph — everything past the raw save is slice 1's existing path
+  // (intake → claim → capability-gated worker → judge → author's decision).
+  '/api/dump': {
+    POST: async (req, res) => {
+      const body = (await parsedBody(req)) as { text?: unknown }
+      if (typeof body.text !== 'string') throw new HttpError(400, 'text required')
+      json(res, 200, (await fileDump(body.text)) satisfies DumpResponse)
+    },
+  },
+
+  // Keep or discard what a dump filed. Slice 1's author-decision gate,
+  // reaching the viewer for the first time.
+  '/api/dump/decide': {
+    POST: async (req, res) => {
+      const body = (await parsedBody(req)) as { run?: unknown; keep?: unknown; note?: unknown }
+      if (typeof body.run !== 'string' || !body.run) throw new HttpError(400, 'run required')
+      if (typeof body.keep !== 'boolean') throw new HttpError(400, 'keep must be true or false')
+      const out = await decideDump(body.run, body.keep, typeof body.note === 'string' ? body.note : undefined)
+      json(res, 200, { ok: true, ...out } satisfies DumpDecisionResponse)
+    },
   },
 
   // How the story is drawn — presentation config, kept out of canon.
