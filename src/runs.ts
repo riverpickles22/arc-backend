@@ -13,7 +13,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { STORY } from './config'
 import { HttpError } from './http'
-import { Run, type RunEvent, type Source } from './run'
+import { Run, subscribeRuns, type RunEvent, type Source } from './run'
 import type { RunOutcome } from './orchestrate'
 
 export interface RunSummary {
@@ -138,3 +138,57 @@ export function observe(id: string, detail: unknown): void {
   if (!e) throw new HttpError(404, `no such active run: ${id}`)
   e.run.emit('task.completed', undefined, detail)
 }
+
+// ---- attribution: whose change was that? ---------------------------------
+//
+// The watcher needs to know, for a path that just changed, whether a run
+// authorised it. The answer has to be available WHILE the run works, not after
+// it finishes — a material write and the claim expansion that authorised it
+// are milliseconds apart, and a run that has not yet been adopted is still a
+// run doing governed work.
+//
+// So the table is built from the bus. Every widening emits `claim.expanded`
+// naming what was granted, which is exactly the statement "this run is about
+// to write this". Nothing here needs the Run object, so nothing here needs a
+// dependency on how runs are executed.
+
+interface Claimed { run: string; at: number }
+
+const claims = new Map<string, Claimed>()
+
+/** How long a claim keeps explaining a change. Long enough to cover a slow
+ *  worker, short enough that a finished run stops taking credit for an edit
+ *  the author made afterwards in their own editor. */
+const CLAIM_TTL_MS = 5 * 60_000
+
+/** `mat.hog-hunters` is written to `material/hog-hunters.yaml` — the minting
+ *  convention, and the only id→path mapping arc actually makes. Anything that
+ *  already looks like a path is taken as one. */
+function pathsFor(granted: string): string[] {
+  const token = granted.replace(/^(WRITE|CREATE|PROPOSE)\s+/i, '').trim()
+  if (token.includes('/')) return [token]
+  if (token.startsWith('mat.')) return [`material/${token.slice('mat.'.length)}.yaml`]
+  return []
+}
+
+subscribeRuns(msg => {
+  if (msg.run && msg.event === 'claim.expanded') {
+    const granted = (msg.detail as { granted?: string } | undefined)?.granted
+    for (const p of pathsFor(granted ?? '')) claims.set(p, { run: msg.run, at: Date.now() })
+  }
+})
+
+/** The run that authorised this change, or null when nothing did.
+ *
+ *  Conservative on purpose: an unclaimed path is EXTERNAL, and being wrong in
+ *  that direction costs a truthful "changed outside a run" where being wrong
+ *  the other way credits a run with work it never did. */
+export function claimantOf(relPath: string): string | null {
+  const hit = claims.get(relPath)
+  if (!hit) return null
+  if (Date.now() - hit.at > CLAIM_TTL_MS) { claims.delete(relPath); return null }
+  return hit.run
+}
+
+/** Test seam: a fresh table, so one test's claims cannot explain another's. */
+export const _resetClaims = (): void => { claims.clear() }

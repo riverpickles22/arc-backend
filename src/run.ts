@@ -125,19 +125,31 @@ export function claimRunId(): string {
 // that throws, or a socket that died without saying so, must never fail the
 // run that was only trying to report progress.
 
-export type RunListener = (id: string, event: RunEvent) => void
+/** One message shape for everything the viewer watches, so it holds a single
+ *  subscription. `run: null` is a story-level event with no run behind it —
+ *  a file that changed outside any governed work, which arc must be able to
+ *  say plainly rather than dress up (work-graph.md §10). */
+export interface StreamMessage {
+  run: string | null
+  at: string
+  event: string
+  node?: string
+  detail?: unknown
+}
 
-const listeners = new Set<RunListener>()
+export type StreamListener = (message: StreamMessage) => void
 
-export function subscribeRuns(fn: RunListener): () => void {
+const listeners = new Set<StreamListener>()
+
+export function subscribeRuns(fn: StreamListener): () => void {
   listeners.add(fn)
   return () => listeners.delete(fn)
 }
 
-function publish(id: string, event: RunEvent): void {
+export function publishStream(message: StreamMessage): void {
   for (const fn of listeners) {
     try {
-      fn(id, event)
+      fn(message)
     } catch {
       // a broken listener is the listener's problem, never the run's
     }
@@ -178,7 +190,7 @@ export class Run {
     } catch {
       // telemetry only
     }
-    publish(this.root.run_id, rec)
+    publishStream({ run: this.root.run_id, ...rec })
   }
 
   recordExpansion(node: string, granted: string): void {

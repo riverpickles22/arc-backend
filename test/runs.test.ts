@@ -39,7 +39,7 @@ test('concurrent run creation never collides', async () => {
 
 test('emit reaches events.jsonl and every subscriber', () => {
   const seen: { id: string; event: string }[] = []
-  const stop = subscribeRuns((id, ev) => seen.push({ id, event: ev.event }))
+  const stop = subscribeRuns(m => seen.push({ id: m.run!, event: m.event }))
 
   const run = new Run('ui', 'a prompt worth recording')
   run.emit('intent.resolved', undefined, { ok: true })

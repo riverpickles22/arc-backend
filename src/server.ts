@@ -161,9 +161,9 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       })
       res.write('retry: 2000\n\n')
 
-      const send = (id: string, event: unknown) => {
+      const send = (message: unknown) => {
         try {
-          res.write(`data: ${JSON.stringify({ run: id, ...(event as object) })}\n\n`)
+          res.write(`data: ${JSON.stringify(message)}\n\n`)
         } catch { /* the unsubscribe below handles a dead socket */ }
       }
       const stop = subscribeRuns(send)
