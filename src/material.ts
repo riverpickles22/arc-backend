@@ -17,7 +17,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { betaTool } from '@anthropic-ai/sdk/helpers/beta/json-schema'
 import type { ChatAction } from 'arc-canon-graph'
 import { MODEL, STORY } from './config'
-import { canonJson, validateStory } from './canon'
+import { validateStory } from './canon'
 import { canonicalYaml, getClient, makeReadStoryTool } from './agent'
 import {
   type Capability,
@@ -31,6 +31,7 @@ import {
 import { load as yamlLoad } from 'js-yaml'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { resolveWithin } from './safe-path'
+import { renderContext } from './context'
 import { takenIds } from './records'
 import type { IntentEnvelope } from './intent'
 import type { Run } from './run'
@@ -308,30 +309,12 @@ export async function runMaterialWorker(
   return { reply, actions }
 }
 
-/** The canon export, trimmed to what the worker's claim lets it read. Slice 1
- *  keeps this simple and honest: the anchors plus the story's own record. The
- *  traversal-based context pack is what replaces it. */
+/** DEPRECATED by A13-5, kept only so nothing that still imports it breaks.
+ *
+ *  It took the envelope's anchors and expanded them, which conflated two
+ *  different things: what the author meant, and what this worker needs. The
+ *  node now derives its own context from its own selectors, and hands the
+ *  manifest down. See context.ts. */
 export function buildWorkerContext(anchors: string[]): string {
-  const doc = JSON.parse(canonJson()) as {
-    story?: unknown
-    entities?: Record<string, unknown>
-    events?: Record<string, unknown>
-    chapters?: { id: string }[]
-  }
-  const picked: Record<string, unknown> = {}
-  for (const id of anchors) {
-    const e = doc.entities?.[id] ?? doc.events?.[id]
-    if (e) picked[id] = e
-  }
-  return JSON.stringify(
-    {
-      story: doc.story,
-      included_because: 'named as an anchor by the intake pass',
-      anchors: picked,
-      chapter_ids: (doc.chapters ?? []).map(c => c.id),
-      note: 'Only the anchors are expanded. Use read_story_file for anything else your scope allows.',
-    },
-    null,
-    2,
-  )
+  return renderContext(anchors.map(id => ({ id, because: 'legacy anchor expansion', via: 'legacy' })))
 }

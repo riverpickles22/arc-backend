@@ -19,8 +19,9 @@ import { STORY } from './config'
 import { validateStory } from './canon'
 import { type Capability, grant, readOnly } from './capability'
 import { type IntentEnvelope, runIntake } from './intent'
+import { DEFAULT_POLICY, citedIn, deriveSelectors, renderContext, resolveContext, utilization, type ContextItem } from './context'
 import { type Judgment, runJudge } from './judge'
-import { buildWorkerContext, runMaterialWorker } from './material'
+import { runMaterialWorker } from './material'
 import {
   type Source,
   type WorkGraph,
@@ -61,12 +62,26 @@ export function deriveClaim(envelope: IntentEnvelope): Capability {
 
 export function planGraph(runId: string, envelope: IntentEnvelope): WorkGraph {
   const claim = deriveClaim(envelope)
+
+  // The planner derives SELECTORS — what this node may retrieve — from the
+  // author's anchors and its own scope roots. It does not retrieve: resolving
+  // them is the node's own act, so no node ever inherits another's context.
+  const selectors = deriveSelectors(envelope)
+  const manifest = resolveContext(selectors, DEFAULT_POLICY)
+
   const node: WorkNode = {
     id: 'capture',
     kind: 'material',
     claim,
-    reads: envelope.anchors,
-    read_versions: snapshotReads(envelope.anchors),
+    anchors: envelope.anchors,
+    selectors,
+    context_manifest: manifest,
+    context_policy: DEFAULT_POLICY,
+    context_cited: [],
+    // Staleness is about what was READ, which is the manifest — the anchors
+    // alone would under-report a worker that used a neighbour.
+    reads: manifest.map((m: ContextItem) => m.id),
+    read_versions: snapshotReads(manifest.map((m: ContextItem) => m.id)),
     writes: [],
     creates: ['mat.*'],
     depends_on: [],
@@ -76,7 +91,24 @@ export function planGraph(runId: string, envelope: IntentEnvelope): WorkGraph {
   return { run_id: runId, intent: envelope, nodes: [node] }
 }
 
+/** Per-node measurements, reported separately on purpose (work-graph.md §12).
+ *
+ *  Claim expansion and context expansion diagnose opposite faults: the first
+ *  says the planner was too tight about AUTHORITY, the second that the
+ *  selectors were too narrow about KNOWLEDGE. Utilization catches the inverse
+ *  of the second — selectors so broad the worker never used what it was given.
+ *  Averaged together they would hide all three. */
+export interface NodeMetrics {
+  node: string
+  claim_expansions: number
+  context_expansions: number
+  context_supplied: number
+  context_used: number
+  context_utilization: number
+}
+
 export interface RunOutcome {
+  metrics: NodeMetrics[]
   run: Run
   graph: WorkGraph
   envelope: IntentEnvelope
@@ -99,7 +131,9 @@ export async function runIntent(rawAuthorInput: string, source: Source = 'cli'):
   node.status = 'running'
   run.emit('task.started', node.id, { kind: node.kind, claim: node.claim, reads: node.reads })
 
-  const context = buildWorkerContext(envelope.anchors)
+  // The NODE's context, not the envelope's anchors — the whole point of the
+  // separation. Each entry carries the reason it is here.
+  const context = renderContext(node.context_manifest)
   const { reply, actions } = await runMaterialWorker(envelope, context, node.claim, run, node.id)
 
   const produced = actions
@@ -117,6 +151,17 @@ export async function runIntent(rawAuthorInput: string, source: Source = 'cli'):
     run.emit('task.completed', node.id, { wrote: produced.map(p => p.path) })
   }
 
+  // Context utilization, measured deterministically from what the worker
+  // actually referred to. Reported separately from claim expansion: repeated
+  // context widening means the selectors were too narrow, low utilization
+  // means they were too broad, and one number cannot say both.
+  // Measured against everything the node produced, not just what it said —
+  // the ids a worker writes into a record are its clearest citation.
+  node.context_cited = citedIn(
+    node.context_manifest,
+    [reply, JSON.stringify(actions), ...produced.map(p => p.content)].join('\n'),
+  )
+
   const validation = validateStory()
   const checks = { proven: validation.output, ok: validation.ok }
 
@@ -130,12 +175,20 @@ export async function runIntent(rawAuthorInput: string, source: Source = 'cli'):
     boundRules: [],   // the rules layer (§8) does not exist yet; saying so beats inventing rules
     workerReply: reply,
   })
-  run.emit('judge.completed', node.id, judgment)
-
   node.status = 'needs_author'
   node.result = { produced: produced.map(p => p.path), verdict: judgment.verdict }
 
-  return { run, graph, envelope, actions, workerReply: reply, produced, checks, judgment }
+  const metrics: NodeMetrics[] = graph.nodes.map(n => ({
+    node: n.id,
+    claim_expansions: run.expansions.filter(e => e.node === n.id).length,
+    context_expansions: run.contextExpansions.filter(e => e.node === n.id).length,
+    context_supplied: n.context_manifest.length,
+    context_used: n.context_cited.length,
+    context_utilization: utilization(n.context_manifest, n.context_cited),
+  }))
+  run.emit('judge.completed', node.id, { ...judgment, metrics })
+
+  return { run, graph, envelope, actions, workerReply: reply, produced, checks, judgment, metrics }
 }
 
 function readStoryFile(rel: string): string {

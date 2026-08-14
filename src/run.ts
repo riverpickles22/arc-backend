@@ -41,6 +41,17 @@ export interface WorkNode {
   id: string
   kind: string
   claim: Capability
+  /** What the AUTHOR meant, carried down unchanged. Never grows. */
+  anchors: string[]
+  /** What this node may retrieve. Declared before anything is fetched. */
+  selectors: import('./context').Selector[]
+  /** What it actually got, each item with the reason it is there. Derived per
+   *  node and NEVER inherited: two nodes sharing an anchor still derive their
+   *  own, because a shared pack means every node inherits one node's mistakes. */
+  context_manifest: import('./context').ContextItem[]
+  context_policy: import('./context').ContextPolicy
+  /** Manifest ids the worker demonstrably used — the denominator's other half. */
+  context_cited: string[]
   reads: string[]
   /** id → fingerprint at the moment it was read. The whole of staleness. */
   read_versions: Record<string, string>
@@ -63,6 +74,7 @@ export type EventName =
   | 'intent.resolved'
   | 'task.started'
   | 'claim.expanded'
+  | 'context.expanded'
   | 'task.completed'
   | 'task.stale'
   | 'judge.completed'
@@ -160,6 +172,7 @@ export class Run {
   readonly root: RunRoot
   readonly events: RunEvent[] = []
   readonly expansions: { node: string; granted: string; at: string }[] = []
+  readonly contextExpansions: { node: string; added: string[]; because: string; at: string }[] = []
 
   constructor(source: Source, rawAuthorInput: string, now: () => string = () => new Date().toISOString()) {
     this.now = now
@@ -196,6 +209,18 @@ export class Run {
   recordExpansion(node: string, granted: string): void {
     this.expansions.push({ node, granted, at: this.now() })
     this.emit('claim.expanded', node, { granted })
+  }
+
+  /** A node asked for more context than its selectors gave it.
+   *
+   *  Recorded as its own event, and counted separately from claim expansion:
+   *  the two diagnose opposite faults. Frequent claim widening means the
+   *  planner is too tight about AUTHORITY; frequent context widening means
+   *  the selectors are too narrow about KNOWLEDGE, and conflating them would
+   *  hide both. */
+  recordContextExpansion(node: string, added: string[], because: string): void {
+    this.contextExpansions.push({ node, added, because, at: this.now() })
+    this.emit('context.expanded', node, { added, because })
   }
 }
 

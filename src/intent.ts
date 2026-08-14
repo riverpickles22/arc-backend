@@ -22,9 +22,23 @@ export type Operation = 'capture' | 'query' | 'research' | 'explore' | 'mutate' 
 export type Authority = 'exploratory' | 'proposed' | 'author-directed'
 export type Scope = 'local' | 'scene' | 'chapter' | 'arc' | 'story'
 
+/** Inferred structural starting points — where traversal begins, never a
+ *  statement about what the author meant. Kept separate from anchors so a
+ *  wrong inference cannot corrupt the recorded meaning of the instruction. */
+export interface ScopeRoots {
+  temporal: string[]
+  location: string[]
+  surface: string[]
+}
+
 export interface IntentEnvelope {
   operations: Operation[]
+  /** What the author MEANT: ids they named, or that resolve from what they
+   *  said with no ambiguity. Optimised for precision, not recall — typically
+   *  one to three. Never a prediction of what a worker will need. */
   anchors: string[]
+  /** Inferred, and marked as such. Arc's guess about where to start looking. */
+  scope_roots: ScopeRoots
   inferred_scope: Scope
   authority: Authority
   ambiguity: 'low' | 'consequential'
@@ -53,10 +67,31 @@ operations — every one that applies, from:
   mutate    change the record: canon, prose, or structure
   review    judge something that already exists
 
-anchors — canon ids the request touches that YOU CAN SEE IN THE RECORD below
-  (char.*, place.*, event.*, ch.*, era.*, obj.*, faction.*, theme.*). Never
-  invent an id for something that does not exist yet — a person the author is
-  proposing has no id, and saying so is the correct answer.
+anchors — ONLY what the author actually meant. An id belongs here if they
+  named it, or if what they said resolves to it with no ambiguity at all.
+  Optimise for PRECISION, NOT RECALL: one to three ids is the normal answer,
+  and an empty list is a valid one.
+
+  YOU ARE NOT RETRIEVING. Do not list what a worker might find useful, might
+  need to read, or happens to sit nearby — that is the worker's job, done
+  later, from its own selectors. Given "Carlos needs a childhood friend,
+  maybe someone from the neighbourhood", the anchors are [char.carlos]. NOT
+  the café, the parents, the neighbourhood, the chapters, or the eras. Every
+  one of those is a reasonable thing to read and none of them is what the
+  author was talking about.
+
+  The test: arc will later be asked why a piece of work happened. "Because
+  the author was talking about Carlos" is an answer. "Because intake
+  retrieved nine nearby entities" is not.
+
+  Never invent an id for something that does not exist yet — a person the
+  author is proposing has no id, and saying so is the correct answer.
+
+scope_roots — where you think traversal should START, which is a different
+  question and is explicitly your inference rather than their meaning:
+    { "temporal": ["ch.01-the-cafe"], "location": ["place.cafe"], "surface": ["material"] }
+  Wrong guesses here are cheap: they change where a worker begins looking,
+  never what the instruction is recorded as meaning. Empty lists are fine.
 
 inferred_scope — local | scene | chapter | arc | story
 
@@ -106,6 +141,11 @@ export function parseEnvelope(text: string): IntentEnvelope {
   return {
     operations: list(o.operations) as Operation[],
     anchors: list(o.anchors),
+    scope_roots: {
+      temporal: list((o.scope_roots as Record<string, unknown> | undefined)?.temporal),
+      location: list((o.scope_roots as Record<string, unknown> | undefined)?.location),
+      surface: list((o.scope_roots as Record<string, unknown> | undefined)?.surface),
+    },
     inferred_scope: scopes.includes(o.inferred_scope as Scope) ? (o.inferred_scope as Scope) : 'story',
     authority: authorities.includes(o.authority as Authority) ? (o.authority as Authority) : 'exploratory',
     ambiguity: o.ambiguity === 'low' ? 'low' : 'consequential',
