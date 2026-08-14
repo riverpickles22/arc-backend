@@ -113,6 +113,15 @@ export function openRun(prompt: string, source: Source = 'external'): RunSummary
   return summarise(entry)
 }
 
+/** Register a run that has nothing for the author to decide.
+ *
+ *  A lens fan-out reads and reports; it produces no change, so there is no
+ *  accept gate and nothing to hold. It is still a run — it belongs on
+ *  /api/runs and on the stream like any other work arc does. */
+export function registerRun(run: Run): void {
+  remember({ run, state: 'working' })
+}
+
 /** Adopt a run created by a pipeline (a note being worked in, say) so it is
  *  visible and decidable over HTTP like any other. */
 export function adoptRun(outcome: RunOutcome): void {

@@ -104,7 +104,7 @@ export interface NodeMetrics {
   context_expansions: number
   context_supplied: number
   context_used: number
-  context_utilization: number
+  context_utilization: number | null
 }
 
 export interface RunOutcome {

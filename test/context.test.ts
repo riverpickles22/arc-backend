@@ -202,6 +202,7 @@ test('utilization is measured from what the worker referred to, not what it clai
   assert.deepEqual(cited.sort(), ['char.carlos', 'char.elena'])
   assert.equal(utilization(manifest, cited), 0.5, 'half of what it was handed went unused')
 
-  assert.equal(utilization([], []), 1, 'nothing supplied is not a failure to use it')
+  assert.equal(utilization([], []), null,
+    'nothing supplied has no ratio — reporting 1.0 would make the worst-scoped node look like the best')
   assert.equal(utilization(manifest, ['char.nobody']), 0, 'a citation outside the manifest counts for nothing')
 })

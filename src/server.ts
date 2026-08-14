@@ -12,7 +12,7 @@ import path from 'node:path'
 import type {
   AnalyzeResponse, ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, DraftSceneResponse,
   AnnotationsResponse, HealthResponse, MaterialResponse, NoteResponse, NotesResponse,
-  AgentsResponse, HookResponse, OkResponse, RunDecisionResponse, RunDetailResponse, RunResponse, RunsResponse,
+  AgentsResponse, HookResponse, LensesResponse, OkResponse, RunDecisionResponse, RunDetailResponse, RunResponse, RunsResponse,
   UpdateMaterialResponse, WorkDecisionResponse, WorkResponse,
   ProseAcceptResponse, ProseResponse,
   RatifyRuleResponse, StyleResponse,
@@ -34,9 +34,10 @@ import { QUEUE_REL, ratifyRule, readQueue } from './style-queue'
 import { runLearnStyle } from './learn-style'
 import { addNote, deleteNote, listNotes, updateNote as reviseNote } from './notes'
 import { decideWork, workNote } from './work'
-import { closeRun, getRun, listRuns, observe, openRun, pendingOutcome } from './runs'
+import { closeRun, getRun, listRuns, observe, openRun, pendingOutcome, registerRun } from './runs'
 import { hook, listAgents } from './agents'
-import { subscribeRuns } from './run'
+import { Run, subscribeRuns } from './run'
+import { runLensFanOut } from './lenses'
 import { decide } from './orchestrate'
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => void | Promise<void>
@@ -129,6 +130,27 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // Story material: the unplaced layer (conventions §12).
   '/api/material': {
     GET: (_req, res) => json(res, 200, { items: materialItems() } satisfies MaterialResponse),
+  },
+
+  // Editorial lenses: several readings of one scene at once, each from its
+  // own projection. Read-only by construction, so running them concurrently
+  // is safe by the shape of the work rather than by scheduling.
+  '/api/prose/lenses': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { scene?: unknown }
+      if (typeof b.scene !== 'string' || !b.scene) throw new HttpError(400, 'scene required')
+      if (!currentEngine()) throw new HttpError(503, 'No generation engine available.')
+      const scene = proseScenes().find(s => s.scene === b.scene || s.file === b.scene)
+      if (!scene) throw new HttpError(404, `no such scene: ${b.scene}`)
+
+      const run = new Run('ui', `read ${scene.scene} through the editorial lenses`)
+      registerRun(run)
+      const out = await runLensFanOut(scene, run)
+      // Nothing to accept: a reading changes nothing, so the run is done the
+      // moment it has reported.
+      closeRun(run.id, 'accepted')
+      json(res, 200, { ...out, run: run.id } satisfies LensesResponse)
+    },
   },
 
   // Connected agents: who is working on the story. One route because there is

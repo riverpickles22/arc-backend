@@ -194,8 +194,12 @@ export function renderContext(manifest: ContextItem[], canon?: CanonDoc): string
  *  Reported separately from claim expansion because they diagnose opposite
  *  faults — repeated expansion means selectors are too narrow, low
  *  utilization means they are too broad. One number cannot say both. */
-export function utilization(manifest: ContextItem[], cited: string[]): number {
-  if (!manifest.length) return 1
+export function utilization(manifest: ContextItem[], cited: string[]): number | null {
+  // NULL, not 1. A node handed nothing has not used it perfectly — it has no
+  // ratio at all, and reporting 1.00 makes an under-specified selector read
+  // as the best-performing node in the table. Exposing that is the metric's
+  // whole job (work-graph.md §12).
+  if (!manifest.length) return null
   const used = new Set(cited.filter(id => manifest.some(m => m.id === id)))
   return Number((used.size / manifest.length).toFixed(3))
 }
