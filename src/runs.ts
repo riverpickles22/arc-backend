@@ -26,6 +26,10 @@ export interface RunSummary {
   events: number
   /** Set once the author has answered. */
   decision?: 'accepted' | 'rejected' | 'abandoned'
+  /** Canon ids this run holds WRITE or PROPOSE over — never what it merely
+   *  read. The slice-1 run read nine entities to file one item; lighting nine
+   *  nodes for that is exactly the noise every other arc surface avoids. */
+  touching: string[]
 }
 
 interface Entry {
@@ -52,6 +56,7 @@ function remember(entry: Entry): void {
 
 const summarise = (e: Entry): RunSummary => ({
   id: e.run.id,
+  touching: [...(touched.get(e.run.id) ?? [])],
   source: e.run.root.source,
   prompt: e.run.root.raw_author_input,
   started_at: e.run.root.started_at,
@@ -88,6 +93,7 @@ export function getRun(id: string): { run: RunSummary; events: RunEvent[] } {
       started_at: root.started_at ?? '',
       state: 'closed',
       events: events.length,
+      touching: [],
     },
     events,
   }
@@ -156,6 +162,9 @@ interface Claimed { run: string; at: number }
 
 const claims = new Map<string, Claimed>()
 
+/** runId → the ids it holds write or propose over. What the viewer marks. */
+const touched = new Map<string, Set<string>>()
+
 /** How long a claim keeps explaining a change. Long enough to cover a slow
  *  worker, short enough that a finished run stops taking credit for an edit
  *  the author made afterwards in their own editor. */
@@ -172,10 +181,21 @@ function pathsFor(granted: string): string[] {
 }
 
 subscribeRuns(msg => {
-  if (msg.run && msg.event === 'claim.expanded') {
-    const granted = (msg.detail as { granted?: string } | undefined)?.granted
-    for (const p of pathsFor(granted ?? '')) claims.set(p, { run: msg.run, at: Date.now() })
+  if (!msg.run) return
+  if (msg.event === 'claim.expanded') {
+    const granted = (msg.detail as { granted?: string } | undefined)?.granted ?? ''
+    for (const p of pathsFor(granted)) claims.set(p, { run: msg.run, at: Date.now() })
+
+    // The id itself, for the viewer. Only WRITE and PROPOSE — a read is not a
+    // claim on the world and must never light a node up.
+    const m = /^(WRITE|PROPOSE)\s+(\S+)/i.exec(granted.trim())
+    if (m) {
+      const set = touched.get(msg.run) ?? new Set<string>()
+      set.add(m[2])
+      touched.set(msg.run, set)
+    }
   }
+  if (msg.event === 'author.decision') touched.delete(msg.run)
 })
 
 /** The run that authorised this change, or null when nothing did.
@@ -191,4 +211,4 @@ export function claimantOf(relPath: string): string | null {
 }
 
 /** Test seam: a fresh table, so one test's claims cannot explain another's. */
-export const _resetClaims = (): void => { claims.clear() }
+export const _resetClaims = (): void => { claims.clear(); touched.clear() }
