@@ -12,6 +12,7 @@ import type { FiledItem, WorkResponse } from 'arc-canon-graph'
 import { HttpError } from './http'
 import { currentEngine } from './engine'
 import { decide, runIntent, type RunOutcome } from './orchestrate'
+import { adoptRun, closeRun, pendingOutcome } from './runs'
 import { markWorked, readNote } from './notes'
 
 export type { FiledItem }
@@ -35,15 +36,6 @@ export function describeFiled(produced: { path: string; content: string }[]): Fi
   })
 }
 
-/** Runs worked but not yet answered.
- *
- *  slice 1's decide() takes the live RunOutcome, so the two requests have to be
- *  joined by something. A map is the honest amount of machinery: a restart
- *  loses the PENDING DECISION, never the work — the material is on disk and the
- *  note was never at risk. Bounded so a long session cannot grow it forever. */
-const pending = new Map<string, RunOutcome>()
-const MAX_PENDING = 32
-
 export async function workNote(file: string): Promise<WorkResponse> {
   const note = readNote(file)
   if (!note.text.trim()) throw new HttpError(400, 'that note is empty')
@@ -62,8 +54,9 @@ export async function workNote(file: string): Promise<WorkResponse> {
     throw new HttpError(422, `arc could not turn this note into material: ${why}. The note is unchanged — you can edit it and try again.`)
   }
 
-  if (pending.size >= MAX_PENDING) pending.delete(pending.keys().next().value as string)
-  pending.set(outcome.run.id, outcome)
+  // The run registry holds it now — so a note worked from here is visible and
+  // decidable on /api/runs like any other run, rather than in a private map.
+  adoptRun(outcome)
   markWorked(file, outcome.run.id)
 
   return {
@@ -81,10 +74,8 @@ export async function workNote(file: string): Promise<WorkResponse> {
  *  item dropped rather than deleting it — "dropped beats deletion — intent
  *  history is story history" (conventions §12). Either way a receipt lands. */
 export async function decideWork(runId: string, keep: boolean, note?: string): Promise<{ receipt: string; dropped: string[] }> {
-  const outcome = pending.get(runId)
-  if (!outcome) {
-    throw new HttpError(404, 'that run is no longer awaiting a decision — it was already answered, or the backend restarted. Anything it filed is on disk either way.')
-  }
-  pending.delete(runId)
-  return decide(outcome, keep ? 'accepted' : 'rejected', note)
+  const decision = keep ? 'accepted' : 'rejected'
+  const out = await decide(pendingOutcome(runId), decision, note)
+  closeRun(runId, decision)
+  return out
 }

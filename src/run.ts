@@ -93,6 +93,57 @@ export function nextRunId(): string {
   return `run.${String(Math.max(0, ...seen) + 1).padStart(4, '0')}`
 }
 
+/** Take the next id AND the directory that proves it is yours, in one step.
+ *
+ *  nextRunId alone is a read: two runs starting together both scan, both see
+ *  the same highest number, and both claim it. The fix is to let the
+ *  filesystem arbitrate — mkdir WITHOUT `recursive` fails with EEXIST if
+ *  someone got there first, which is an atomic test-and-set on every platform
+ *  arc runs on, and works across processes as well as within one. A loser
+ *  simply rescans and tries the next number.
+ *
+ *  This matters more now than it did for the CLI: once runs can be created
+ *  over HTTP, two requests landing together is ordinary rather than exotic. */
+export function claimRunId(): string {
+  fs.mkdirSync(path.join(STORY, '.arc', 'runs'), { recursive: true })
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const id = nextRunId()
+    try {
+      fs.mkdirSync(runDir(id))          // no `recursive`: EEXIST is the signal
+      return id
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+    }
+  }
+  throw new Error('could not allocate a run id after 200 attempts')
+}
+
+// ---- the event bus -------------------------------------------------------
+//
+// events.jsonl stays the record; this is a second listener, so a UI can watch
+// a run live without polling a file. Subscribers are deliberately weak: one
+// that throws, or a socket that died without saying so, must never fail the
+// run that was only trying to report progress.
+
+export type RunListener = (id: string, event: RunEvent) => void
+
+const listeners = new Set<RunListener>()
+
+export function subscribeRuns(fn: RunListener): () => void {
+  listeners.add(fn)
+  return () => listeners.delete(fn)
+}
+
+function publish(id: string, event: RunEvent): void {
+  for (const fn of listeners) {
+    try {
+      fn(id, event)
+    } catch {
+      // a broken listener is the listener's problem, never the run's
+    }
+  }
+}
+
 export class Run {
   readonly root: RunRoot
   readonly events: RunEvent[] = []
@@ -101,13 +152,12 @@ export class Run {
   constructor(source: Source, rawAuthorInput: string, now: () => string = () => new Date().toISOString()) {
     this.now = now
     this.root = {
-      run_id: nextRunId(),
+      run_id: claimRunId(),   // atomic: the directory is the claim
       source,
       raw_author_input: rawAuthorInput,
       started_at: now(),
       story_revision: storyRevision(),
     }
-    fs.mkdirSync(runDir(this.root.run_id), { recursive: true })
     fs.writeFileSync(path.join(runDir(this.root.run_id), 'root.json'), JSON.stringify(this.root, null, 2))
     this.emit('run.started', undefined, { source, story_revision: this.root.story_revision })
   }
@@ -128,6 +178,7 @@ export class Run {
     } catch {
       // telemetry only
     }
+    publish(this.root.run_id, rec)
   }
 
   recordExpansion(node: string, granted: string): void {

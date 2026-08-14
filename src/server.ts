@@ -12,7 +12,8 @@ import path from 'node:path'
 import type {
   AnalyzeResponse, ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, DraftSceneResponse,
   AnnotationsResponse, HealthResponse, MaterialResponse, NoteResponse, NotesResponse,
-  OkResponse, UpdateMaterialResponse, WorkDecisionResponse, WorkResponse,
+  OkResponse, RunDecisionResponse, RunDetailResponse, RunResponse, RunsResponse,
+  UpdateMaterialResponse, WorkDecisionResponse, WorkResponse,
   ProseAcceptResponse, ProseResponse,
   RatifyRuleResponse, StyleResponse,
 } from 'arc-canon-graph'
@@ -33,8 +34,50 @@ import { QUEUE_REL, ratifyRule, readQueue } from './style-queue'
 import { runLearnStyle } from './learn-style'
 import { addNote, deleteNote, listNotes, updateNote as reviseNote } from './notes'
 import { decideWork, workNote } from './work'
+import { closeRun, getRun, listRuns, observe, openRun, pendingOutcome } from './runs'
+import { subscribeRuns } from './run'
+import { decide } from './orchestrate'
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => void | Promise<void>
+type ParamHandler = (req: http.IncomingMessage, res: http.ServerResponse, id: string) => void | Promise<void>
+
+/** Routes carrying one id in the path. The exact table stays the common case
+ *  and is checked first; this is consulted only on a miss, so nothing about
+ *  the existing dispatch changes shape. */
+const paramRoutes: { pattern: RegExp; methods: Partial<Record<'GET' | 'POST', ParamHandler>> }[] = []
+
+function registerRunParamRoutes(): void {
+  paramRoutes.push({
+    pattern: /^\/api\/runs\/(run\.\d+)$/,
+    methods: { GET: (_req, res, id) => json(res, 200, getRun(id) satisfies RunDetailResponse) },
+  })
+  paramRoutes.push({
+    pattern: /^\/api\/runs\/(run\.\d+)\/events$/,
+    methods: {
+      POST: async (req, res, id) => {
+        const b = (await parsedBody(req)) as { detail?: unknown }
+        observe(id, b.detail ?? b)
+        json(res, 200, { ok: true } satisfies OkResponse)
+      },
+    },
+  })
+  paramRoutes.push({
+    pattern: /^\/api\/runs\/(run\.\d+)\/decision$/,
+    methods: {
+      POST: async (req, res, id) => {
+        const b = (await parsedBody(req)) as { decision?: unknown; note?: unknown }
+        const d = b.decision
+        if (d !== 'accepted' && d !== 'rejected' && d !== 'abandoned') {
+          throw new HttpError(400, "decision must be 'accepted', 'rejected' or 'abandoned'")
+        }
+        const out = await decide(pendingOutcome(id), d, typeof b.note === 'string' ? b.note : undefined)
+        closeRun(id, d)
+        json(res, 200, { ok: true, ...out } satisfies RunDecisionResponse)
+      },
+    },
+  })
+}
+registerRunParamRoutes()
 
 async function parsedBody(req: http.IncomingMessage): Promise<unknown> {
   const raw = await readBody(req)
@@ -85,6 +128,52 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // Story material: the unplaced layer (conventions §12).
   '/api/material': {
     GET: (_req, res) => json(res, 200, { items: materialItems() } satisfies MaterialResponse),
+  },
+
+  // Runs: what arc is doing, and why. The machinery has existed since A13-2
+  // and been reachable only from a terminal; these put it on the wire.
+  '/api/runs': {
+    GET: (_req, res) => json(res, 200, { runs: listRuns() } satisfies RunsResponse),
+    // Opens a run and returns at once. Nothing here waits for a model: the
+    // hook that will call this is synchronous with a 30s budget, while intake
+    // alone measures ~9s. The author's words are carried immediately and the
+    // structured reading fills in later.
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { prompt?: unknown; source?: unknown }
+      if (typeof b.prompt !== 'string') throw new HttpError(400, 'prompt required')
+      const source = b.source === 'ui' || b.source === 'claude-code' || b.source === 'cli' ? b.source : 'external'
+      json(res, 200, { run: openRun(b.prompt, source) } satisfies RunResponse)
+    },
+  },
+
+  // The live stream. events.jsonl stays the record; this is a second listener,
+  // so the viewer holds one subscription instead of polling.
+  '/api/runs/stream': {
+    GET: (req, res) => {
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive',
+        // Vite's dev proxy and any nginx in front of a deployment will buffer
+        // an event stream into uselessness without being told not to.
+        'x-accel-buffering': 'no',
+        ...(corsOrigin(req) ? { 'access-control-allow-origin': corsOrigin(req)! } : {}),
+      })
+      res.write('retry: 2000\n\n')
+
+      const send = (id: string, event: unknown) => {
+        try {
+          res.write(`data: ${JSON.stringify({ run: id, ...(event as object) })}\n\n`)
+        } catch { /* the unsubscribe below handles a dead socket */ }
+      }
+      const stop = subscribeRuns(send)
+      // A heartbeat keeps intermediaries from reaping an idle stream, and is
+      // a comment line so no client ever mistakes it for an event.
+      const beat = setInterval(() => { try { res.write(': ping\n\n') } catch { /* closing */ } }, 30_000)
+      const close = () => { clearInterval(beat); stop(); res.end() }
+      req.on('close', close)
+      req.on('error', close)
+    },
   },
 
   // Correct a filed thought, or drop it. Deterministic — no model here.
@@ -390,10 +479,19 @@ export function createArcServer(): http.Server {
         await assetHandler(req, res, url)
       } else {
         const route = routes[url.pathname]
-        if (!route) throw new HttpError(404, `no route for ${url.pathname}`)
-        const handler = route[req.method as 'GET' | 'POST']
-        if (!handler) throw new HttpError(405, `${Object.keys(route).join('/')} only`)
-        await handler(req, res, url)
+        if (route) {
+          const handler = route[req.method as 'GET' | 'POST']
+          if (!handler) throw new HttpError(405, `${Object.keys(route).join('/')} only`)
+          await handler(req, res, url)
+        } else {
+          const hit = paramRoutes
+            .map(r => ({ r, m: r.pattern.exec(url.pathname) }))
+            .find(x => x.m)
+          if (!hit) throw new HttpError(404, `no route for ${url.pathname}`)
+          const handler = hit.r.methods[req.method as 'GET' | 'POST']
+          if (!handler) throw new HttpError(405, `${Object.keys(hit.r.methods).join('/')} only`)
+          await handler(req, res, decodeURIComponent(hit.m![1]))
+        }
       }
     } catch (e) {
       if (e instanceof HttpError) {
