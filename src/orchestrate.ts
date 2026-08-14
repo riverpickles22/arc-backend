@@ -90,7 +90,7 @@ export interface RunOutcome {
 export async function runIntent(rawAuthorInput: string, source: Source = 'cli'): Promise<RunOutcome> {
   const run = new Run(source, rawAuthorInput)
 
-  const envelope = await runIntake(rawAuthorInput)
+  const envelope = await runIntake(rawAuthorInput, run.id)
   run.emit('intent.resolved', undefined, envelope)
 
   const graph = planGraph(run.id, envelope)

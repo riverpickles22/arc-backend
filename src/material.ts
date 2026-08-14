@@ -232,7 +232,7 @@ function runMaterialWorkerCli(
     CLI_NOTE,
   ].join('\n\n')
 
-  const raw = stripFences(runCliPrompt(prompt, { cwd: STORY }).text)
+  const raw = stripFences(runCliPrompt(prompt, { cwd: STORY, runId: run.id }).text)
   const start = raw.indexOf('{')
   const end = raw.lastIndexOf('}')
   if (start < 0 || end < start) throw new Error(`material worker did not return JSON: ${raw.slice(0, 200)}`)

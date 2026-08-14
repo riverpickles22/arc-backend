@@ -12,7 +12,7 @@ import path from 'node:path'
 import type {
   AnalyzeResponse, ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, DraftSceneResponse,
   AnnotationsResponse, HealthResponse, MaterialResponse, NoteResponse, NotesResponse,
-  OkResponse, RunDecisionResponse, RunDetailResponse, RunResponse, RunsResponse,
+  AgentsResponse, HookResponse, OkResponse, RunDecisionResponse, RunDetailResponse, RunResponse, RunsResponse,
   UpdateMaterialResponse, WorkDecisionResponse, WorkResponse,
   ProseAcceptResponse, ProseResponse,
   RatifyRuleResponse, StyleResponse,
@@ -35,6 +35,7 @@ import { runLearnStyle } from './learn-style'
 import { addNote, deleteNote, listNotes, updateNote as reviseNote } from './notes'
 import { decideWork, workNote } from './work'
 import { closeRun, getRun, listRuns, observe, openRun, pendingOutcome } from './runs'
+import { hook, listAgents } from './agents'
 import { subscribeRuns } from './run'
 import { decide } from './orchestrate'
 
@@ -128,6 +129,28 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // Story material: the unplaced layer (conventions §12).
   '/api/material': {
     GET: (_req, res) => json(res, 200, { items: materialItems() } satisfies MaterialResponse),
+  },
+
+  // Connected agents: who is working on the story. One route because there is
+  // one hook script — see arc-core/hooks/arc-hook.mjs.
+  '/api/agents': {
+    GET: (_req, res) => json(res, 200, { agents: listAgents() } satisfies AgentsResponse),
+  },
+
+  '/api/agents/hook': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as Record<string, unknown>
+      const str = (k: string) => (typeof b[k] === 'string' ? (b[k] as string) : '')
+      json(res, 200, hook({
+        event: str('event'),
+        session: str('session'),
+        cwd: str('cwd'),
+        source: str('source') || undefined,
+        prompt: str('prompt') || undefined,
+        detail: b.detail,
+        run: str('run') || undefined,
+      }) satisfies HookResponse)
+    },
   },
 
   // Runs: what arc is doing, and why. The machinery has existed since A13-2

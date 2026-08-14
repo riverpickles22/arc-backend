@@ -65,11 +65,15 @@ export function parseCliResult(stdout: string): { text: string; sessionId: strin
 /** One headless `claude -p` turn on the subscription login. The API key is
  *  stripped from the child's environment deliberately — the whole point of
  *  this path is that it needs no key. */
-export function runCliPrompt(prompt: string, opts: { cwd: string; resume?: string | null }): { text: string; sessionId: string | null } {
+/** `runId` threads ARC_RUN_ID into the child. A `claude -p` arc launches fires
+ *  the same hooks an interactive session does, so without it the hook would
+ *  open a SECOND run for work arc already holds one for — the duplicate-run
+ *  problem, solved by telling the child which run it belongs to. */
+export function runCliPrompt(prompt: string, opts: { cwd: string; resume?: string | null; runId?: string }): { text: string; sessionId: string | null } {
   const args = ['-p', '--output-format', 'json', ...(opts.resume ? ['--resume', opts.resume] : [])]
   const res = spawnSync('claude', args, {
     input: prompt, encoding: 'utf8', cwd: opts.cwd, timeout: 600_000, maxBuffer: 16 * 1024 * 1024,
-    env: { ...process.env, ANTHROPIC_API_KEY: undefined },
+    env: { ...process.env, ANTHROPIC_API_KEY: undefined, ...(opts.runId ? { ARC_RUN_ID: opts.runId } : {}) },
   })
   if (res.error) throw new Error(`claude CLI failed to run: ${res.error.message}`)
   if (res.status !== 0) throw new Error(`claude CLI exited ${res.status}: ${(res.stderr || res.stdout).slice(0, 300)}`)

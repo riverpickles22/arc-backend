@@ -115,12 +115,12 @@ export function parseEnvelope(text: string): IntentEnvelope {
 }
 
 /** Read-only by construction: no tools on either engine. */
-export async function runIntake(input: string): Promise<IntentEnvelope> {
+export async function runIntake(input: string, runId?: string): Promise<IntentEnvelope> {
   const engine = currentEngine()
   if (!engine) throw new HttpError(503, 'No generation engine available.')
   const prompt = buildIntakePrompt(canonJson(), input)
 
-  if (engine === 'claude-cli') return parseEnvelope(runCliPrompt(prompt, { cwd: STORY }).text)
+  if (engine === 'claude-cli') return parseEnvelope(runCliPrompt(prompt, { cwd: STORY, runId }).text)
 
   const message = await getClient().beta.messages.create({
     model: MODEL,
