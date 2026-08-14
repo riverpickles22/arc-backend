@@ -1,7 +1,8 @@
-// Reading back and changing what capture filed: the material edit path, and
-// the raw dumps. The distinction under test is the one that looks like an
-// inconsistency and is not — material DROPS, raw dumps DELETE — so both halves
-// are pinned here together.
+// Changing what a run filed: the material edit path.
+//
+// Material DROPS rather than deleting (conventions §12 — intent history is
+// story history). Notes, which the author owns outright, really delete; that
+// half lives in notes.test.ts.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -13,7 +14,6 @@ process.env.ARC_STORY_PATH = STORY
 process.env.ARC_DRAFT_ENGINE = 'none'
 
 const { updateMaterial, materialItems } = await import('../src/story.ts')
-const { saveRaw, listDumps, deleteDump } = await import('../src/dump.ts')
 
 const MATERIAL = path.join(STORY, 'material')
 const write = (name: string, body: string) => {
@@ -83,50 +83,6 @@ test('purpose can be cleared, and an empty body is refused rather than silently 
 test('an unknown id is a 404 and an unknown status is a 400', () => {
   assert.throws(() => updateMaterial('mat.never-existed', { body: 'x' }), (e: unknown) => (e as { status?: number }).status === 404)
   assert.throws(() => updateMaterial('mat.hog-hunters', { status: 'deleted' }), (e: unknown) => (e as { status?: number }).status === 400)
-})
-
-// ---- the raw dumps -------------------------------------------------------
-
-test('dumps are listed newest first, with the timestamp split from the text', () => {
-  saveRaw('the first thing I thought of', '2026-08-10T09:00:00.000Z')
-  saveRaw('a later thought\n\nwith its own blank line in it', '2026-08-12T09:00:00.000Z')
-
-  const dumps = listDumps()
-  assert.equal(dumps.length, 2)
-  assert.equal(dumps[0].at, '2026-08-12T09:00:00.000Z', 'newest first')
-  assert.equal(dumps[0].text, 'a later thought\n\nwith its own blank line in it',
-    'a dump containing blank lines survives the split intact')
-  assert.equal(dumps[1].text, 'the first thing I thought of')
-})
-
-test('a dump is deleted outright — unlike material, which is dropped', () => {
-  const before = listDumps()
-  deleteDump(before[0].file)
-  const after = listDumps()
-  assert.equal(after.length, before.length - 1)
-  assert.equal(after.some(d => d.file === before[0].file), false)
-  assert.equal(fs.existsSync(path.join(STORY, '.arc', 'dumps', before[0].file)), false, 'really gone')
-})
-
-test('deleting a dump touches no material item', () => {
-  const before = materialItems().map(i => i.id).sort()
-  saveRaw('something to throw away', '2026-08-13T09:00:00.000Z')
-  deleteDump(listDumps()[0].file)
-  assert.deepEqual(materialItems().map(i => i.id).sort(), before, 'the filed thoughts are untouched')
-})
-
-test('deletion takes a name, never a path — traversal cannot be expressed', () => {
-  for (const bad of ['../../secrets.md', 'nested/thing.md', '..', 'notes.txt', '']) {
-    assert.throws(() => deleteDump(bad), (e: unknown) => (e as { status?: number }).status === 400, `should refuse: ${bad}`)
-  }
-  assert.throws(() => deleteDump('2000-01-01T00-00-00-000Z.md'), (e: unknown) => (e as { status?: number }).status === 404)
-})
-
-test('no dumps at all is an empty list, not an error', () => {
-  for (const d of listDumps()) deleteDump(d.file)
-  assert.deepEqual(listDumps(), [])
-  fs.rmSync(path.join(STORY, '.arc', 'dumps'), { recursive: true, force: true })
-  assert.deepEqual(listDumps(), [], 'and the directory need not exist')
 })
 
 test('a story that already fails validation does not lock the author out of their notes', () => {

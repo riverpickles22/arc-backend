@@ -11,8 +11,8 @@ import os from 'node:os'
 import path from 'node:path'
 import type {
   AnalyzeResponse, ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, DraftSceneResponse,
-  AnnotationsResponse, DumpDecisionResponse, DumpResponse, DumpsResponse, HealthResponse, MaterialResponse,
-  OkResponse, UpdateMaterialResponse,
+  AnnotationsResponse, HealthResponse, MaterialResponse, NoteResponse, NotesResponse,
+  OkResponse, UpdateMaterialResponse, WorkDecisionResponse, WorkResponse,
   ProseAcceptResponse, ProseResponse,
   RatifyRuleResponse, StyleResponse,
 } from 'arc-canon-graph'
@@ -31,7 +31,8 @@ import { currentEngine } from './engine'
 import { authorStylePath, loadStyleLayers } from './style'
 import { QUEUE_REL, ratifyRule, readQueue } from './style-queue'
 import { runLearnStyle } from './learn-style'
-import { decideDump, deleteDump, fileDump, listDumps } from './dump'
+import { addNote, deleteNote, listNotes, updateNote as reviseNote } from './notes'
+import { decideWork, workNote } from './work'
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => void | Promise<void>
 
@@ -86,23 +87,6 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     GET: (_req, res) => json(res, 200, { items: materialItems() } satisfies MaterialResponse),
   },
 
-  // The raw dumps: what the author typed, before any model read it.
-  '/api/dumps': {
-    GET: (_req, res) => json(res, 200, { dumps: listDumps() } satisfies DumpsResponse),
-  },
-
-  // Delete one raw dump. Real deletion, unlike material — a dump is transient
-  // telemetry that has done its job once the thought is filed, where a
-  // material item is a record of intent and §12 keeps those.
-  '/api/dumps/delete': {
-    POST: async (req, res) => {
-      const body = (await parsedBody(req)) as { file?: unknown }
-      if (typeof body.file !== 'string') throw new HttpError(400, 'file required')
-      deleteDump(body.file)
-      json(res, 200, { ok: true } satisfies OkResponse)
-    },
-  },
-
   // Correct a filed thought, or drop it. Deterministic — no model here.
   '/api/material/update': {
     POST: async (req, res) => {
@@ -117,26 +101,53 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     },
   },
 
-  // The brain dump: free text filed as material. The author's front door to
-  // the work graph — everything past the raw save is slice 1's existing path
-  // (intake → claim → capability-gated worker → judge → author's decision).
-  '/api/dump': {
+  // Notes: whatever the author wanted written down. Filing is a WRITE — no
+  // model, no engine required, and no failure mode beyond the disk. Turning a
+  // note into story material is a separate act (/api/notes/work).
+  '/api/notes': {
+    GET: (_req, res) => json(res, 200, { notes: listNotes() } satisfies NotesResponse),
     POST: async (req, res) => {
-      const body = (await parsedBody(req)) as { text?: unknown }
-      if (typeof body.text !== 'string') throw new HttpError(400, 'text required')
-      json(res, 200, (await fileDump(body.text)) satisfies DumpResponse)
+      const b = (await parsedBody(req)) as { text?: unknown }
+      if (typeof b.text !== 'string') throw new HttpError(400, 'text required')
+      json(res, 200, { note: addNote(b.text) } satisfies NoteResponse)
     },
   },
 
-  // Keep or discard what a dump filed. Slice 1's author-decision gate,
-  // reaching the viewer for the first time.
-  '/api/dump/decide': {
+  '/api/notes/update': {
     POST: async (req, res) => {
-      const body = (await parsedBody(req)) as { run?: unknown; keep?: unknown; note?: unknown }
-      if (typeof body.run !== 'string' || !body.run) throw new HttpError(400, 'run required')
-      if (typeof body.keep !== 'boolean') throw new HttpError(400, 'keep must be true or false')
-      const out = await decideDump(body.run, body.keep, typeof body.note === 'string' ? body.note : undefined)
-      json(res, 200, { ok: true, ...out } satisfies DumpDecisionResponse)
+      const b = (await parsedBody(req)) as { file?: unknown; text?: unknown }
+      if (typeof b.file !== 'string') throw new HttpError(400, 'file required')
+      if (typeof b.text !== 'string') throw new HttpError(400, 'text required')
+      json(res, 200, { note: reviseNote(b.file, b.text) } satisfies NoteResponse)
+    },
+  },
+
+  '/api/notes/delete': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { file?: unknown }
+      if (typeof b.file !== 'string') throw new HttpError(400, 'file required')
+      deleteNote(b.file)
+      json(res, 200, { ok: true } satisfies OkResponse)
+    },
+  },
+
+  // Work one note into the story: slice 1's whole path, run because the
+  // author asked. A failure here leaves the note exactly as it was.
+  '/api/notes/work': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { file?: unknown }
+      if (typeof b.file !== 'string') throw new HttpError(400, 'file required')
+      json(res, 200, (await workNote(b.file)) satisfies WorkResponse)
+    },
+  },
+
+  '/api/notes/work/decide': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { run?: unknown; keep?: unknown; note?: unknown }
+      if (typeof b.run !== 'string' || !b.run) throw new HttpError(400, 'run required')
+      if (typeof b.keep !== 'boolean') throw new HttpError(400, 'keep must be true or false')
+      const out = await decideWork(b.run, b.keep, typeof b.note === 'string' ? b.note : undefined)
+      json(res, 200, { ok: true, ...out } satisfies WorkDecisionResponse)
     },
   },
 
