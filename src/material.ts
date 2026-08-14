@@ -217,13 +217,13 @@ an "id": arc assigns it. No prose outside the JSON, no code fence.`
 /** The toolless engine path. arc mints the id and runs the gate here in Node,
  *  so this path cannot invent a permanent id even in principle — the same
  *  invariant the tool path enforces, made structural. */
-function runMaterialWorkerCli(
+async function runMaterialWorkerCli(
   envelope: IntentEnvelope,
   context: string,
   cap: Capability,
   run: Run,
   node: string,
-): WorkerResult {
+): Promise<WorkerResult> {
   const actions: ChatAction[] = []
   const prompt = [
     WORKER_RULES,
@@ -233,7 +233,7 @@ function runMaterialWorkerCli(
     CLI_NOTE,
   ].join('\n\n')
 
-  const raw = stripFences(runCliPrompt(prompt, { cwd: STORY, runId: run.id }).text)
+  const raw = stripFences((await runCliPrompt(prompt, { cwd: STORY, runId: run.id })).text)
   const start = raw.indexOf('{')
   const end = raw.lastIndexOf('}')
   if (start < 0 || end < start) throw new Error(`material worker did not return JSON: ${raw.slice(0, 200)}`)
@@ -282,7 +282,7 @@ export async function runMaterialWorker(
   run: Run,
   node: string,
 ): Promise<WorkerResult> {
-  if (currentEngine() === 'claude-cli') return runMaterialWorkerCli(envelope, context, cap, run, node)
+  if (currentEngine() === 'claude-cli') return await runMaterialWorkerCli(envelope, context, cap, run, node)
 
   const actions: ChatAction[] = []
   const prompt = [

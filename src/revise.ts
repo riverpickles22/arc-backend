@@ -213,7 +213,7 @@ export function buildRevisePrompt(scene: string, body: string, notes: ResolvedAn
 }
 
 async function ask(prompt: string): Promise<string> {
-  if (currentEngine() === 'claude-cli') return runCliPrompt(prompt, { cwd: STORY }).text
+  if (currentEngine() === 'claude-cli') return (await runCliPrompt(prompt, { cwd: STORY })).text
   const message = await getClient().beta.messages.create({
     model: MODEL,
     max_tokens: 8000,

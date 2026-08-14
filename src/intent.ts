@@ -160,7 +160,7 @@ export async function runIntake(input: string, runId?: string): Promise<IntentEn
   if (!engine) throw new HttpError(503, 'No generation engine available.')
   const prompt = buildIntakePrompt(canonJson(), input)
 
-  if (engine === 'claude-cli') return parseEnvelope(runCliPrompt(prompt, { cwd: STORY, runId }).text)
+  if (engine === 'claude-cli') return parseEnvelope((await runCliPrompt(prompt, { cwd: STORY, runId })).text)
 
   const message = await getClient().beta.messages.create({
     model: MODEL,

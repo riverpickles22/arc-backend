@@ -109,7 +109,7 @@ export async function runDraft(chapterId: string, guidance?: string): Promise<Dr
   const scenesText = chapterScenes.map(s => `=== ${s.file} ===\n${fs.readFileSync(path.join(STORY, s.file), 'utf8')}`).join('\n\n')
 
   if (currentEngine() === 'claude-cli') {
-    return runDraftCli({ chapterId, guidance, pack, style, file, sceneId, chapterScenes, scenesText })
+    return await runDraftCli({ chapterId, guidance, pack, style, file, sceneId, chapterScenes, scenesText })
   }
 
   const actions: ChatAction[] = []
@@ -210,11 +210,11 @@ function writeValidated(rel: string, content: string): { ok: boolean; output: st
  *  subscription login, plus one repair retry (--resume) when the validator
  *  rejects the scene. Slower and toolless next to the SDK path — the model
  *  replies with the complete file; the gate runs here in Node. */
-function runDraftCli(a: {
+async function runDraftCli(a: {
   chapterId: string; guidance?: string
   pack: string; style: string; file: string; sceneId: string
   chapterScenes: { scene: string; file: string }[]; scenesText: string
-}): DraftSceneResponse {
+}): Promise<DraftSceneResponse> {
   const prompt = [
     DRAFT_RULES + a.style,
     `=== CONTEXT PACK (traversal-selected; every item carries its inclusion reason) ===\n${a.pack}`,
@@ -226,13 +226,13 @@ function runDraftCli(a: {
   ].filter(Boolean).join('\n\n')
 
   const actions: ChatAction[] = []
-  const first = runCliPrompt(prompt, { cwd: STORY })
+  const first = await runCliPrompt(prompt, { cwd: STORY })
   let content = stripFences(first.text)
   let check = writeScene(a.file, content, 'claude-cli', a.sceneId)
   actions.push({ tool: 'write_scene_file', path: a.file, ok: check.ok, detail: check.ok ? undefined : 'validation failed, reverted' })
 
   if (!check.ok && first.sessionId) {
-    const repair = runCliPrompt(
+    const repair = await runCliPrompt(
       `VALIDATION FAILED — the scene was reverted. Fix these and reply with ONLY the corrected complete file content:\n${check.output}`,
       { cwd: STORY, resume: first.sessionId })
     content = stripFences(repair.text)

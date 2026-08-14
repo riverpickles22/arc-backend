@@ -205,7 +205,7 @@ export interface LensResult {
 }
 
 async function askModel(prompt: string): Promise<string> {
-  if (currentEngine() === 'claude-cli') return runCliPrompt(prompt, { cwd: STORY }).text
+  if (currentEngine() === 'claude-cli') return (await runCliPrompt(prompt, { cwd: STORY })).text
   const message = await getClient().beta.messages.create({
     model: MODEL,
     max_tokens: 4000,

@@ -106,7 +106,7 @@ export async function runSuggest(req: SuggestRequest): Promise<SuggestResponse> 
   })
 
   if (engine === 'claude-cli') {
-    return { suggestions: parseSuggestions(runCliPrompt(prompt, { cwd: STORY }).text), register: 'argued', engine }
+    return { suggestions: parseSuggestions((await runCliPrompt(prompt, { cwd: STORY })).text), register: 'argued', engine }
   }
 
   const message = await getClient().beta.messages.create({

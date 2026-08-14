@@ -124,7 +124,7 @@ export async function runJudge(brief: JudgeBrief): Promise<Judgment> {
   if (!engine) throw new HttpError(503, 'No generation engine available.')
   const prompt = buildJudgePrompt(brief)
 
-  if (engine === 'claude-cli') return parseJudgment(runCliPrompt(prompt, { cwd: STORY }).text)
+  if (engine === 'claude-cli') return parseJudgment((await runCliPrompt(prompt, { cwd: STORY })).text)
 
   const message = await getClient().beta.messages.create({
     model: MODEL,
