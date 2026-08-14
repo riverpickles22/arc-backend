@@ -190,9 +190,18 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         } catch { /* the unsubscribe below handles a dead socket */ }
       }
       const stop = subscribeRuns(send)
-      // A heartbeat keeps intermediaries from reaping an idle stream, and is
-      // a comment line so no client ever mistakes it for an event.
-      const beat = setInterval(() => { try { res.write(': ping\n\n') } catch { /* closing */ } }, 30_000)
+      // A NAMED heartbeat event, not a comment line.
+      //
+      // A comment keeps intermediaries from reaping an idle stream but is
+      // invisible to EventSource, which means a client cannot use it to tell
+      // a live stream from a dead one. That matters because a proxy — Vite's
+      // included — holds the browser's connection open after the upstream
+      // dies, so `onerror` never fires and the viewer believes it is live
+      // forever. A named event is deliverable, and stays out of `onmessage`
+      // so it never looks like news.
+      const beat = setInterval(() => {
+        try { res.write(`event: ping\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`) } catch { /* closing */ }
+      }, 15_000)
       const close = () => { clearInterval(beat); stop(); res.end() }
       req.on('close', close)
       req.on('error', close)
