@@ -12,7 +12,7 @@ import path from 'node:path'
 import type {
   AnalyzeResponse, ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, DraftSceneResponse,
   AnnotationsResponse, HealthResponse, MaterialResponse, NoteResponse, NotesResponse,
-  AgentsResponse, HookResponse, LensesResponse, OkResponse, RunDecisionResponse, RunDetailResponse, RunResponse, RunsResponse,
+  AgentsResponse, HookResponse, LensesResponse, OkResponse, ReviseResponse, RunDecisionResponse, RunDetailResponse, RunResponse, RunsResponse,
   UpdateMaterialResponse, WorkDecisionResponse, WorkResponse,
   ProseAcceptResponse, ProseResponse,
   RatifyRuleResponse, StyleResponse,
@@ -38,6 +38,7 @@ import { closeRun, getRun, listRuns, observe, openRun, pendingOutcome, registerR
 import { hook, listAgents } from './agents'
 import { Run, subscribeRuns } from './run'
 import { runLensFanOut } from './lenses'
+import { runRevisionFanOut } from './revise'
 import { decide } from './orchestrate'
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => void | Promise<void>
@@ -130,6 +131,20 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // Story material: the unplaced layer (conventions §12).
   '/api/material': {
     GET: (_req, res) => json(res, 200, { items: materialItems() } satisfies MaterialResponse),
+  },
+
+  // Revision fan-out: the author's open notes worked into the prose. Writes
+  // land in the working tree — the draft layer — so every revision is
+  // reviewed through the accept gate that already exists.
+  '/api/prose/revise': {
+    POST: async (_req, res) => {
+      if (!currentEngine()) throw new HttpError(503, 'No generation engine available.')
+      const run = new Run('ui', 'work the open notes into the prose')
+      registerRun(run)
+      const out = await runRevisionFanOut(annotations(), run)
+      closeRun(run.id, out.conflicts.length ? 'abandoned' : 'accepted')
+      json(res, 200, { ...out, run: run.id } satisfies ReviseResponse)
+    },
   },
 
   // Editorial lenses: several readings of one scene at once, each from its
