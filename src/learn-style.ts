@@ -20,7 +20,7 @@ import { MODEL, STORY } from './config'
 import { getClient } from './agent'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { generatedFor, clearGenerated } from './ledger'
-import { parseScene } from './story'
+import { git, parseScene } from './story'
 import { styleContract } from './style'
 import { appendToQueue, readQueue, ruleId, type ProposedRule, type RuleEvidence } from './style-queue'
 
@@ -44,6 +44,11 @@ const EVIDENCE_CHARS = 320
 export interface EditPair {
   n: number
   scene: string
+  /** 'draft' — arc's draft vs what the author kept (the ledger diff).
+   *  'revision' — the author's last accepted prose vs their hand rewrite of
+   *  it, read from git at the accept gate. The purest voice signal: nobody
+   *  described the change, the change is the description. */
+  source: 'draft' | 'revision'
   wrote: string
   kept: string
   changed: number
@@ -102,7 +107,7 @@ function anchors(a: string[], b: string[]): [number, number][] {
  *  cannot support a rule about how arc should write — it is the author adding
  *  their own material, not correcting arc's. Pure, so the arithmetic that
  *  silently goes wrong is the part under test. */
-export function editPairs(wrote: string, kept: string, scene: string): EditPair[] {
+export function editPairs(wrote: string, kept: string, scene: string, source: 'draft' | 'revision' = 'draft'): EditPair[] {
   const a = paragraphs(wrote)
   const b = paragraphs(kept)
   const pairs: Omit<EditPair, 'n'>[] = []
@@ -118,7 +123,7 @@ export function editPairs(wrote: string, kept: string, scene: string): EditPair[
     // cuts (kept: ''); surplus additions are the author's own new prose.
     for (let k = 0; k < removed.length; k++) {
       const to = added[k] ?? ''
-      pairs.push({ scene, wrote: removed[k], kept: to, changed: changedWords(removed[k], to) })
+      pairs.push({ scene, source, wrote: removed[k], kept: to, changed: changedWords(removed[k], to) })
     }
     ai = am + 1
     bi = bm + 1
@@ -130,10 +135,16 @@ export function editPairs(wrote: string, kept: string, scene: string): EditPair[
 export const significant = (pairs: EditPair[]): EditPair[] =>
   pairs.filter(p => p.changed >= MIN_CHANGED_WORDS)
 
-const LEARN_RULES = `You are arc's STYLE LEARNING pass. The author accepted scenes that arc
-drafted, and edited them on the way in. Below are numbered EDIT pairs: what
-arc WROTE, and what the author KEPT in its place. An empty KEPT means the
-author cut the paragraph entirely.
+const LEARN_RULES = `You are arc's STYLE LEARNING pass. The author accepted prose, editing on
+the way in. Below are numbered EDIT pairs of two kinds, labelled:
+
+- ARC WROTE / AUTHOR KEPT — arc drafted the paragraph; the author reworked
+  it. The edit says how arc should have written it.
+- AUTHOR HAD / REVISED TO — the author's own accepted prose, rewritten by
+  their own hand. Nobody corrected anybody: this is the author's preference
+  showing directly, the strongest voice signal in this table.
+
+An empty right-hand side means the paragraph was cut entirely.
 
 Your job is to name the FORM rules those edits imply — how this author's
 sentences behave. Diction, rhythm, sentence length, punctuation, register,
@@ -163,8 +174,12 @@ export function buildLearnPrompt(input: {
 }): string {
   const table = input.pairs.map(p => [
     `--- EDIT ${p.n} (${p.scene}) ---`,
-    `ARC WROTE: ${p.wrote}`,
-    `AUTHOR KEPT: ${p.kept || '(cut entirely)'}`,
+    p.source === 'revision'
+      ? `AUTHOR HAD: ${p.wrote}`
+      : `ARC WROTE: ${p.wrote}`,
+    p.source === 'revision'
+      ? `REVISED TO: ${p.kept || '(cut entirely)'}`
+      : `AUTHOR KEPT: ${p.kept || '(cut entirely)'}`,
   ].join('\n')).join('\n\n')
 
   return [
@@ -212,10 +227,30 @@ export function materialize(proposals: RawProposal[], pairs: EditPair[], at: str
       .slice(0, 3)
       .map(x => ({ scene: x.scene, wrote: clip(x.wrote), kept: clip(x.kept) }))
     if (!evidence.length) continue
-    out.push({ id: ruleId(p.rule), rule: p.rule, section: p.section, at, evidence })
+    // Attribution is conservative: a rule is 'revision' only when every edit
+    // it cites is one. One draft correction in the argument makes it a rule
+    // about how arc should write, and it files as such.
+    const cited = p.edits.map(n => byN.get(n)).filter((x): x is EditPair => !!x)
+    const source = cited.length && cited.every(x => x.source === 'revision') ? 'revision' as const : 'draft' as const
+    out.push({ id: ruleId(p.rule), rule: p.rule, section: p.section, at, evidence, source })
     if (out.length >= MAX_PROPOSALS_PER_RUN) break
   }
   return out
+}
+
+/** The scene's body as it stood at the commit before the accept — the
+ *  author's previous accepted prose. proseAccept makes exactly one commit,
+ *  so when the learn pass runs, HEAD^ is that boundary. Null when the scene
+ *  is new there (a hand-written addition is the author's own material, not a
+ *  correction of anything) or there is no parent commit yet. */
+function previousAcceptedBody(file: string): string | null {
+  try {
+    const prefix = git('rev-parse', '--show-prefix').trim()
+    const text = git('show', `HEAD^:${prefix}${file}`)
+    return parseScene(text, file)?.body ?? null
+  } catch {
+    return null
+  }
 }
 
 /** The body of an accepted scene as it stands on disk, frontmatter stripped —
@@ -246,13 +281,24 @@ export async function runLearnStyle(files: string[]): Promise<LearnResult> {
   const pairs: EditPair[] = []
   const mined: string[] = []
   for (const file of files) {
-    const gen = generatedFor(file)
-    if (!gen) continue // hand-written, or already mined: nothing of arc's to compare
-    mined.push(file)
     const kept = acceptedBody(file)
     if (kept === null) continue
-    const wrote = parseScene(gen.content, file)?.body ?? gen.content
-    pairs.push(...significant(editPairs(wrote, kept, file)))
+    const gen = generatedFor(file)
+    if (gen) {
+      // Arc drafted this one: the ledger diff is the more precise signal —
+      // it separates arc's exact output from every keystroke of the author's.
+      mined.push(file)
+      const wrote = parseScene(gen.content, file)?.body ?? gen.content
+      pairs.push(...significant(editPairs(wrote, kept, file)))
+    } else {
+      // No ledger entry: the author edited their own accepted prose by hand.
+      // The before is what git accepted last time. A scene that is new at
+      // HEAD^ yields nothing — added prose argues no rule (same reasoning as
+      // added paragraphs inside editPairs).
+      const had = previousAcceptedBody(file)
+      if (had === null || had === kept) continue
+      pairs.push(...significant(editPairs(had, kept, file, 'revision')))
+    }
   }
 
   // Accepted unedited, or nothing arc wrote: no model, no tokens.

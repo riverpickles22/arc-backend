@@ -285,3 +285,78 @@ test('a ratified rule reaches the next drafting pass; a pending one never does',
   assert.doesNotMatch(contract, /MUST NOT BIND/, 'the queue is not part of the contract, by construction')
   assert.ok(fs.existsSync(queuePath()), 'the queue file exists and is simply never read into a prompt')
 })
+
+// ---- learning from the author's own revisions (A27) ----------------------
+// The other half of the loop: no arc draft anywhere — the author rewrote
+// their own accepted prose, and the diff against HEAD^ is the signal.
+
+test('a revision pair carries its source; the default stays draft', () => {
+  const had = 'He was very tired after the long night.\n\nSecond paragraph.'
+  const revised = 'His arms had stopped arguing with the oars.\n\nSecond paragraph.'
+  const rev = editPairs(had, revised, 'sc.02-1', 'revision')
+  assert.equal(rev.length, 1)
+  assert.equal(rev[0].source, 'revision')
+  assert.equal(editPairs(had, revised, 'sc.02-1')[0].source, 'draft')
+})
+
+test('the prompt frames revisions as the author against themself', () => {
+  const pairs = [
+    ...editPairs('Arc wrote something quite bad here.', 'The author kept something better instead.', 'sc.01-1'),
+    ...editPairs('The author had written this sentence once.', 'The author then rewrote the whole thing differently.', 'sc.02-1', 'revision'),
+  ].map((p, i) => ({ ...p, n: i + 1 }))
+  const prompt = buildLearnPrompt({ pairs, style: '(none)', pending: [] })
+  assert.match(prompt, /ARC WROTE: Arc wrote something quite bad here\./)
+  assert.match(prompt, /AUTHOR HAD: The author had written this sentence once\./)
+  assert.match(prompt, /REVISED TO: The author then rewrote/)
+})
+
+test('a rule is revision-sourced only when every cited edit is', () => {
+  const pairs = [
+    ...editPairs('Draft paragraph arc wrote at first.', 'Draft paragraph the author kept instead.', 'sc.01-1'),
+    ...editPairs('Revision the author had accepted before.', 'Revision the author rewrote by their own hand.', 'sc.02-1', 'revision'),
+  ].map((p, i) => ({ ...p, n: i + 1 }))
+  const [pure] = materialize([{ rule: 'From the revision alone.', section: null, edits: [2] }], pairs, 'now')
+  const [mixed] = materialize([{ rule: 'From both kinds of edit.', section: null, edits: [1, 2] }], pairs, 'now')
+  assert.equal(pure.source, 'revision')
+  assert.equal(mixed.source, 'draft')
+})
+
+test('source survives the queue file, and its evidence reads as the author against themself', () => {
+  writeQueue([])
+  const rule = {
+    id: ruleId('Cut throat-clearing openings.'), rule: 'Cut throat-clearing openings.', section: 'Sentences',
+    at: 'now', evidence: [{ scene: 'sc.02-1', wrote: 'It was then that he saw it.', kept: 'He saw it.' }],
+    source: 'revision' as const,
+  }
+  writeQueue([rule])
+  const text = fs.readFileSync(queuePath(), 'utf8')
+  assert.match(text, /you had: "It was then that he saw it\."/)
+  assert.match(text, /you revised to: "He saw it\."/)
+  assert.doesNotMatch(text, /arc wrote:/, 'revision evidence never claims arc wrote the sentence')
+  assert.equal(readQueue()[0].source, 'revision')
+  // an entry without the field (written before it existed) still parses, as draft
+  const legacy = [{ ...rule, id: 'p-legacy' }].map(r => { const { source, ...rest } = r; void source; return rest })
+  writeQueue(legacy as never)
+  assert.equal(readQueue()[0].source, undefined)
+})
+
+test('a hand revision to accepted prose reaches the model gate; new hand-written prose never does', async () => {
+  writeQueue([])
+  const gitc = (...a: string[]) => execFileSync('git', ['-C', STORY, ...a], { encoding: 'utf8' })
+  // a fresh scene, accepted (committed), then revised by hand and accepted again
+  const rel = 'prose/ch-02/scene-01.md'
+  writeScene(STORY, rel, 'sc.02-1', 'It was then that he saw the coast, at long last, finally.\n\nStable paragraph.')
+  gitc('add', '-A'); gitc('commit', '-qm', 'prose: accept sc.02-1')
+  writeScene(STORY, rel, 'sc.02-1', 'He saw the coast.\n\nStable paragraph.')
+  gitc('add', '-A'); gitc('commit', '-qm', 'prose: accept revision')
+  const r = await runLearnStyle([rel])
+  assert.equal(r.skipped, 'no-engine', 'revision pairs were mined — only the engine was missing')
+  assert.ok(r.pairsConsidered >= 1, 'the hand revision produced at least one significant pair')
+  // a scene born in this commit has no before, argues nothing, costs nothing
+  const fresh = 'prose/ch-03/scene-01.md'
+  writeScene(STORY, fresh, 'sc.03-1', 'Entirely new prose the author wrote themselves.')
+  gitc('add', '-A'); gitc('commit', '-qm', 'prose: accept new scene')
+  const r2 = await runLearnStyle([fresh])
+  assert.equal(r2.skipped, 'no-edits')
+  assert.equal(r2.pairsConsidered, 0)
+})

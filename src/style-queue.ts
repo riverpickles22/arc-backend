@@ -59,6 +59,9 @@ export function parseQueue(text: string): ProposedRule[] {
         section: typeof r.section === 'string' ? r.section : null,
         at: typeof r.at === 'string' ? r.at : '',
         evidence: Array.isArray(r.evidence) ? r.evidence.filter(isEvidence) : [],
+        // Queues written before the field existed have no source; absent
+        // means draft, so old entries parse and file exactly as they did.
+        ...(r.source === 'revision' ? { source: 'revision' as const } : {}),
       })
     } catch {
       continue
@@ -76,9 +79,12 @@ const renderOne = (r: ProposedRule): string => {
     r.rule.trim(),
     '',
   ]
+  // Revision evidence is the author against themself; saying "arc wrote"
+  // over their own sentence would be claiming credit for their voice.
+  const [before, after] = r.source === 'revision' ? ['you had', 'you revised to'] : ['arc wrote', 'you kept']
   for (const e of r.evidence) {
-    lines.push(`- **${e.scene}** — arc wrote: ${JSON.stringify(e.wrote)}`)
-    lines.push(`  you kept: ${JSON.stringify(e.kept)}`)
+    lines.push(`- **${e.scene}** — ${before}: ${JSON.stringify(e.wrote)}`)
+    lines.push(`  ${after}: ${JSON.stringify(e.kept)}`)
   }
   if (r.evidence.length) lines.push('')
   return lines.join('\n')
