@@ -35,6 +35,8 @@ import { checkPathWrite, grant, type Capability } from './capability'
 import { DEFAULT_POLICY } from './context'
 import { snapshotReads, staleReads, type Run, type WorkNode } from './run'
 import { styleContract } from './style'
+import { locksOn } from './locks'
+import { lockViolations } from 'arc-canon-graph/annotations.ts'
 import { parseScene } from './story'
 
 export interface Conflict {
@@ -272,11 +274,33 @@ async function reviseOne(cluster: RevisionCluster, node: WorkNode, run: Run): Pr
     const scene = parseScene(raw, cluster.file)
     if (!scene) throw new Error(`${cluster.file} is not a scene file`)
 
+    // Locked prose is settled prose (A29). The worker is told which
+    // paragraphs are fenced; the check after the model answers is what makes
+    // the fence real — a worker that rewrites a locked paragraph fails, and
+    // nothing is written. The author hears the lock's name, not an override.
+    const sceneLocks = locksOn(cluster.scene, scene.body)
+    const fenced = sceneLocks
+      .filter(l => l.resolution.paragraph !== null &&
+        (l.resolution.state === 'resolved' || l.resolution.state === 'drifted'))
+      .map(l => l.resolution.paragraph! + 1)
+    const lockNotice = fenced.length
+      ? `\n\nLOCKED PARAGRAPHS — the author has marked paragraph${fenced.length === 1 ? '' : 's'} ` +
+        `${fenced.join(', ')} of this scene as settled. Reproduce ${fenced.length === 1 ? 'it' : 'them'} ` +
+        `verbatim, word for word, and write around ${fenced.length === 1 ? 'it' : 'them'}.`
+      : ''
+
     const revised = stripFences(await ask(
-      buildRevisePrompt(cluster.scene, scene.body, cluster.notes, styleContract()),
+      buildRevisePrompt(cluster.scene, scene.body, cluster.notes, styleContract()) + lockNotice,
     )).trim()
 
     if (!revised) throw new Error('the revision worker returned nothing')
+
+    const violated = lockViolations(scene.body, revised, sceneLocks)
+    if (violated.length) {
+      throw new Error(
+        `revision touched locked prose — paragraph ${violated[0].paragraph + 1} ` +
+        `(${violated.map(v => v.lock.id).join(', ')}) is settled; nothing was written`)
+    }
 
     // Staleness FIRST: if something this node read has moved since it read it,
     // the revision was written against a story that no longer exists.

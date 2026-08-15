@@ -10,6 +10,7 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import type {
+  LocksResponse,
   AnalyzeResponse, ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, DraftSceneResponse,
   AnnotationsResponse, HealthResponse, MaterialResponse, NoteResponse, NotesResponse,
   AgentsResponse, HookResponse, LensesResponse, OkResponse, ReviseResponse, RunDecisionResponse, RunDetailResponse, RunResponse, RunsResponse,
@@ -32,6 +33,7 @@ import { currentEngine } from './engine'
 import { authorStylePath, loadStyleLayers } from './style'
 import { QUEUE_REL, ratifyRule, readQueue } from './style-queue'
 import { runLearnStyle } from './learn-style'
+import { createLock, locks, removeLock } from './locks'
 import { addNote, deleteNote, listNotes, updateNote as reviseNote } from './notes'
 import { decideWork, workNote } from './work'
 import { closeRun, getRun, listRuns, observe, openRun, pendingOutcome, registerRun } from './runs'
@@ -262,6 +264,28 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // Notes: whatever the author wanted written down. Filing is a WRITE — no
   // model, no engine required, and no failure mode beyond the disk. Turning a
   // note into story material is a separate act (/api/notes/work).
+  // Locks (A29): settled prose, reported and edited here — enforced in the
+  // write paths, which is where the lock is actually real.
+  '/api/locks': {
+    GET: (_req, res) => json(res, 200, { locks: locks() } satisfies LocksResponse),
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { scene?: unknown; paragraph?: unknown; quote?: unknown }
+      if (typeof b.scene !== 'string' || !b.scene) throw new HttpError(400, 'scene required')
+      if (typeof b.paragraph !== 'number' || b.paragraph < 0) throw new HttpError(400, 'paragraph required')
+      if (typeof b.quote !== 'string') throw new HttpError(400, 'quote required')
+      json(res, 200, { lock: createLock({ scene: b.scene, paragraph: b.paragraph, quote: b.quote }) })
+    },
+  },
+
+  '/api/locks/delete': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { id?: unknown }
+      if (typeof b.id !== 'string' || !b.id) throw new HttpError(400, 'id required')
+      removeLock(b.id)
+      json(res, 200, { ok: true } satisfies OkResponse)
+    },
+  },
+
   '/api/notes': {
     GET: (_req, res) => json(res, 200, { notes: listNotes() } satisfies NotesResponse),
     POST: async (req, res) => {

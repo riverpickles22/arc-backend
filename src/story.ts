@@ -12,6 +12,7 @@ import type { DocArticle, MaterialItem, ProseChange, ProseDraft, ProseScene, Sce
 import { STORY } from './config'
 import { clearGenerated } from './ledger'
 import { HttpError } from './http'
+import { assertUnlocked } from './locks'
 import { resolveWithin } from './safe-path'
 import { canonicalYaml } from './agent'
 import { validateStory } from './canon'
@@ -275,6 +276,12 @@ export function proseWrite(file: string, body: string, baseline?: string): Prose
   if (baseline !== undefined && settle(baseline) !== settle(current)) {
     throw new HttpError(409, `${file} changed underneath this edit — reload the manuscript and reapply it`)
   }
+
+  // Locked prose is settled prose (A29): the choke point is here, not the
+  // editor's chrome — a lock only means something if the write path itself
+  // refuses, whoever is writing.
+  const sceneId = parseScene(before, file)?.scene
+  if (sceneId) assertUnlocked(sceneId, current, body, 'this edit')
 
   const next = fm[0] + (body.endsWith('\n') ? body : body + '\n')
   fs.writeFileSync(abs, next)
