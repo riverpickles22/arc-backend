@@ -23,7 +23,7 @@ import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
 import { docsArticles, git, materialItems, updateMaterial, proseAccept, proseAcceptParagraph, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig } from './story'
 import { handleChat } from './agent'
-import { annotations, createAnnotation, updateAnnotation } from './annotations'
+import { annotations, createAnnotation, deleteAnnotation, updateAnnotation } from './annotations'
 import { attention } from './attention'
 import { runCapture } from './capture'
 import { runAnalysis } from './analyze'
@@ -143,7 +143,9 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       if (!currentEngine()) throw new HttpError(503, 'No generation engine available.')
       const run = new Run('ui', 'work the open notes into the prose')
       registerRun(run)
-      const out = await runRevisionFanOut(annotations(), run)
+      // Keypoints are intent markers, not requests for change — the fan-out
+      // revises against NOTES only (A30).
+      const out = await runRevisionFanOut(annotations().filter(a => (a.kind ?? 'note') === 'note'), run)
       closeRun(run.id, out.conflicts.length ? 'abandoned' : 'accepted')
       json(res, 200, { ...out, run: run.id } satisfies ReviseResponse)
     },
@@ -354,7 +356,19 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         paragraph: Number(b.paragraph ?? -1),
         quote: String(b.quote ?? ''),
         body: String(b.body ?? ''),
+        ...(b.kind === 'keypoint' ? { kind: 'keypoint' as const } : {}),
+        ...(b.by === 'agent' || b.by === 'author' ? { by: b.by as 'agent' | 'author' } : {}),
       }))
+    },
+  },
+
+  // Keypoints only — a note refuses (annotations.ts says why).
+  '/api/annotations/delete': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { id?: unknown }
+      if (typeof b.id !== 'string' || !b.id) throw new HttpError(400, 'id required')
+      deleteAnnotation(b.id)
+      json(res, 200, { ok: true } satisfies OkResponse)
     },
   },
 

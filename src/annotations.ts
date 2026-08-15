@@ -56,6 +56,8 @@ export interface NewAnnotation {
   paragraph: number
   quote: string
   body: string
+  kind?: 'note' | 'keypoint'
+  by?: 'author' | 'agent'
 }
 
 /** File a note. The anchor is captured as the author made it; nothing about
@@ -67,16 +69,33 @@ export function createAnnotation(input: NewAnnotation): ResolvedAnnotation {
   if (!proseScenes().some(s => s.scene === input.scene)) {
     throw new HttpError(400, `no such scene: ${input.scene}`)
   }
+  const keypoint = input.kind === 'keypoint'
   const note: AnnotationLike = {
     id: nextId(),
     anchor: { scene: input.scene, paragraph: input.paragraph, quote: (input.quote ?? '').trim() },
     body: input.body.trim(),
-    status: 'open',
+    // A keypoint has no lifecycle: it exists or it doesn't. Giving it a
+    // status would put it in every surface that works notes as tasks.
+    ...(keypoint ? { kind: 'keypoint' as const } : { status: 'open' as const }),
+    ...(input.by ? { by: input.by } : {}),
     created_at: new Date().toISOString().slice(0, 10),
   }
   fs.mkdirSync(DIR(), { recursive: true })
   fs.writeFileSync(fileFor(note.id), yamlDump(note, { indent: 2, lineWidth: 100, noRefs: true, sortKeys: false }))
   return resolveAnnotations([note], sceneBodies())[0]
+}
+
+/** Hard delete, keypoints only. A note is a thought — resolved or dropped,
+ *  never erased (§14). A keypoint is a marker, and removing a marker is the
+ *  author's ordinary right-click, not a loss of record: git holds history. */
+export function deleteAnnotation(id: string): void {
+  const file = fileFor(id)
+  if (!id.startsWith('note.') || !fs.existsSync(file)) throw new HttpError(404, `no such annotation: ${id}`)
+  const item = yamlLoad(fs.readFileSync(file, 'utf8')) as AnnotationLike
+  if (item.kind !== 'keypoint') {
+    throw new HttpError(400, `${id} is a note, and notes are never deleted — resolve it or drop it instead`)
+  }
+  fs.unlinkSync(file)
 }
 
 const STATUSES = ['open', 'working', 'resolved', 'dropped'] as const

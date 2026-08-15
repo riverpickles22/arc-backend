@@ -9,7 +9,7 @@ import { git, makeStory, writeScene } from './fixture.ts'
 
 const story = makeStory()
 process.env.ARC_STORY_PATH = story
-const { annotations, createAnnotation, updateAnnotation, orphaned } = await import('../src/annotations.ts')
+const { annotations, createAnnotation, deleteAnnotation, updateAnnotation, orphaned } = await import('../src/annotations.ts')
 const { HttpError } = await import('../src/http.ts')
 
 function resetScene(body: string) {
@@ -86,4 +86,29 @@ test('notes live in annotations/ as ordinary editable yaml', () => {
   assert.ok(files.some(f => /^note-\d{3}\.yaml$/.test(f)))
   git(story, 'checkout', 'HEAD', '--', '.')
   git(story, 'clean', '-fdq')
+})
+
+// ---- keypoints (A30): a kind with no lifecycle, and the only hard delete --
+
+test('a keypoint round-trips its kind and provenance, without a status', () => {
+  const kp = createAnnotation({ scene: 'sc.01-1', paragraph: 0, quote: 'Original first paragraph.', body: 'The crossing begins.', kind: 'keypoint', by: 'agent' })
+  assert.equal(kp.kind, 'keypoint')
+  assert.equal(kp.by, 'agent')
+  assert.equal(kp.status, undefined, 'a keypoint has no lifecycle')
+  assert.equal(kp.resolution.state, 'resolved')
+})
+
+test('a legacy annotation without kind is a note, everywhere', () => {
+  const note = createAnnotation({ scene: 'sc.01-1', paragraph: 0, quote: 'Original first paragraph.', body: 'A thought.' })
+  assert.equal(note.kind, undefined)
+  assert.equal(note.status, 'open')
+})
+
+test('delete removes a keypoint and refuses a note', () => {
+  const kp = createAnnotation({ scene: 'sc.01-1', paragraph: 1, quote: 'Second paragraph.', body: 'Held.', kind: 'keypoint' })
+  const note = createAnnotation({ scene: 'sc.01-1', paragraph: 1, quote: 'Second paragraph.', body: 'A kept thought.' })
+  deleteAnnotation(kp.id)
+  assert.ok(!annotations().some(a => a.id === kp.id), 'the keypoint is gone')
+  assert.throws(() => deleteAnnotation(note.id), /never deleted/)
+  assert.ok(annotations().some(a => a.id === note.id), 'the note survives')
 })
