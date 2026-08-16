@@ -71,6 +71,9 @@ export function createAnnotation(input: NewAnnotation): ResolvedAnnotation {
   // A quote with no index is neither shape. Refusing beats storing an anchor
   // that could never resolve.
   const onPassage = typeof input.paragraph === 'number'
+  if (onPassage && !(Number.isInteger(input.paragraph) && input.paragraph! >= 0)) {
+    throw new HttpError(400, `paragraph must be a whole number from 0, or absent for a note about the whole scene`)
+  }
   if (!onPassage && input.quote?.trim()) {
     throw new HttpError(400, 'a quote needs the paragraph it came from; omit both for a note about the whole scene')
   }

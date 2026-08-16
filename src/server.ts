@@ -353,8 +353,12 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       const b = (await parsedBody(req)) as Record<string, unknown>
       json(res, 200, createAnnotation({
         scene: String(b.scene ?? ''),
-        paragraph: Number(b.paragraph ?? -1),
-        quote: String(b.quote ?? ''),
+        // Absence is the meaning here, so it has to survive the sanitising:
+        // no paragraph is a note about the whole scene (§14). Coercing it to
+        // a number turns that into a passage note anchored to a paragraph
+        // that does not exist.
+        ...(b.paragraph == null ? {} : { paragraph: Number(b.paragraph) }),
+        ...(b.quote == null ? {} : { quote: String(b.quote) }),
         body: String(b.body ?? ''),
         ...(b.kind === 'keypoint' ? { kind: 'keypoint' as const } : {}),
         ...(b.by === 'agent' || b.by === 'author' ? { by: b.by as 'agent' | 'author' } : {}),

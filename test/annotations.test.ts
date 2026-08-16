@@ -98,6 +98,18 @@ test('a quote with no paragraph is refused — that anchor could never resolve',
   assert.throws(() => createAnnotation({ body: 'no scene at all' } as never), HttpError)
 })
 
+// Found by using the app: the HTTP layer sanitised an absent paragraph into
+// Number(undefined ?? -1) === -1, so a scene note arrived as a passage note
+// anchored to a paragraph that cannot exist — and the schema's minimum: 0
+// would have rejected the file it wrote. Absence has to survive the coercion,
+// and an index below zero is not a passage either.
+test('a paragraph below zero is refused rather than stored as an anchor', () => {
+  assert.throws(() => createAnnotation({ scene: 'sc.01-1', paragraph: -1, body: 'coerced from absence' }),
+    HttpError)
+  assert.throws(() => createAnnotation({ scene: 'sc.01-1', paragraph: 1.5, body: 'not a whole paragraph' }),
+    HttpError)
+})
+
 test('a note can be revised — the thought changes, the anchor does not', () => {
   const before = annotations()[0]
   const after = updateAnnotation(before.id, { body: '  Sharper on the second reading.  ' })

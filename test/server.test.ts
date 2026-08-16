@@ -150,3 +150,21 @@ test('canon export failure is a clean 500, not a traceback', async () => {
   assert.match(body.error, /canon export failed/)
   assert.doesNotMatch(body.error, /Traceback/)
 })
+
+// The sanitising layer is where a scene note nearly died: coercing an absent
+// paragraph into a number turned "about the whole scene" into a passage note
+// anchored to a paragraph that cannot exist. Absence has to reach the writer
+// intact, so it is asserted at this layer and not only one below.
+test('POST /api/annotations carries an absent paragraph through as absence', async () => {
+  const res = await post('/api/annotations', { scene: 'sc.01-1', body: 'we never reference the tide here' })
+  assert.equal(res.status, 200)
+  const note = await res.json()
+  assert.equal('paragraph' in note.anchor, false)
+  assert.equal('quote' in note.anchor, false)
+  assert.equal(note.resolution.state, 'resolved')
+
+  const passage = await post('/api/annotations',
+    { scene: 'sc.01-1', paragraph: 0, quote: 'Original', body: 'on a passage' })
+  assert.equal((await passage.json()).anchor.paragraph, 0,
+    'a real paragraph 0 must not be mistaken for absence')
+})
