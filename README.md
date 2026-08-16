@@ -72,3 +72,7 @@ The agent's system prompt puts arc-core's `conventions.md` in a cached prefix an
 Licensed under the [Apache License 2.0](LICENSE), covering this repository's
 code. It holds no story: a story's canon and prose stay under whatever terms
 its author sets.
+
+Patches welcome under the same license, with a
+[DCO](https://developercertificate.org/) sign-off — `git commit -s`, no CLA.
+See [arc-core's CONTRIBUTING.md](https://github.com/riverpickles22/arc-core/blob/main/CONTRIBUTING.md).
