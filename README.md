@@ -66,3 +66,9 @@ Every path is resolved and checked against the story root before use, so no tool
 ## Notes
 
 The agent's system prompt puts arc-core's `conventions.md` in a cached prefix and the canon graph after it, so a canon write invalidates only the volatile half.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE), covering this repository's
+code. It holds no story: a story's canon and prose stay under whatever terms
+its author sets.
