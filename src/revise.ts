@@ -159,9 +159,16 @@ Answer with a JSON array and nothing else:
   [{"between": ["note.001", "note.007"], "tension": "one sentence"}]
 An empty array is the common answer and a good one.`
 
+/** What a note is about, in the words the model should read. A note with no
+ *  quote is about the section rather than a sentence in it — often because it
+ *  is about something the section does NOT say, which has no passage to point
+ *  at. Naming the scope beats quoting an empty string. */
+const scopeOf = (n: ResolvedAnnotation): string =>
+  n.anchor.quote ? `at "${n.anchor.quote.slice(0, 60)}"` : 'about the whole scene'
+
 export function buildConflictPrompt(notes: ResolvedAnnotation[]): string {
   const listed = notes.map(n =>
-    `${n.id} — on ${n.anchor.scene}, at "${n.anchor.quote.slice(0, 60)}"\n  ${n.body.trim()}`).join('\n\n')
+    `${n.id} — on ${n.anchor.scene}, ${scopeOf(n)}\n  ${n.body.trim()}`).join('\n\n')
   return `${CONFLICT_RULES}\n\n=== THE AUTHOR'S OPEN NOTES ===\n${listed}\n\nAnswer with the JSON array.`
 }
 
@@ -204,7 +211,7 @@ passage alone.`
 
 export function buildRevisePrompt(scene: string, body: string, notes: ResolvedAnnotation[], style: string): string {
   const listed = notes.map(n =>
-    `- ${n.id} (on "${n.anchor.quote.slice(0, 70)}"): ${n.body.trim()}`).join('\n')
+    `- ${n.id} (${n.anchor.quote ? `on "${n.anchor.quote.slice(0, 70)}"` : 'about the whole scene'}): ${n.body.trim()}`).join('\n')
   return [
     REVISE_RULES,
     `=== THE AUTHOR'S STYLE CONTRACT (binding) ===\n${style}`,

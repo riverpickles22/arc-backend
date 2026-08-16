@@ -143,6 +143,23 @@ test('the conflict pass is told to surface tensions, never to resolve them', () 
   assert.match(p, /Do not suggest which note should win/)
 })
 
+// A note about the whole scene has no passage to quote — often because it is
+// about what the scene does NOT say. Both prompts must name that scope rather
+// than quote an empty string, or the model is told the note is about nothing.
+test('a scene note tells the model it is about the section, not about ""', () => {
+  const sceneNote = note('note.009', 'sc.01-1', 'we never reference the tide in this section',
+    { anchor: { scene: 'sc.01-1' }, resolution: { state: 'resolved', paragraph: null } })
+
+  const conflict = buildConflictPrompt([sceneNote])
+  assert.match(conflict, /about the whole scene/)
+  assert.doesNotMatch(conflict, /at ""/)
+
+  const revise = buildRevisePrompt('sc.01-1', 'The morning smelled of coffee.', [sceneNote], 'STYLE')
+  assert.match(revise, /about the whole scene/)
+  assert.doesNotMatch(revise, /on ""/)
+  assert.match(revise, /we never reference the tide/)
+})
+
 test('a conflict needs two notes and a stated tension, or it is not one', () => {
   const out = parseConflicts(JSON.stringify([
     { between: ['note.001', 'note.007'], tension: 'One asks for more suspicion, the other for less.' },

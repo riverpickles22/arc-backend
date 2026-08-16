@@ -56,6 +56,48 @@ test('guards: unknown scene, empty body, bad status, unknown id', () => {
   assert.throws(() => updateAnnotation('note.999', { status: 'open' }), HttpError)
 })
 
+// A note may be about the section rather than a sentence in it — the only
+// shape available for the observation that something is MISSING, which is
+// the case that motivated it: nothing to select, because the absence is the
+// point. It must outlive any rewrite that leaves the absence in place.
+test('a note can be about the whole scene, with nothing selected', () => {
+  resetScene('First paragraph here.\n\nSecond paragraph mentions Diego in the doorway.')
+  const n = createAnnotation({ scene: 'sc.01-1', body: 'we never reference the tide in this section' })
+  assert.equal(n.anchor.paragraph, undefined)
+  assert.equal(n.anchor.quote, undefined)
+  assert.equal(n.resolution.state, 'resolved')
+  assert.equal(n.resolution.paragraph, null)
+  assert.equal(n.status, 'open')
+})
+
+test('a scene note survives a rewrite that a passage note would not', () => {
+  const before = annotations().find(x => x.body.startsWith('we never reference'))!
+  resetScene('Nothing of the previous text remains here at all.')
+  const after = annotations().find(x => x.id === before.id)!
+  assert.equal(after.resolution.state, 'resolved')
+  assert.equal(after.body, 'we never reference the tide in this section')
+  assert.equal(orphaned().find(x => x.id === before.id), undefined)
+})
+
+test('a scene note leads its scene, and its file records no paragraph', () => {
+  resetScene('First paragraph here.\n\nSecond paragraph mentions Diego in the doorway.')
+  const scoped = createAnnotation({ scene: 'sc.01-1', paragraph: 1, quote: 'Diego in the doorway', body: 'on a passage' })
+  const inScene = annotations().filter(x => x.anchor.scene === 'sc.01-1')
+  assert.ok(inScene.findIndex(x => x.body.startsWith('we never reference'))
+            < inScene.findIndex(x => x.id === scoped.id),
+    'the scene note sorts ahead of the passage note')
+  const onDisk = fs.readFileSync(path.join(story, 'annotations',
+    `note-${annotations().find(x => x.body.startsWith('we never reference'))!.id.slice(5)}.yaml`), 'utf8')
+  assert.ok(!/paragraph:/.test(onDisk), 'no paragraph key is written for a scene note')
+  assert.ok(!/quote:/.test(onDisk), 'no quote key is written for a scene note')
+})
+
+test('a quote with no paragraph is refused — that anchor could never resolve', () => {
+  assert.throws(() => createAnnotation({ scene: 'sc.01-1', quote: 'Diego in the doorway', body: 'which passage?' }),
+    HttpError)
+  assert.throws(() => createAnnotation({ body: 'no scene at all' } as never), HttpError)
+})
+
 test('a note can be revised — the thought changes, the anchor does not', () => {
   const before = annotations()[0]
   const after = updateAnnotation(before.id, { body: '  Sharper on the second reading.  ' })

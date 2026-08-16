@@ -53,18 +53,26 @@ function nextId(): string {
 
 export interface NewAnnotation {
   scene: string
-  paragraph: number
-  quote: string
+  /** Omit for a note about the whole scene. */
+  paragraph?: number
+  quote?: string
   body: string
   kind?: 'note' | 'keypoint'
   by?: 'author' | 'agent'
 }
 
 /** File a note. The anchor is captured as the author made it; nothing about
- *  scope is asked for or inferred here. */
+ *  scope is asked for or inferred here — a request carrying a paragraph is a
+ *  note about that passage, one carrying none is about the whole scene. */
 export function createAnnotation(input: NewAnnotation): ResolvedAnnotation {
-  if (!input.scene || typeof input.paragraph !== 'number' || !input.body?.trim()) {
-    throw new HttpError(400, 'scene, paragraph and body are required')
+  if (!input.scene || !input.body?.trim()) {
+    throw new HttpError(400, 'scene and body are required')
+  }
+  // A quote with no index is neither shape. Refusing beats storing an anchor
+  // that could never resolve.
+  const onPassage = typeof input.paragraph === 'number'
+  if (!onPassage && input.quote?.trim()) {
+    throw new HttpError(400, 'a quote needs the paragraph it came from; omit both for a note about the whole scene')
   }
   if (!proseScenes().some(s => s.scene === input.scene)) {
     throw new HttpError(400, `no such scene: ${input.scene}`)
@@ -72,7 +80,9 @@ export function createAnnotation(input: NewAnnotation): ResolvedAnnotation {
   const keypoint = input.kind === 'keypoint'
   const note: AnnotationLike = {
     id: nextId(),
-    anchor: { scene: input.scene, paragraph: input.paragraph, quote: (input.quote ?? '').trim() },
+    anchor: onPassage
+      ? { scene: input.scene, paragraph: input.paragraph, quote: (input.quote ?? '').trim() }
+      : { scene: input.scene },
     body: input.body.trim(),
     // A keypoint has no lifecycle: it exists or it doesn't. Giving it a
     // status would put it in every surface that works notes as tasks.
