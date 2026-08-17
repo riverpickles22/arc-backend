@@ -21,7 +21,7 @@ import type {
 import { STORY } from './config'
 import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
-import { docsArticles, git, materialItems, updateMaterial, proseAccept, proseAcceptParagraph, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig } from './story'
+import { docsArticles, git, materialItems, updateMaterial, proseAccept, proseAcceptParagraph, proseRejectParagraph, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig } from './story'
 import { handleChat } from './agent'
 import { annotations, createAnnotation, deleteAnnotation, updateAnnotation } from './annotations'
 import { attention } from './attention'
@@ -490,6 +490,17 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       const b = (await parsedBody(req)) as { file?: unknown; paragraph?: unknown; message?: unknown }
       if (typeof b.file !== 'string' || typeof b.paragraph !== 'number') throw new HttpError(400, 'file and paragraph required')
       json(res, 200, proseAcceptParagraph(b.file, b.paragraph, typeof b.message === 'string' ? b.message : undefined))
+    },
+  },
+
+  // Reject is accept's mirror and commits nothing: the working tree loses one
+  // change and keeps every other, so the remaining diff is still exactly what
+  // has not been decided.
+  '/api/prose/reject-paragraph': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { file?: unknown; paragraph?: unknown }
+      if (typeof b.file !== 'string' || typeof b.paragraph !== 'number') throw new HttpError(400, 'file and paragraph required')
+      json(res, 200, proseRejectParagraph(b.file, b.paragraph))
     },
   },
 

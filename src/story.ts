@@ -343,6 +343,52 @@ export function proseAcceptParagraph(file: string, index: number, message?: stri
   }
 }
 
+/** Reject ONE paragraph of a scene, leaving every other change pending.
+ *
+ *  The other half of the gate. Accept was per paragraph while the only way to
+ *  say no was Discard, which throws away every change in the scene — so an
+ *  author who liked three paragraphs of four had to accept those three and
+ *  hand the fourth back themselves. A gate that makes agreeing cheap and
+ *  disagreeing expensive is not doing the job.
+ *
+ *  This is the easier direction, and deliberately never reaches git: refusing
+ *  a change means the draft stops carrying it, so main's words go back into
+ *  the working tree and nothing is committed. Everything pending elsewhere
+ *  stays pending.
+ *
+ *  Paragraphs are matched by position — the same assumption
+ *  proseAcceptParagraph already makes, and it has the same limit: a draft that
+ *  inserts a paragraph mid-scene shifts every index after it. Judging by
+ *  sentence (A37-3) needs real alignment and will bring it.
+ */
+export function proseRejectParagraph(file: string, index: number): { file: string } {
+  const draft = proseDraft()
+  if (!draft.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer to reject')
+  const change = draft.changes.find(c => c.file === file)
+  if (!change) throw new HttpError(404, `no draft change for ${file}`)
+  if (change.status !== 'modified' || !change.main) {
+    throw new HttpError(400, 'a paragraph can only be rejected on a modified scene — discard an added scene whole')
+  }
+  const abs = resolveWithin(path.join(STORY, 'prose'), file.slice('prose/'.length))
+  const working = fs.readFileSync(abs, 'utf8')
+  const fm = working.match(FM_RE)
+  if (!fm) throw new HttpError(400, `${file} has no scene frontmatter`)
+
+  const split = (body: string) => body.split(/\n{2,}/).map(x => x.trim()).filter(Boolean)
+  const draftParas = split(working.slice(fm[0].length))
+  const mainParas = split(change.main.body)
+  if (index < 0 || index >= draftParas.length) throw new HttpError(400, `no paragraph ${index} in ${file}`)
+
+  const next = [...draftParas]
+  // Past the end of what main held, the draft invented this paragraph:
+  // refusing it means it goes away, not that it reverts to nothing.
+  if (index < mainParas.length) next[index] = mainParas[index]
+  else next.splice(index, 1)
+
+  fs.writeFileSync(abs, fm[0] + next.join('\n\n') + '\n')
+  return { file }
+}
+
 /** Roll one file back to main. The path arrives from the browser — reject
  *  anything that escapes prose/, including symlink escapes. */
 export function proseDiscard(file: string): void {

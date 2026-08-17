@@ -7,7 +7,7 @@ import { git, makeStory, writeScene } from './fixture.ts'
 
 const story = makeStory()
 process.env.ARC_STORY_PATH = story
-const { proseAccept, proseAcceptParagraph, proseDiscard, proseDraft, proseScenes, proseWrite } = await import('../src/story.ts')
+const { proseAccept, proseAcceptParagraph, proseRejectParagraph, proseDiscard, proseDraft, proseScenes, proseWrite } = await import('../src/story.ts')
 const { HttpError } = await import('../src/http.ts')
 
 function reset(): void {
@@ -168,5 +168,76 @@ test('a paragraph accept is refused on an added scene, and on a bad index', () =
   const abs = path.join(story, file)
   fs.writeFileSync(abs, fs.readFileSync(abs, 'utf8') + '\n\nAn extra line.\n')
   assert.throws(() => proseAcceptParagraph(file, 99), HttpError)
+  reset()
+})
+
+// Reject is accept's mirror and the half of the gate that was missing: the
+// only way to say no used to be Discard, which throws away every change in
+// the scene.
+test('rejecting one paragraph puts main back and leaves the rest pending', () => {
+  reset()
+  const file = 'prose/ch-01/scene-01.md'
+  const abs = path.join(story, file)
+  const before = fs.readFileSync(abs, 'utf8')
+  const fm = before.slice(0, before.indexOf('---', 3) + 4)
+  const mainFirst = before.slice(fm.length).split(/\n{2,}/)[0].trim()
+  fs.writeFileSync(abs, fm + 'FIRST changed.\n\nSECOND changed.\n')
+
+  proseRejectParagraph(file, 0)
+
+  const wt = fs.readFileSync(abs, 'utf8')
+  assert.match(wt, new RegExp(mainFirst.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    "the refused paragraph carries main's words again")
+  assert.doesNotMatch(wt, /FIRST changed\./)
+  assert.match(wt, /SECOND changed\./, 'the change NOT refused is still pending')
+  assert.equal(proseDraft().changes.filter(c => c.file === file).length, 1)
+})
+
+test('rejecting commits nothing — HEAD is untouched by a refusal', () => {
+  reset()
+  const file = 'prose/ch-01/scene-01.md'
+  const abs = path.join(story, file)
+  const headBefore = git(story, 'rev-parse', 'HEAD').trim()
+  const before = fs.readFileSync(abs, 'utf8')
+  const fm = before.slice(0, before.indexOf('---', 3) + 4)
+  fs.writeFileSync(abs, fm + 'CHANGED first.\n\nCHANGED second.\n')
+  proseRejectParagraph(file, 1)
+  assert.equal(git(story, 'rev-parse', 'HEAD').trim(), headBefore)
+})
+
+test('rejecting a paragraph the draft invented removes it', () => {
+  reset()
+  const file = 'prose/ch-01/scene-01.md'
+  const abs = path.join(story, file)
+  const before = fs.readFileSync(abs, 'utf8')
+  const paras = before.slice(before.indexOf('---', 3) + 4).split(/\n{2,}/).map(s => s.trim()).filter(Boolean)
+  fs.writeFileSync(abs, before.trimEnd() + '\n\nA paragraph main never had.\n')
+  proseRejectParagraph(file, paras.length)
+  const wt = fs.readFileSync(abs, 'utf8')
+  assert.doesNotMatch(wt, /never had/)
+  assert.equal(proseDraft().changes.filter(c => c.file === file).length, 0,
+    'refusing the only change leaves the scene clean')
+})
+
+test('rejecting the last pending change leaves the scene matching main', () => {
+  reset()
+  const file = 'prose/ch-01/scene-01.md'
+  const abs = path.join(story, file)
+  const before = fs.readFileSync(abs, 'utf8')
+  const fm = before.slice(0, before.indexOf('---', 3) + 4)
+  // Distinct text on purpose: the suite shares one fixture and HEAD carries
+  // whatever earlier accept tests committed, so reusing their words would
+  // mean writing a body git already has and testing nothing.
+  fs.writeFileSync(abs, fm + 'One paragraph, and this one is refused.\n')
+  proseRejectParagraph(file, 0)
+  assert.equal(proseDraft().changes.filter(c => c.file === file).length, 0)
+})
+
+test('a paragraph reject is refused on an added scene, and on a bad index', () => {
+  reset()
+  writeScene(story, 'prose/ch-01/scene-09.md', 'sc.01-9', 'Brand new.')
+  assert.throws(() => proseRejectParagraph('prose/ch-01/scene-09.md', 0), HttpError)
+  assert.throws(() => proseRejectParagraph('prose/ch-01/scene-01.md', 99), HttpError)
+  assert.throws(() => proseRejectParagraph('prose/ch-01/nope.md', 0), HttpError)
   reset()
 })
