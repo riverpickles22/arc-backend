@@ -18,14 +18,14 @@ import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { STORY } from './config'
 import { HttpError } from './http'
 
-export type Operation = 'capture' | 'query' | 'research' | 'explore' | 'mutate' | 'review'
+type Operation = 'capture' | 'query' | 'research' | 'explore' | 'mutate' | 'review'
 export type Authority = 'exploratory' | 'proposed' | 'author-directed'
 export type Scope = 'local' | 'scene' | 'chapter' | 'arc' | 'story'
 
 /** Inferred structural starting points — where traversal begins, never a
  *  statement about what the author meant. Kept separate from anchors so a
  *  wrong inference cannot corrupt the recorded meaning of the instruction. */
-export interface ScopeRoots {
+interface ScopeRoots {
   temporal: string[]
   location: string[]
   surface: string[]
@@ -115,7 +115,7 @@ open_questions — what the author left open. Preserve their words where you
 
 Answer with the JSON object alone. No prose, no code fence.`
 
-export function buildIntakePrompt(canon: string, input: string): string {
+function buildIntakePrompt(canon: string, input: string): string {
   return [
     INTAKE_RULES,
     `=== THE STORY RECORD (ids you may anchor to; YAML files are authoritative) ===\n${canon}`,

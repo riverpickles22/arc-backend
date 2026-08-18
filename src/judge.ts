@@ -21,7 +21,7 @@ import { HttpError } from './http'
 import type { IntentEnvelope } from './intent'
 import type { Capability } from './capability'
 
-export type Verdict = 'accept' | 'revise' | 'reject'
+type Verdict = 'accept' | 'revise' | 'reject'
 
 export interface Judgment {
   verdict: Verdict
@@ -72,7 +72,7 @@ Answer with one JSON object and nothing else:
 
 No scores. No prose outside the JSON.`
 
-export interface JudgeBrief {
+interface JudgeBrief {
   envelope: IntentEnvelope
   rawAuthorInput: string
   claim: Capability
@@ -85,7 +85,7 @@ export interface JudgeBrief {
   workerReply: string
 }
 
-export function buildJudgePrompt(b: JudgeBrief): string {
+function buildJudgePrompt(b: JudgeBrief): string {
   const produced = b.produced.length
     ? b.produced.map(p => `--- ${p.path} ---\n${p.content}`).join('\n\n')
     : '(the worker wrote nothing)'

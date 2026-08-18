@@ -98,7 +98,7 @@ export function planGraph(runId: string, envelope: IntentEnvelope): WorkGraph {
  *  selectors were too narrow about KNOWLEDGE. Utilization catches the inverse
  *  of the second — selectors so broad the worker never used what it was given.
  *  Averaged together they would hide all three. */
-export interface NodeMetrics {
+interface NodeMetrics {
   node: string
   claim_expansions: number
   context_expansions: number

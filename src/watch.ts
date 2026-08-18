@@ -30,11 +30,18 @@ const IGNORED = ['.arc', '.git', 'node_modules', '.DS_Store']
  *  short enough that the viewer feels live. */
 const DEBOUNCE_MS = 250
 
-export interface FileChange { path: string; run: string | null }
+interface FileChange { path: string; run: string | null }
 
 const isWatched = (rel: string): boolean =>
   WATCHED.some(d => rel === d || rel.startsWith(d + path.sep)) &&
   !IGNORED.some(bad => rel.split(path.sep).includes(bad))
+
+/** The attribution rule itself, as one function: which run, if any, owns each
+ *  path. `flush` is its only caller in production and the tests are the other,
+ *  which is the point — a rule the tests exercise and the watcher re-implements
+ *  is a rule that can pass its tests while drifting. */
+export const classify = (paths: string[]): FileChange[] =>
+  paths.filter(isWatched).map(p => ({ path: p, run: claimantOf(p) }))
 
 let watcher: fs.FSWatcher | null = null
 let pending = new Set<string>()
@@ -51,7 +58,7 @@ function flush(): void {
   pending = new Set()
   if (!paths.length) return
 
-  const changes: FileChange[] = paths.map(p => ({ path: p, run: claimantOf(p) }))
+  const changes = classify(paths)
   const external = changes.filter(c => c.run === null)
 
   // One message per run that owned something, so a subscriber can attribute
@@ -112,9 +119,5 @@ export function stopWatcher(): void {
   watcher = null
   pending = new Set()
 }
-
-/** Exposed for tests: classify without waiting on the filesystem. */
-export const classify = (paths: string[]): FileChange[] =>
-  paths.filter(isWatched).map(p => ({ path: p, run: claimantOf(p) }))
 
 export const watchedPrefixes = (): string[] => [...WATCHED]

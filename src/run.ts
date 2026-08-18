@@ -18,6 +18,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { dump as yamlDump } from 'js-yaml'
+import type { StreamMessage } from 'arc-canon-graph'
 import { STORY } from './config'
 import type { Capability } from './capability'
 import { fingerprints, storyRevision } from './records'
@@ -27,7 +28,7 @@ export type Source = 'ui' | 'claude-code' | 'cli' | 'external'
 /** The immutable root, written the moment a run starts. `story_revision`
  *  answers "what version of the story did this begin against?" in one field —
  *  per-node fingerprints answer the finer question of what actually changed. */
-export interface RunRoot {
+interface RunRoot {
   run_id: string
   source: Source
   raw_author_input: string
@@ -35,7 +36,7 @@ export interface RunRoot {
   story_revision: string | null
 }
 
-export type NodeStatus = 'queued' | 'running' | 'completed' | 'stale' | 'needs_author' | 'failed'
+type NodeStatus = 'queued' | 'running' | 'completed' | 'stale' | 'needs_author' | 'failed'
 
 export interface WorkNode {
   id: string
@@ -69,7 +70,7 @@ export interface WorkGraph {
   nodes: WorkNode[]
 }
 
-export type EventName =
+type EventName =
   | 'run.started'
   | 'intent.resolved'
   | 'task.started'
@@ -137,19 +138,7 @@ export function claimRunId(): string {
 // that throws, or a socket that died without saying so, must never fail the
 // run that was only trying to report progress.
 
-/** One message shape for everything the viewer watches, so it holds a single
- *  subscription. `run: null` is a story-level event with no run behind it —
- *  a file that changed outside any governed work, which arc must be able to
- *  say plainly rather than dress up (work-graph.md §10). */
-export interface StreamMessage {
-  run: string | null
-  at: string
-  event: string
-  node?: string
-  detail?: unknown
-}
-
-export type StreamListener = (message: StreamMessage) => void
+type StreamListener = (message: StreamMessage) => void
 
 const listeners = new Set<StreamListener>()
 
@@ -244,7 +233,7 @@ export function staleReads(node: WorkNode): string[] {
     .map(([id]) => id)
 }
 
-export interface Receipt {
+interface Receipt {
   run_id: string
   source: Source
   raw_author_input: string

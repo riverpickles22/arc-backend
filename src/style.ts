@@ -14,9 +14,8 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import type { StyleLayerPayload as StyleLayer } from 'arc-canon-graph'
 import { STORY } from './config'
-
-export interface StyleLayer { source: 'author' | 'story'; path: string; body: string }
 
 /** Where the author-level contract lives, or null when the author has none.
  *  Pure: environment and home directory come in as arguments. */

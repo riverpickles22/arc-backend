@@ -119,7 +119,7 @@ export function materialItems(): MaterialItem[] {
 
 /** The statuses a material item may hold (conventions §12). */
 const MATERIAL_STATUS = ['unplaced', 'placed', 'absorbed', 'dropped'] as const
-export type MaterialStatus = (typeof MATERIAL_STATUS)[number]
+type MaterialStatus = (typeof MATERIAL_STATUS)[number]
 
 /** Correct a filed thought, or change where it sits in its lifecycle.
  *
@@ -403,7 +403,7 @@ export function proseDiscard(file: string): void {
   clearGenerated([file])
 }
 
-export interface Asset { body: Buffer; contentType: string }
+interface Asset { body: Buffer; contentType: string }
 
 /**
  * Read a file from the story's assets/ directory.

@@ -20,7 +20,7 @@ export type { FiledItem }
 /** What the worker actually put on disk, read back from the files themselves
  *  rather than from anything the model said it did. The author is being shown
  *  what arc understood, so it has to be the record, not the claim. */
-export function describeFiled(produced: { path: string; content: string }[]): FiledItem[] {
+function describeFiled(produced: { path: string; content: string }[]): FiledItem[] {
   return produced.map(p => {
     let item: Record<string, unknown> = {}
     try {

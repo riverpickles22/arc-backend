@@ -41,7 +41,7 @@ const MAX_PAIRS = 24
  *  file always show the identical string. */
 const EVIDENCE_CHARS = 320
 
-export interface EditPair {
+interface EditPair {
   n: number
   scene: string
   /** 'draft' — arc's draft vs what the author kept (the ledger diff).
@@ -193,7 +193,7 @@ export function buildLearnPrompt(input: {
   ].filter(Boolean).join('\n\n')
 }
 
-export interface RawProposal { rule: string; section: string | null; edits: number[] }
+interface RawProposal { rule: string; section: string | null; edits: number[] }
 
 /** Tolerant parse, matching the other passes: fences stripped, junk dropped. */
 export function parseProposals(text: string): RawProposal[] {
@@ -265,7 +265,7 @@ function acceptedBody(file: string): string | null {
   }
 }
 
-export interface LearnResult {
+interface LearnResult {
   added: ProposedRule[]
   /** Why nothing was proposed, when nothing was — including the cases that
    *  never reached the model at all. */

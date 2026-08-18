@@ -31,7 +31,6 @@ import {
 import { load as yamlLoad } from 'js-yaml'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { resolveWithin } from './safe-path'
-import { renderContext } from './context'
 import { takenIds } from './records'
 import type { IntentEnvelope } from './intent'
 import type { Run } from './run'
@@ -93,7 +92,7 @@ two, say which — that judgment is the author's to overturn.`
 /** Write one material item, under capability. Material is not canon: it has
  *  its own lifecycle (unplaced → placed → absorbed | dropped) and no
  *  ratification gate, so authority over a material id is an ordinary WRITE. */
-export function makeMaterialTool(actions: ChatAction[], cap: Capability) {
+function makeMaterialTool(actions: ChatAction[], cap: Capability) {
   return betaTool({
     name: 'write_material_file',
     description:
@@ -125,7 +124,7 @@ export function makeMaterialTool(actions: ChatAction[], cap: Capability) {
 
 /** Gate, write, validate, revert — the one path both engines share, so the
  *  capability model holds identically whether or not the worker had tools. */
-export function writeMaterial(rel: string, parsed: unknown, cap: Capability, actions: ChatAction[]): string {
+function writeMaterial(rel: string, parsed: unknown, cap: Capability, actions: ChatAction[]): string {
   const abs = resolveWithin(STORY, rel)
 
   // A claim may name material either way — by id (mat.*) or by path
@@ -153,7 +152,7 @@ export function writeMaterial(rel: string, parsed: unknown, cap: Capability, act
 
 /** mint_id scoped to this worker. The widening it performs is recorded on the
  *  run, which is what makes claim expansion measurable rather than invisible. */
-export function makeMintTool(actions: ChatAction[], cap: Capability, run: Run, node: string) {
+function makeMintTool(actions: ChatAction[], cap: Capability, run: Run, node: string) {
   return betaTool({
     name: 'mint_id',
     description:
@@ -192,7 +191,7 @@ export function makeMintTool(actions: ChatAction[], cap: Capability, run: Run, n
   })
 }
 
-export interface WorkerResult {
+interface WorkerResult {
   reply: string
   actions: ChatAction[]
 }
@@ -307,14 +306,4 @@ export async function runMaterialWorker(
     .map(b => b.text)
     .join('\n')
   return { reply, actions }
-}
-
-/** DEPRECATED by A13-5, kept only so nothing that still imports it breaks.
- *
- *  It took the envelope's anchors and expanded them, which conflated two
- *  different things: what the author meant, and what this worker needs. The
- *  node now derives its own context from its own selectors, and hands the
- *  manifest down. See context.ts. */
-export function buildWorkerContext(anchors: string[]): string {
-  return renderContext(anchors.map(id => ({ id, because: 'legacy anchor expansion', via: 'legacy' })))
 }

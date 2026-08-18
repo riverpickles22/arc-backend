@@ -27,7 +27,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import type Anthropic from '@anthropic-ai/sdk'
-import type { ResolvedAnnotation } from 'arc-canon-graph'
+import type { ResolvedAnnotation, RevisionResult } from 'arc-canon-graph'
 import { MODEL, STORY } from './config'
 import { getClient } from './agent'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
@@ -39,12 +39,12 @@ import { locksOn } from './locks'
 import { lockViolations } from 'arc-canon-graph/annotations.ts'
 import { parseScene } from './story'
 
-export interface Conflict {
+interface Conflict {
   between: string[]
   tension: string
 }
 
-export interface RevisionCluster {
+interface RevisionCluster {
   scene: string
   file: string
   notes: ResolvedAnnotation[]
@@ -234,20 +234,6 @@ async function ask(prompt: string): Promise<string> {
     .join('\n')
 }
 
-export interface RevisionResult {
-  scene: string
-  file: string
-  /** The notes this revision answers — provenance, carried to the receipt. */
-  notes: string[]
-  words_before: number
-  words_after: number
-  word_delta: number
-  changed: boolean
-  stale: string[]
-  refused?: string
-  error?: string
-}
-
 const words = (s: string) => s.split(/\s+/).filter(Boolean).length
 
 /** Revise one scene. Prose generation is SERIAL within this call by
@@ -340,7 +326,7 @@ async function reviseOne(cluster: RevisionCluster, node: WorkNode, run: Run): Pr
   }
 }
 
-export interface ReviseReport {
+interface ReviseReport {
   /** Surfaced before anything was written. Non-empty means nothing was. */
   conflicts: Conflict[]
   clusters: number

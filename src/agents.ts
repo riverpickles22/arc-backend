@@ -17,21 +17,10 @@
 // somebody else's problem, later.
 import fs from 'node:fs'
 import path from 'node:path'
+import type { Agent, HookRequest, HookResponse } from 'arc-canon-graph'
 import { STORY } from './config'
 import { publishStream } from './run'
 import { openRun, observe } from './runs'
-
-export interface Agent {
-  session: string
-  cwd: string
-  source: string
-  since: string
-  /** The run this session's current turn is attached to, when it has one. */
-  run: string | null
-  state: 'idle' | 'working'
-  /** Observed actions this session has taken, newest last. Bounded. */
-  actions: { at: string; detail: unknown }[]
-}
 
 const agents = new Map<string, Agent>()
 const MAX_ACTIONS = 50
@@ -59,23 +48,15 @@ function announce(agent: Agent, event: string, detail?: unknown): void {
   publishStream({ run: agent.run, at: new Date().toISOString(), event, detail: { session: agent.session, ...(detail as object ?? {}) } })
 }
 
-export interface HookResult { ok: true; ignored?: true; run?: string }
-
 /** One entry point for every hook, because there is one hook script.
  *
  *  Unknown events are accepted and ignored rather than refused: a Claude
  *  release that adds a hook type must not start failing an author's session
- *  because arc had not heard of it. */
-export function hook(input: {
-  event: string
-  session: string
-  cwd: string
-  source?: string
-  prompt?: string
-  detail?: unknown
-  /** Set when arc launched this session itself — see ARC_RUN_ID below. */
-  run?: string
-}): HookResult {
+ *  because arc had not heard of it.
+ *
+ *  `input.run` is set when arc launched this session itself — see ARC_RUN_ID
+ *  below. */
+export function hook(input: HookRequest): HookResponse {
   if (!input.session) return { ok: true, ignored: true }
   if (!servesThisStory(input.cwd)) return { ok: true, ignored: true }
 

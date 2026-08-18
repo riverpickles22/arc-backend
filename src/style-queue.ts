@@ -123,7 +123,7 @@ export function appendToQueue(fresh: ProposedRule[]): { added: ProposedRule[]; q
  *  evidence does NOT come with it: the contract is a set of instructions for
  *  whoever writes next, and the argument that produced a rule stops mattering
  *  the moment the author agrees with it. The history is in git. */
-export const renderRatified = (r: ProposedRule): string =>
+const renderRatified = (r: ProposedRule): string =>
   `\n${r.section ? `## ${r.section}\n\n` : ''}${r.rule.trim()}\n`
 
 /** Place a ratified rule in the contract text.

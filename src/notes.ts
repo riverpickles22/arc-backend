@@ -15,21 +15,12 @@
 // migrated here once, so nothing from that period is lost.
 import fs from 'node:fs'
 import path from 'node:path'
+import type { Note } from 'arc-canon-graph'
 import { STORY } from './config'
 import { HttpError } from './http'
 
 const notesDir = (): string => path.join(STORY, 'notes')
 const legacyDir = (): string => path.join(STORY, '.arc', 'dumps')
-
-export interface Note {
-  /** The file's own name, which is also its handle. */
-  file: string
-  id: string
-  created: string
-  /** Run ids that have worked this note into the story. */
-  worked: string[]
-  text: string
-}
 
 const FM = /^---\n([\s\S]*?)\n---\n?/
 

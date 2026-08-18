@@ -24,20 +24,9 @@ import { readOnly, type Capability } from './capability'
 import { DEFAULT_POLICY, citedIn, renderContext, resolveContext, utilization, type Selector } from './context'
 import { snapshotReads, staleReads, type Run, type WorkNode } from './run'
 import { styleContract } from './style'
-import type { ProseScene } from 'arc-canon-graph'
+import type { LensFinding, ProseScene } from 'arc-canon-graph'
 
-export type LensName = 'character' | 'style' | 'historical' | 'continuity'
-
-export interface LensFinding {
-  lens: LensName
-  /** What the finding is about — an id where one applies, else the aspect. */
-  about: string
-  claim: string
-  /** What in the scene or the context supports it. A finding without this is
-   *  an opinion, and the author has no way to judge it. */
-  evidence: string
-  register: 'argued'
-}
+type LensName = LensFinding['lens']
 
 interface LensSpec {
   name: LensName
@@ -192,7 +181,7 @@ export function parseFindings(lens: LensName, text: string): LensFinding[] {
   })
 }
 
-export interface LensResult {
+interface LensResult {
   lens: LensName
   findings: LensFinding[]
   /** Per-lens measurements (work-graph.md §12). */
@@ -272,7 +261,7 @@ Say which findings agree, which conflict, and which one thing you would look
 at first. Three or four sentences. Everything you are summarising is argued,
 never proven — do not upgrade it.`
 
-export interface FanOutResult {
+interface FanOutResult {
   scene: string
   lenses: LensResult[]
   findings: LensFinding[]

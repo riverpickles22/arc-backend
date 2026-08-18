@@ -22,6 +22,7 @@
 //
 // INTAKE RESOLVES INTENT; WORKERS RESOLVE CONTEXT. Otherwise intake becomes a
 // hidden retrieval system and every downstream node inherits its mistakes.
+import type { CanonDoc } from 'arc-canon-graph'
 import { canonJson } from './canon'
 import type { IntentEnvelope } from './intent'
 
@@ -92,22 +93,21 @@ export function deriveSelectors(envelope: IntentEnvelope): Selector[] {
  *  empty manifest, loudly in the log and plainly in what the worker is told,
  *  rather than refusing to plan at all. The worker still has read_story_file
  *  under its claim, which is the same fallback it always had. */
-function loadCanon(): CanonDoc | null {
+function loadCanon(): CanonExport | null {
   try {
-    return JSON.parse(canonJson()) as CanonDoc
+    return JSON.parse(canonJson()) as CanonExport
   } catch (e) {
     console.error('[warn] canon export unavailable — nodes will plan with an empty context manifest:', e)
     return null
   }
 }
 
-export interface CanonDoc {
-  story?: unknown
-  entities?: Record<string, { id: string; name?: string }>
-  events?: Record<string, { id: string; involves?: string[]; at?: unknown }>
-  relationships?: { from: string; to: string; kind?: string }[]
-  chapters?: { id: string }[]
-}
+/** The export as this module reads it: every field optional, because an
+ *  unreadable or partial export must degrade rather than throw. The shape
+ *  itself is arc-canon-graph's CanonDoc — declaring a second one here is how
+ *  `involves` (a field the event schema has never had) survived for as long
+ *  as it did. */
+type CanonExport = Partial<CanonDoc>
 
 /** Resolve selectors into a manifest, refusing rather than truncating.
  *
@@ -120,7 +120,7 @@ export function resolveContext(
   /** The record to derive against. Injectable so the derivation is a pure
    *  function of a graph rather than of a subprocess — this arithmetic is
    *  exactly the part that must be testable without a story on disk. */
-  canon?: CanonDoc,
+  canon?: CanonExport,
 ): ContextItem[] {
   // An unreadable export means nothing can be DERIVED — but the author's
   // anchors are not derived, so they survive it. Bailing out here would have
@@ -150,8 +150,13 @@ export function resolveContext(
         if (r.from === sel.of) add(supporting, r.to, `${r.kind ?? 'related'} from ${sel.of}`, `neighbours:${sel.of}`)
         if (r.to === sel.of) add(supporting, r.from, `${r.kind ?? 'related'} to ${sel.of}`, `neighbours:${sel.of}`)
       }
+      // Participant or witness — the same two edges canon-graph's neighbours()
+      // walks. This read `e.involves` until A-sweep: a field the event schema
+      // has never had, so the branch never fired and an entity's own events
+      // never reached its neighbourhood.
       for (const e of Object.values(doc.events ?? {})) {
-        if (e.involves?.includes(sel.of)) add(supporting, e.id, `event involving ${sel.of}`, `neighbours:${sel.of}`)
+        const involved = (e.participants ?? []).some(p => p.entity === sel.of) || (e.witnesses ?? []).includes(sel.of)
+        if (involved) add(supporting, e.id, `event involving ${sel.of}`, `neighbours:${sel.of}`)
       }
     } else {
       add(supporting, sel.of, sel.because, `surface:${sel.of}`)
@@ -167,7 +172,7 @@ export function resolveContext(
 /** The context a worker is handed: the manifest, expanded, each with its
  *  reason attached to the record itself so the model sees WHY it was given
  *  every fact rather than a flat bundle it must trust. */
-export function renderContext(manifest: ContextItem[], canon?: CanonDoc): string {
+export function renderContext(manifest: ContextItem[], canon?: CanonExport): string {
   const doc = canon ?? loadCanon()
   if (!doc) {
     return JSON.stringify({

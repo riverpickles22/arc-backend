@@ -29,7 +29,7 @@ function canonStamp(dir = path.join(STORY, 'canon')): string {
 }
 
 /** Run one of arc-core's python tools against the configured story. */
-export function runTool(script: string, args: string[] = []): { ok: boolean; output: string } {
+function runTool(script: string, args: string[] = []): { ok: boolean; output: string } {
   try {
     const out = execFileSync(PYTHON, [path.join(CORE, 'tools', script), STORY, ...args], {
       cwd: CORE, encoding: 'utf8', timeout: 30_000, maxBuffer: 32 * 1024 * 1024,

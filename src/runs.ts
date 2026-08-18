@@ -15,22 +15,7 @@ import { STORY } from './config'
 import { HttpError } from './http'
 import { Run, subscribeRuns, type RunEvent, type Source } from './run'
 import type { RunOutcome } from './orchestrate'
-
-export interface RunSummary {
-  id: string
-  source: Source
-  prompt: string
-  started_at: string
-  /** Where the run has got to. `awaiting` means it is the author's move. */
-  state: 'working' | 'awaiting' | 'closed'
-  events: number
-  /** Set once the author has answered. */
-  decision?: 'accepted' | 'rejected' | 'abandoned'
-  /** Canon ids this run holds WRITE or PROPOSE over — never what it merely
-   *  read. The slice-1 run read nine entities to file one item; lighting nine
-   *  nodes for that is exactly the noise every other arc surface avoids. */
-  touching: string[]
-}
+import type { RunSummary } from 'arc-canon-graph'
 
 interface Entry {
   run: Run

@@ -17,7 +17,7 @@ import { STORY } from './config'
 const DIR = () => path.join(STORY, '.arc', 'generated')
 const INDEX = () => path.join(STORY, '.arc', 'drafts.jsonl')
 
-export interface LedgerEntry {
+interface LedgerEntry {
   at: string
   file: string
   sha: string

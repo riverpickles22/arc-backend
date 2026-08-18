@@ -8,7 +8,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { dump as yamlDump, load as yamlLoad } from 'js-yaml'
-import type { AnnotationLike, ResolvedAnnotation } from 'arc-canon-graph'
+import type { AnnotationLike, CreateAnnotationRequest, ResolvedAnnotation } from 'arc-canon-graph'
 import { orphanedAnnotations, resolveAnnotations } from 'arc-canon-graph/annotations.ts'
 import { STORY } from './config'
 import { HttpError } from './http'
@@ -51,20 +51,10 @@ function nextId(): string {
   return `note.${String(Math.max(0, ...used) + 1).padStart(3, '0')}`
 }
 
-export interface NewAnnotation {
-  scene: string
-  /** Omit for a note about the whole scene. */
-  paragraph?: number
-  quote?: string
-  body: string
-  kind?: 'note' | 'keypoint'
-  by?: 'author' | 'agent'
-}
-
 /** File a note. The anchor is captured as the author made it; nothing about
  *  scope is asked for or inferred here — a request carrying a paragraph is a
  *  note about that passage, one carrying none is about the whole scene. */
-export function createAnnotation(input: NewAnnotation): ResolvedAnnotation {
+export function createAnnotation(input: CreateAnnotationRequest): ResolvedAnnotation {
   if (!input.scene || !input.body?.trim()) {
     throw new HttpError(400, 'scene and body are required')
   }

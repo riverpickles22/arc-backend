@@ -20,7 +20,7 @@
 import { dump as yamlDump } from 'js-yaml'
 
 /** Id prefixes by entity type — conventions §2. `*` in a grant means any. */
-export const TYPE_PREFIX: Record<string, string> = {
+const TYPE_PREFIX: Record<string, string> = {
   character: 'char',
   place: 'place',
   faction: 'faction',
@@ -34,7 +34,7 @@ export const TYPE_PREFIX: Record<string, string> = {
   material: 'mat',
 }
 
-export interface CreateGrant {
+interface CreateGrant {
   /** An entity type from TYPE_PREFIX, or '*' for any. */
   type: string
   /** Narrows the grant for a human reader and for the audit record; not enforced. */
@@ -144,7 +144,7 @@ export function diffRecords(before: CanonRecord[], after: CanonRecord[]): Delta 
 
 // ---- the check ----------------------------------------------------------
 
-export interface ScopeCheck {
+interface ScopeCheck {
   ok: boolean
   /** Present when !ok: the SCOPE_EXCEEDED text the worker gets back. */
   message?: string

@@ -26,7 +26,7 @@ export function chooseEngine(
 
 let cliChecked: boolean | undefined
 /** Is the claude CLI on PATH? Checked once per process. */
-export function claudeCliAvailable(): boolean {
+function claudeCliAvailable(): boolean {
   if (cliChecked === undefined) {
     try {
       cliChecked = spawnSync('claude', ['--version'], { timeout: 10_000 }).status === 0

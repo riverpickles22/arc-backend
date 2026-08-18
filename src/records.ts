@@ -30,14 +30,14 @@ export function listFiles(dir: string, base = ''): string[] {
   return out
 }
 
-export interface LocatedRecord extends CanonRecord {
+interface LocatedRecord extends CanonRecord {
   path: string
 }
 
 /** Every record under the given story directories. An unparseable file
  *  contributes nothing — it reserves no id and blocks no work; the validator
  *  is what reports it. */
-export function storyRecords(dirs: string[] = ['canon', 'material']): LocatedRecord[] {
+function storyRecords(dirs: string[] = ['canon', 'material']): LocatedRecord[] {
   const out: LocatedRecord[] = []
   for (const dir of dirs) {
     for (const rel of listFiles(dir)) {

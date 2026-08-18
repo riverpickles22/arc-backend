@@ -26,8 +26,12 @@ const CANON = {
     'char.diego': { id: 'char.diego', name: 'Diego' },
     'place.cafe': { id: 'place.cafe', name: 'Café La Paloma' },
   },
+  // `participants` and `witnesses` are the field names the event schema
+  // actually has. The fixture used to say `involves`, which matched the
+  // reader's own invented type and so agreed with it about nothing real.
   events: {
-    'event.hog': { id: 'event.hog', involves: ['char.carlos'] },
+    'event.hog': { id: 'event.hog', when: { date: '1959-01-02' }, participants: [{ entity: 'char.carlos' }] },
+    'event.storm': { id: 'event.storm', when: { date: '1959-03-04' }, witnesses: ['char.elena'] },
   },
   relationships: [
     { from: 'char.elena', to: 'char.carlos', kind: 'family' },
@@ -109,6 +113,18 @@ test('an anchor is primary and says so; a neighbour names the path that reached 
   for (const m of manifest.filter(x => x.via.startsWith('neighbours:'))) {
     assert.match(m.because, /char\.carlos/, 'a neighbour names what it is a neighbour of')
   }
+})
+
+test('a neighbours selector reaches the events the entity is in, as participant or witness', () => {
+  const carlos = resolveContext(deriveSelectors(envelope()), DEFAULT_POLICY, CANON)
+  const hog = carlos.find(m => m.id === 'event.hog')
+  assert.ok(hog, 'the event char.carlos participates in is in the manifest')
+  assert.match(hog.via, /^neighbours:char\.carlos$/)
+  assert.equal(carlos.some(m => m.id === 'event.storm'), false,
+    'an event char.carlos has nothing to do with stays out')
+
+  const elena = resolveContext(deriveSelectors(envelope({ anchors: ['char.elena'] })), DEFAULT_POLICY, CANON)
+  assert.ok(elena.some(m => m.id === 'event.storm'), 'a witness counts as involved')
 })
 
 test('nothing is manifested that does not exist — a wrong root adds nothing', () => {
