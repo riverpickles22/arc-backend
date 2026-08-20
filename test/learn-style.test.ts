@@ -16,11 +16,12 @@ process.env.ARC_DRAFT_ENGINE = 'none'
 
 const {
   editPairs, changedWords, significant, buildLearnPrompt, parseProposals, materialize,
-  runLearnStyle, MIN_CHANGED_WORDS, MAX_PROPOSALS_PER_RUN, QUEUE_SUPPRESS_AT,
+  independentExamples, refusalPairs, runLearnStyle, MIN_CHANGED_WORDS, MAX_PROPOSALS_PER_RUN, QUEUE_SUPPRESS_AT,
 } = await import('../src/learn-style.ts')
 const { parseQueue, renderQueue, ruleId, readQueue, writeQueue, ratifyRule, queuePath, placeRule } =
   await import('../src/style-queue.ts')
 const { recordGenerated, generatedFor } = await import('../src/ledger.ts')
+const { readJudgments } = await import('../src/evidence.ts')
 const { proseAccept } = await import('../src/story.ts')
 
 // ---- the diff arithmetic -------------------------------------------------
@@ -106,28 +107,48 @@ test('a cut paragraph is labelled, not shown as an empty line', () => {
 test('parseProposals strips fences and drops entries with no rule text', () => {
   const out = parseProposals('```json\n[{"rule":"Cut the adverb.","section":"Diction","edits":[1,2]},{"section":"x","edits":[3]},{"rule":"   "}]\n```')
   assert.equal(out.length, 1)
-  assert.deepEqual(out[0], { rule: 'Cut the adverb.', section: 'Diction', edits: [1, 2] })
+  assert.deepEqual(out[0], { rule: 'Cut the adverb.', section: 'Diction', layer: null, edits: [1, 2] })
   assert.throws(() => parseProposals('no array here'), /JSON array/)
 })
 
 test('evidence is materialized from arc\'s own diff table — model text can never become a quote', () => {
-  const pairs = editPairs('He was very tired indeed.', 'His arms had quit arguing.', 'sc.01-1')
+  // Two paragraphs, so the proposal clears the independence bar on its own
+  // merits. The property under test is where the QUOTES come from.
+  const pairs = editPairs(
+    'He was very tired indeed.\n\nThe coast was extremely far away.',
+    'His arms had quit arguing.\n\nThe coast stayed where it was.',
+    'sc.01-1')
   const proposals = parseProposals(JSON.stringify([
     // A model trying to supply its own quote: the extra field is simply not read.
-    { rule: 'Show fatigue in the body.', section: 'Diction', edits: [1], quote: 'A QUOTE ARC NEVER WROTE' },
+    { rule: 'Show fatigue in the body.', section: 'Diction', edits: [1, 2], quote: 'A QUOTE ARC NEVER WROTE' },
   ]))
   const out = materialize(proposals, pairs, '2026-08-13T00:00:00Z')
   assert.equal(out.length, 1)
-  assert.deepEqual(out[0].evidence, [{ scene: 'sc.01-1', wrote: 'He was very tired indeed.', kept: 'His arms had quit arguing.' }])
+  assert.equal(out[0].evidence[0].wrote, 'He was very tired indeed.')
+  assert.equal(out[0].evidence[0].kept, 'His arms had quit arguing.')
   assert.equal(JSON.stringify(out).includes('ARC NEVER WROTE'), false)
 })
 
-test('a proposal citing no real edit number is dropped, and the cap holds', () => {
-  const pairs = editPairs('a b c d e f g', 'h i j k l m n', 'sc.01-1')
-  assert.equal(materialize([{ rule: 'Groundless.', section: null, edits: [99] }], pairs, 'now').length, 0)
-  assert.equal(materialize([{ rule: 'Groundless.', section: null, edits: [] }], pairs, 'now').length, 0)
+test('one example is never a rule, however many times the same paragraph is worked', () => {
+  const oneParagraph = editPairs('He was very tired indeed.', 'His arms had quit arguing.', 'sc.01-1')
+  assert.equal(
+    materialize([{ rule: 'From a single edit.', section: null, layer: null, edits: [1] }], oneParagraph, 'now').length,
+    0, 'a lone edit argues nothing')
 
-  const many = Array.from({ length: 8 }, (_, i) => ({ rule: `Rule ${i}.`, section: null, edits: [1] }))
+  // The same paragraph cited twice is still one place in the manuscript.
+  const twice = [...oneParagraph, { ...oneParagraph[0], n: 2 }]
+  assert.equal(independentExamples(twice), 1, 'two passes at one paragraph is one example')
+  assert.equal(
+    materialize([{ rule: 'From one paragraph, twice.', section: null, layer: null, edits: [1, 2] }], twice, 'now').length,
+    0, 'and one example is still not a rule')
+})
+
+test('a proposal citing no real edit number is dropped, and the cap holds', () => {
+  const pairs = editPairs('a b c d e f g\n\no p q r s t u', 'h i j k l m n\n\nv w x y z aa bb', 'sc.01-1')
+  assert.equal(materialize([{ rule: 'Groundless.', section: null, layer: null, edits: [99] }], pairs, 'now').length, 0)
+  assert.equal(materialize([{ rule: 'Groundless.', section: null, layer: null, edits: [] }], pairs, 'now').length, 0)
+
+  const many = Array.from({ length: 8 }, (_, i) => ({ rule: `Rule ${i}.`, section: null, layer: null, edits: [1, 2] }))
   assert.equal(materialize(many, pairs, 'now').length, MAX_PROPOSALS_PER_RUN)
 })
 
@@ -313,13 +334,37 @@ test('the prompt frames revisions as the author against themself', () => {
 
 test('a rule is revision-sourced only when every cited edit is', () => {
   const pairs = [
-    ...editPairs('Draft paragraph arc wrote at first.', 'Draft paragraph the author kept instead.', 'sc.01-1'),
-    ...editPairs('Revision the author had accepted before.', 'Revision the author rewrote by their own hand.', 'sc.02-1', 'revision'),
+    ...editPairs('Draft paragraph arc wrote at first.\n\nA second draft paragraph arc wrote.',
+      'Draft paragraph the author kept instead.\n\nA second paragraph the author kept.', 'sc.01-1'),
+    ...editPairs('Revision the author had accepted before.\n\nAnother the author had accepted.',
+      'Revision the author rewrote by their own hand.\n\nAnother they rewrote themselves.', 'sc.02-1', 'revision'),
   ].map((p, i) => ({ ...p, n: i + 1 }))
-  const [pure] = materialize([{ rule: 'From the revision alone.', section: null, edits: [2] }], pairs, 'now')
-  const [mixed] = materialize([{ rule: 'From both kinds of edit.', section: null, edits: [1, 2] }], pairs, 'now')
+  const [pure] = materialize([{ rule: 'From the revisions alone.', section: null, layer: null, edits: [3, 4] }], pairs, 'now')
+  const [mixed] = materialize([{ rule: 'From both kinds of edit.', section: null, layer: null, edits: [1, 3] }], pairs, 'now')
   assert.equal(pure.source, 'revision')
   assert.equal(mixed.source, 'draft')
+})
+
+test('the author layer has to be earned across scenes, not asserted', () => {
+  const oneScene = editPairs(
+    'A paragraph arc wrote.\n\nAnother paragraph arc wrote.',
+    'What the author put instead.\n\nWhat they put here instead.', 'sc.01-1')
+  const [refiled] = materialize(
+    [{ rule: 'Claims to be about the writer.', section: null, layer: 'author', edits: [1, 2] }], oneScene, 'now')
+  assert.equal(refiled.layer, 'story', 'two paragraphs of one scene argue about this book')
+
+  const twoScenes = [
+    ...editPairs('A paragraph arc wrote.', 'What the author put instead.', 'sc.01-1'),
+    ...editPairs('A paragraph arc wrote elsewhere.', 'What the author put there.', 'sc.02-1'),
+  ].map((p, i) => ({ ...p, n: i + 1 }))
+  const [earned] = materialize(
+    [{ rule: 'Holds across the book.', section: null, layer: 'author', edits: [1, 2] }], twoScenes, 'now')
+  assert.equal(earned.layer, 'author')
+
+  // And arc recommending nothing is a story rule, never a promotion.
+  const [quiet] = materialize(
+    [{ rule: 'No recommendation given.', section: null, layer: null, edits: [1, 2] }], twoScenes, 'now')
+  assert.equal(quiet.layer, 'story')
 })
 
 test('source survives the queue file, and its evidence reads as the author against themself', () => {
@@ -362,4 +407,101 @@ test('a hand revision to accepted prose reaches the model gate; new hand-written
   const r2 = await runLearnStyle([fresh])
   assert.equal(r2.skipped, 'no-edits')
   assert.equal(r2.pairsConsidered, 0)
+})
+
+test('the layer recommendation survives the queue, and decides nothing', () => {
+  writeQueue([])
+  const withLayer = {
+    id: ruleId('A habit across books.'), rule: 'A habit across books.', section: 'Sentences',
+    at: '2026-08-20T00:00:00Z', source: 'revision' as const, layer: 'author' as const,
+    evidence: [{ scene: 'sc.01-1', wrote: 'x', kept: 'y' }],
+  }
+  // No source and no layer: 'draft' is the absent default, and a queue
+  // written before either field existed must round-trip untouched.
+  const without = {
+    id: ruleId('A rule with no recommendation.'), rule: 'A rule with no recommendation.', section: null,
+    at: '2026-08-20T00:00:00Z',
+    evidence: [{ scene: 'sc.01-1', wrote: 'x', kept: 'y' }],
+  }
+  writeQueue([withLayer, without])
+  // Identity both ways: a queue written without a layer must not grow one.
+  assert.deepEqual(readQueue(), [withLayer, without])
+
+  // And the recommendation is not the decision. arc says author; the click
+  // says story; the story file is what gets written.
+  const layers: Record<string, string> = {}
+  ratifyRule(withLayer.id, 'ratify', 'story', l => {
+    layers[l] = path.join(STORY, l === 'author' ? 'author-style.md' : 'docs/style.md')
+    return layers[l]
+  })
+  assert.ok(fs.existsSync(path.join(STORY, 'docs/style.md')), "the author's click chose the file")
+  assert.equal(fs.existsSync(path.join(STORY, 'author-style.md')), false,
+    "arc's recommendation did not write anywhere on its own")
+  writeQueue([])
+})
+
+test('a refusal reads as a refusal in the queue, not as something the author kept', () => {
+  writeQueue([])
+  const refused = {
+    id: ruleId('Do not open on the weather.'), rule: 'Do not open on the weather.', section: null,
+    at: '2026-08-20T00:00:00Z', source: 'refusal' as const, layer: 'story' as const,
+    evidence: [{ scene: 'sc.01-1', wrote: 'The wind had turned in the night.', kept: 'The lamp had been lit for an hour.' }],
+  }
+  writeQueue([refused])
+  const rendered = fs.readFileSync(queuePath(), 'utf8')
+  assert.match(rendered, /you refused it, keeping/, 'the author declined this — saying "you kept" would claim the opposite')
+  assert.deepEqual(readQueue(), [refused], 'and it round-trips')
+  writeQueue([])
+})
+
+test('a refusal argues once, and only when it is about the writing', async () => {
+  const { recordJudgment } = await import('../src/evidence.ts')
+  const rel = 'prose/ch-04/scene-01.md'
+  const judgment = (arcWrote: string, authorKept: string, paragraph: number) => ({
+    file: rel, scene: 'sc.04-1', granularity: 'paragraph' as const, paragraph,
+    verdict: 'rejected' as const, arcWrote, authorKept, origin: 'revise', baseline: null,
+  })
+  recordJudgment(judgment('He gazed out, wondering nervously what would come.', 'He watched the road.', 0))
+  recordJudgment(judgment('She had always known, somehow, that it would end here.', 'She knew the place.', 1))
+  // Nothing on arc's side is the author editing themselves, not a refusal of arc.
+  recordJudgment(judgment('', 'Their own words entirely.', 2))
+  // And a refusal that changed nothing argues nothing.
+  recordJudgment(judgment('Identical text.', 'Identical text.', 3))
+
+  const pairs = refusalPairs([rel], '')
+  assert.equal(pairs.length, 2, 'only the two that pit arc against the author')
+  assert.equal(pairs[0].source, 'refusal')
+  assert.deepEqual(pairs.map(p => p.paragraph), [0, 1], 'each carries where it happened')
+  assert.equal(refusalPairs(['prose/elsewhere.md'], '').length, 0, 'and only for the files asked about')
+
+  // The watermark is what stops a refusal arguing again at every later accept.
+  const after = readJudgments().filter(j => j.file === rel).at(-1)!.at
+  assert.equal(refusalPairs([rel], after).length, 0)
+})
+
+test('the prompt shows a refusal as a refusal', () => {
+  const pairs = [{
+    n: 1, scene: 'sc.01-1', paragraph: 0, source: 'refusal' as const,
+    wrote: 'The wind had turned in the night.', kept: 'The lamp had been lit for an hour.', changed: 8,
+  }]
+  const prompt = buildLearnPrompt({ pairs, style: '(contract)', pending: [] })
+  assert.match(prompt, /ARC WROTE: The wind had turned/)
+  assert.match(prompt, /AUTHOR REFUSED, KEEPING: The lamp had been lit/)
+  assert.match(prompt, /TWO OR MORE INDEPENDENT/, 'and the bar is stated, not implied')
+  assert.equal(/or\s+when one edit shows it unmistakably/.test(prompt), false,
+    'the single-edit escape hatch is gone')
+})
+
+test('a rule with more evidence than the card shows is not punished for it', () => {
+  // Four paragraphs cited; the card shows three. The bar is counted on what
+  // was cited, before the trim — gating on the trimmed list would fail a rule
+  // for being TOO well evidenced, which is exactly backwards.
+  const pairs = editPairs(
+    'One as arc wrote it.\n\nTwo as arc wrote it.\n\nThree as arc wrote it.\n\nFour as arc wrote it.',
+    'One as the author has it.\n\nTwo as the author has it.\n\nThree as the author has it.\n\nFour as the author has it.',
+    'sc.01-1')
+  assert.equal(pairs.length, 4)
+  const [out] = materialize([{ rule: 'Well evidenced.', section: null, layer: null, edits: [1, 2, 3, 4] }], pairs, 'now')
+  assert.ok(out, 'four independent examples clear a bar of two')
+  assert.equal(out.evidence.length, 3, 'and the card still shows three')
 })

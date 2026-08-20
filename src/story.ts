@@ -255,7 +255,7 @@ export function proseAccept(message?: string): { hash: string; files: string[] }
     const wrote = gen ? parseScene(gen.content, c.file)?.body ?? gen.content : ''
     let kept = ''
     try { kept = parseScene(fs.readFileSync(path.join(STORY, c.file), 'utf8'), c.file)?.body ?? '' } catch { kept = '' }
-    judged(c.file, c.main?.scene ?? null, 'scene',
+    judged(c.file, c.main?.scene ?? null, 'scene', null,
       wrote && wrote.trim() !== kept.trim() ? 'accepted' : 'approved', wrote, kept)
   }
 
@@ -378,9 +378,9 @@ function arcSideOf(file: string, draftParas: string[], draftIndex: number): stri
 }
 
 function judged(file: string, scene: string | null, granularity: Granularity,
-                verdict: Verdict, arcWrote: string, authorKept: string): void {
+                paragraph: number | null, verdict: Verdict, arcWrote: string, authorKept: string): void {
   recordJudgment({
-    file, scene, granularity, verdict, arcWrote, authorKept,
+    file, scene, granularity, paragraph, verdict, arcWrote, authorKept,
     origin: generatedFor(file)?.entry.origin ?? 'hand',
     baseline: pinBaseline(file, headSha()),
   })
@@ -448,11 +448,11 @@ export function proseAcceptParagraph(file: string, t: ParagraphTarget, message?:
     // the ledger and are compared rather than assumed — taking arc's
     // paragraph untouched is an approval, and editing it first is the pair.
     if (hit.kind === 'del') {
-      judged(file, scene, 'paragraph', 'accepted', '', '')
+      judged(file, scene, 'paragraph', hit.mainIndex, 'accepted', '', '')
     } else {
       const kept = draftParas[hit.draftIndex!]
       const wrote = arcSideOf(file, draftParas, hit.draftIndex!)
-      judged(file, scene, 'paragraph', wrote && wrote !== kept ? 'accepted' : 'approved', wrote, kept)
+      judged(file, scene, 'paragraph', hit.mainIndex ?? hit.draftIndex, wrote && wrote !== kept ? 'accepted' : 'approved', wrote, kept)
     }
 
     const paths = withEvidence(file)
@@ -503,7 +503,7 @@ export function proseRejectParagraph(file: string, t: ParagraphTarget): { file: 
   // signal in the log — arc put this in front of the author and they said no —
   // and it is the only one git never records, because refusing commits
   // nothing. Without this the evidence is overwritten and gone.
-  judged(file, scene, 'paragraph', 'rejected',
+  judged(file, scene, 'paragraph', hit.mainIndex ?? hit.draftIndex, 'rejected',
     hit.kind === 'del' ? '' : draftParas[hit.draftIndex!],
     hit.mainIndex === null ? '' : mainParas[hit.mainIndex])
   return { file }
@@ -628,7 +628,7 @@ export function proseAcceptSentence(file: string, t: SentenceTarget, message?: s
   try {
     fs.writeFileSync(abs, fm + next.join('\n\n') + '\n')
     // Taking arc's sentence, or agreeing with its cut: an approval either way.
-    judged(file, scene, 'sentence', 'approved', arcWrote, arcWrote)
+    judged(file, scene, 'sentence', main, 'approved', arcWrote, arcWrote)
     const paths = withEvidence(file)
     git('add', '--', file)
     git('commit', '-m', message?.trim() || `prose: accept one sentence in ${path.basename(file)}`, '--', ...paths)
@@ -659,7 +659,7 @@ export function proseRejectSentence(file: string, t: SentenceTarget): { file: st
 
   fs.writeFileSync(abs, fm + next.join('\n\n') + '\n')
   // The sentence arc offered, and the sentence that stands instead.
-  judged(file, scene, 'sentence', 'rejected', arcWrote, mainHad)
+  judged(file, scene, 'sentence', main, 'rejected', arcWrote, mainHad)
   return { file }
 }
 
@@ -676,7 +676,7 @@ export function proseDiscard(file: string): void {
   // one decision that destroyed its own record on the way out.
   const gen = generatedFor(file)
   if (gen) {
-    judged(file, change.main?.scene ?? null, 'scene', 'discarded',
+    judged(file, change.main?.scene ?? null, 'scene', null, 'discarded',
       parseScene(gen.content, file)?.body ?? gen.content, '')
   }
 

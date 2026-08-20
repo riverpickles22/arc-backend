@@ -62,6 +62,11 @@ export function parseQueue(text: string): ProposedRule[] {
         // Queues written before the field existed have no source; absent
         // means draft, so old entries parse and file exactly as they did.
         ...(r.source === 'revision' ? { source: 'revision' as const } : {}),
+        ...(r.source === 'refusal' ? { source: 'refusal' as const } : {}),
+        // Same discipline for the layer recommendation: spread only when it
+        // is there, so a queue written without one round-trips unchanged.
+        ...(r.layer === 'author' ? { layer: 'author' as const } : {}),
+        ...(r.layer === 'story' ? { layer: 'story' as const } : {}),
       })
     } catch {
       continue
@@ -81,7 +86,9 @@ const renderOne = (r: ProposedRule): string => {
   ]
   // Revision evidence is the author against themself; saying "arc wrote"
   // over their own sentence would be claiming credit for their voice.
-  const [before, after] = r.source === 'revision' ? ['you had', 'you revised to'] : ['arc wrote', 'you kept']
+  const [before, after] = r.source === 'revision' ? ['you had', 'you revised to']
+    : r.source === 'refusal' ? ['arc wrote', 'you refused it, keeping']
+      : ['arc wrote', 'you kept']
   for (const e of r.evidence) {
     lines.push(`- **${e.scene}** — ${before}: ${JSON.stringify(e.wrote)}`)
     lines.push(`  ${after}: ${JSON.stringify(e.kept)}`)

@@ -28,10 +28,26 @@ const evidencePath = (): string => path.join(STORY, EVIDENCE_REL)
  *  Bookkeeping is disposable; the judgments are not. */
 const BASELINES = (): string => path.join(STORY, '.arc', 'baselines.json')
 
-// The mining watermark belongs beside it, under .arc/, and lands with the pass
-// that consumes this log. It is deliberately NOT a flag on the entries: those
-// are record, and rewriting a tracked file to say "arc has read this" would
-// put bookkeeping in the author's history.
+// The mining watermark lives beside it, under .arc/, and deliberately NOT as a
+// flag on the entries: those are record, and rewriting a tracked file to say
+// "arc has read this" would put bookkeeping in the author's history.
+const WATERMARK = (): string => path.join(STORY, '.arc', 'mined.json')
+
+/** How far the learning pass has read. Entries stamped after this are new. */
+export function readWatermark(): string {
+  try {
+    return (JSON.parse(fs.readFileSync(WATERMARK(), 'utf8')) as { at?: string }).at ?? ''
+  } catch {
+    return ''
+  }
+}
+
+export function setWatermark(at: string): void {
+  try {
+    fs.mkdirSync(path.dirname(WATERMARK()), { recursive: true })
+    fs.writeFileSync(WATERMARK(), JSON.stringify({ at }, null, 2))
+  } catch { /* bookkeeping only — a lost watermark re-argues a rule the id collapses */ }
+}
 
 /** How the author answered one piece of arc's prose.
  *
@@ -47,6 +63,9 @@ export interface Judgment {
   file: string
   scene: string | null
   granularity: Granularity
+  /** Where in the scene, so the learning pass can tell two passes at one
+   *  paragraph from two independent examples. Null for a whole-scene verdict. */
+  paragraph: number | null
   verdict: Verdict
   /** What arc put in front of the author. Empty when arc wrote nothing here. */
   arcWrote: string

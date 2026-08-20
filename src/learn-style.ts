@@ -18,7 +18,7 @@ import { MODEL, STORY } from './config'
 import { getClient } from './agent'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { generatedFor, clearGenerated } from './ledger'
-import { readJudgments } from './evidence'
+import { readJudgments, readWatermark, setWatermark } from './evidence'
 import { alignParagraphs } from 'arc-canon-graph'
 import { git, parseScene } from './story'
 import { styleContract } from './style'
@@ -28,6 +28,15 @@ import { appendToQueue, readQueue, ruleId, type ProposedRule, type RuleEvidence 
  *  continuity patch, not a voice signal. Filtering here is what keeps the
  *  model from generalizing a rule out of a corrected character name. */
 export const MIN_CHANGED_WORDS = 3
+
+/** Two different paragraphs, or it is not a rule. The author's instruction,
+ *  and the reason it lives here rather than only in the prompt: their edits
+ *  are evidence, not a licence to generalize from one example. */
+export const MIN_INDEPENDENT_EXAMPLES = 2
+
+/** And two different scenes before a rule may claim to be about the writer
+ *  rather than about this book. */
+export const MIN_AUTHOR_SCENES = 2
 
 /** Homework limits. Three proposals is a glance; a queue of thirty is a chore
  *  the author will abandon, which costs more than the loop is worth. */
@@ -44,11 +53,16 @@ const EVIDENCE_CHARS = 320
 interface EditPair {
   n: number
   scene: string
+  /** Where in the scene, so two passes at one paragraph can be recognised as
+   *  one example rather than counted as two. */
+  paragraph: number
   /** 'draft' — arc's draft vs what the author kept (the ledger diff).
    *  'revision' — the author's last accepted prose vs their hand rewrite of
-   *  it, read from git at the accept gate. The purest voice signal: nobody
-   *  described the change, the change is the description. */
-  source: 'draft' | 'revision'
+   *  it. The purest voice signal: nobody described the change, the change is
+   *  the description.
+   *  'refusal' — arc offered this and the author said no, keeping what stood.
+   *  The only one git never records, because refusing commits nothing. */
+  source: 'draft' | 'revision' | 'refusal'
   wrote: string
   kept: string
   changed: number
@@ -91,7 +105,7 @@ export function changedWords(a: string, b: string): number {
  *  extracted to end, and here it would have meant learning a rule from a pair
  *  the author never saw as a pair. Pure, so the arithmetic that silently goes
  *  wrong is the part under test. */
-export function editPairs(wrote: string, kept: string, scene: string, source: 'draft' | 'revision' = 'draft'): EditPair[] {
+export function editPairs(wrote: string, kept: string, scene: string, source: 'draft' | 'revision' | 'refusal' = 'draft'): EditPair[] {
   const a = paragraphs(wrote)
   const b = paragraphs(kept)
   const pairs: Omit<EditPair, 'n'>[] = []
@@ -99,15 +113,39 @@ export function editPairs(wrote: string, kept: string, scene: string, source: 'd
   for (const al of alignParagraphs(a, b)) {
     if (al.kind === 'changed') {
       const was = a[al.mainIndex!], now = b[al.draftIndex!]
-      pairs.push({ scene, source, wrote: was, kept: now, changed: changedWords(was, now) })
+      pairs.push({ scene, source, paragraph: al.mainIndex!, wrote: was, kept: now, changed: changedWords(was, now) })
     } else if (al.kind === 'del') {
       // A cut is a pair with an empty kept side: the author's answer to that
       // paragraph was that the book is better without it.
       const was = a[al.mainIndex!]
-      pairs.push({ scene, source, wrote: was, kept: '', changed: changedWords(was, '') })
+      pairs.push({ scene, source, paragraph: al.mainIndex!, wrote: was, kept: '', changed: changedWords(was, '') })
     }
   }
   return pairs.map((p, i) => ({ n: i + 1, ...p }))
+}
+
+/** Refusals, as pairs — the evidence only the log holds.
+ *
+ *  A rejection never reaches git: the point of refusing is that nothing is
+ *  committed, and the refused text is overwritten in place. So the log is the
+ *  only record that arc offered something and the author declined it, and this
+ *  is where that becomes an argument. Only entries newer than the watermark,
+ *  so a refusal argues once rather than at every accept for the rest of time.
+ *
+ *  A refusal with nothing on arc's side is the author declining their own
+ *  prose, which is not evidence about how arc should write. */
+export function refusalPairs(files: string[], since: string): Omit<EditPair, 'n'>[] {
+  return readJudgments()
+    .filter(j => j.verdict === 'rejected' && files.includes(j.file) && j.at > since)
+    .filter(j => j.arcWrote.trim() && j.arcWrote.trim() !== j.authorKept.trim())
+    .map(j => ({
+      scene: j.scene ?? j.file,
+      paragraph: j.paragraph ?? -1,
+      source: 'refusal' as const,
+      wrote: j.arcWrote,
+      kept: j.authorKept,
+      changed: changedWords(j.arcWrote, j.authorKept),
+    }))
 }
 
 /** The bar, applied in one place so the test can pin it. */
@@ -122,6 +160,12 @@ the way in. Below are numbered EDIT pairs of two kinds, labelled:
 - AUTHOR HAD / REVISED TO — the author's own accepted prose, rewritten by
   their own hand. Nobody corrected anybody: this is the author's preference
   showing directly, the strongest voice signal in this table.
+- ARC WROTE / AUTHOR REFUSED, KEEPING — arc offered this and the author said
+  no; the right-hand side is what stands instead. A refusal is only evidence
+  about FORM when the two sides differ in how they are written. Many refusals
+  turn on fact, continuity, or what a character would do — those say nothing
+  about the author's sentences, and you must ignore them here rather than
+  reach for a style rule to explain them.
 
 An empty right-hand side means the paragraph was cut entirely.
 
@@ -131,8 +175,10 @@ what they refuse to spell out. NEVER a rule about fact, plot, character, or
 canon: those belong to the story record, not the style contract.
 
 DISCIPLINE:
-- Propose a rule only when the same pattern shows in TWO OR MORE edits, or
-  when one edit shows it unmistakably. One coincidence is not a rule.
+- Propose a rule only when the same pattern shows in TWO OR MORE INDEPENDENT
+  edits — different paragraphs, and better still different scenes. Two passes
+  at the same paragraph are one example, not two. One coincidence is never a
+  rule, however unmistakable it looks.
 - Never propose a rule the contract below already states, in any wording.
 - Never propose a rule already in the pending queue below.
 - Write each rule the way the contract is written: imperative, one or two
@@ -142,8 +188,16 @@ DISCIPLINE:
 - If nothing generalizes, answer with an empty array. That is a good answer
   and the common one.
 
+WHICH LAYER a rule belongs to, as your recommendation and nothing more — the
+author decides where it is written:
+- "story" — how THIS book's sentences behave. Almost everything. A rule drawn
+  from one book's prologue is a rule about that book.
+- "author" — a habit that would hold in any book this writer wrote. Only for
+  a pattern showing across two or more different scenes, and only when it is
+  about the writer rather than the material.
+
 Answer with a JSON array and nothing else:
-[{"rule": "...", "section": "Sentences" | null, "edits": [1, 4]}]`
+[{"rule": "...", "section": "Sentences" | null, "layer": "story" | "author", "edits": [1, 4]}]`
 
 /** Pure prompt builder — testable without an engine. */
 export function buildLearnPrompt(input: {
@@ -153,12 +207,10 @@ export function buildLearnPrompt(input: {
 }): string {
   const table = input.pairs.map(p => [
     `--- EDIT ${p.n} (${p.scene}) ---`,
-    p.source === 'revision'
-      ? `AUTHOR HAD: ${p.wrote}`
-      : `ARC WROTE: ${p.wrote}`,
-    p.source === 'revision'
-      ? `REVISED TO: ${p.kept || '(cut entirely)'}`
-      : `AUTHOR KEPT: ${p.kept || '(cut entirely)'}`,
+    p.source === 'revision' ? `AUTHOR HAD: ${p.wrote}` : `ARC WROTE: ${p.wrote}`,
+    p.source === 'revision' ? `REVISED TO: ${p.kept || '(cut entirely)'}`
+      : p.source === 'refusal' ? `AUTHOR REFUSED, KEEPING: ${p.kept || '(nothing — the passage went)'}`
+        : `AUTHOR KEPT: ${p.kept || '(cut entirely)'}`,
   ].join('\n')).join('\n\n')
 
   return [
@@ -172,7 +224,7 @@ export function buildLearnPrompt(input: {
   ].filter(Boolean).join('\n\n')
 }
 
-interface RawProposal { rule: string; section: string | null; edits: number[] }
+interface RawProposal { rule: string; section: string | null; layer: 'story' | 'author' | null; edits: number[] }
 
 /** Tolerant parse, matching the other passes: fences stripped, junk dropped. */
 export function parseProposals(text: string): RawProposal[] {
@@ -186,7 +238,8 @@ export function parseProposals(text: string): RawProposal[] {
     const r = x as Partial<RawProposal>
     if (typeof r.rule !== 'string' || !r.rule.trim()) return []
     const edits = Array.isArray(r.edits) ? r.edits.filter((n): n is number => Number.isInteger(n)) : []
-    return [{ rule: r.rule.trim(), section: typeof r.section === 'string' && r.section.trim() ? r.section.trim() : null, edits }]
+    const layer = r.layer === 'author' ? 'author' as const : r.layer === 'story' ? 'story' as const : null
+    return [{ rule: r.rule.trim(), section: typeof r.section === 'string' && r.section.trim() ? r.section.trim() : null, layer, edits }]
   })
 }
 
@@ -196,22 +249,50 @@ const clip = (s: string): string =>
 /** Attach evidence from OUR table, not the model's text, and drop any
  *  proposal that cites nothing real. A rule with no evidence is an opinion,
  *  and the author has no way to judge it. */
+/** How many DIFFERENT places in the manuscript a set of edits comes from.
+ *
+ *  The unit is the paragraph, not the edit. An author who works one paragraph
+ *  over three times has shown one preference three ways, and counting that as
+ *  three examples is how a passing mood becomes a binding rule. */
+export const independentExamples = (cited: EditPair[]): number =>
+  new Set(cited.map(p => `${p.scene}:${p.paragraph}`)).size
+
+/** Attach evidence from OUR table, not the model's text, and hold every
+ *  proposal to the bar in code rather than only in the prompt.
+ *
+ *  The prompt asks for two independent examples. A rule that lives only in a
+ *  prompt is of a weaker kind than the evidence-materializing beside it — the
+ *  whole property this module rests on is that the machine supplies the proof,
+ *  so the machine counts the proof too. */
 export function materialize(proposals: RawProposal[], pairs: EditPair[], at: string): ProposedRule[] {
   const byN = new Map(pairs.map(p => [p.n, p]))
   const out: ProposedRule[] = []
   for (const p of proposals) {
-    const evidence: RuleEvidence[] = p.edits
-      .map(n => byN.get(n))
-      .filter((x): x is EditPair => !!x)
+    // Cited BEFORE evidence is trimmed for display. Gating on the trimmed
+    // list would fail a well-evidenced rule for being too well evidenced.
+    const cited = p.edits.map(n => byN.get(n)).filter((x): x is EditPair => !!x)
+    if (independentExamples(cited) < MIN_INDEPENDENT_EXAMPLES) continue
+
+    const evidence: RuleEvidence[] = cited
       .slice(0, 3)
       .map(x => ({ scene: x.scene, wrote: clip(x.wrote), kept: clip(x.kept) }))
     if (!evidence.length) continue
+
     // Attribution is conservative: a rule is 'revision' only when every edit
     // it cites is one. One draft correction in the argument makes it a rule
     // about how arc should write, and it files as such.
-    const cited = p.edits.map(n => byN.get(n)).filter((x): x is EditPair => !!x)
-    const source = cited.length && cited.every(x => x.source === 'revision') ? 'revision' as const : 'draft' as const
-    out.push({ id: ruleId(p.rule), rule: p.rule, section: p.section, at, evidence, source })
+    const source = cited.every(x => x.source === 'revision') ? 'revision' as const
+      : cited.every(x => x.source === 'refusal') ? 'refusal' as const
+        : 'draft' as const
+
+    // The author layer is what stays true across books, so one book's evidence
+    // cannot argue for it. Spanning two scenes is a low bar and still a bar;
+    // anything under it is refiled as a rule about this story, which is what
+    // it actually is. The author can still ratify it anywhere they like.
+    const scenes = new Set(cited.map(x => x.scene)).size
+    const layer = p.layer === 'author' && scenes >= MIN_AUTHOR_SCENES ? 'author' as const : 'story' as const
+
+    out.push({ id: ruleId(p.rule), rule: p.rule, section: p.section, at, evidence, source, layer })
     if (out.length >= MAX_PROPOSALS_PER_RUN) break
   }
   return out
@@ -300,6 +381,12 @@ export async function runLearnStyle(files: string[]): Promise<LearnResult> {
     }
   }
 
+  // What the author refused, which git never recorded and only the evidence
+  // log holds. Added after the ledger diffs so the numbering stays stable.
+  const mark = readWatermark()
+  const refusals = significant(refusalPairs(files, mark).map((p, i) => ({ n: pairs.length + i + 1, ...p })))
+  pairs.push(...refusals)
+
   // Accepted unedited, or nothing arc wrote: no model, no tokens.
   if (!pairs.length) {
     if (mined.length) clearGenerated(mined)
@@ -338,5 +425,11 @@ export async function runLearnStyle(files: string[]): Promise<LearnResult> {
 
   // Consumed: the same edit must never be mined twice into the same queue.
   clearGenerated(mined)
+  // The refusals have argued; move the watermark past them so they do not
+  // argue again at every accept from here on.
+  const newest = considered.filter(p => p.source === 'refusal').length
+    ? readJudgments().filter(j => files.includes(j.file)).at(-1)?.at
+    : null
+  if (newest) setWatermark(newest)
   return { added, skipped: null, pairsConsidered: considered.length }
 }
