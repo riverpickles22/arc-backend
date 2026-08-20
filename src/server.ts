@@ -36,6 +36,7 @@ import { runLearnStyle } from './learn-style'
 import { readJudgments } from './evidence'
 import { proposeTouchstoneRefresh, touchstoneStates } from './touchstones'
 import { runBootstrapStyle } from './bootstrap-style'
+import { runRedraft } from './redraft'
 import { createLock, locks, removeLock } from './locks'
 import { addNote, deleteNote, listNotes, updateNote as reviseNote } from './notes'
 import { decideWork, workNote } from './work'
@@ -619,6 +620,32 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     POST: async (req, res) => {
       const t = sentenceTarget(await parsedBody(req))
       json(res, 200, proseRejectSentence(t.file, t))
+    },
+  },
+
+  // The redraft pass: a rebuild of existing prose, landing in the draft
+  // layer like any other generation. Locks and the validator can refuse it;
+  // everything else the pass has to say about its own output arrives as
+  // argued claims in the reply.
+  '/api/prose/redraft': {
+    POST: async (req, res) => {
+      if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
+        throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+      }
+      const b = (await parsedBody(req)) as { scene?: unknown; paragraphs?: unknown; guidance?: unknown }
+      if (typeof b.scene !== 'string' || !b.scene) throw new HttpError(400, 'scene required')
+      let paragraphs: [number, number] | undefined
+      if (b.paragraphs !== undefined) {
+        if (!Array.isArray(b.paragraphs) || b.paragraphs.length !== 2 || !b.paragraphs.every(n => Number.isInteger(n))) {
+          throw new HttpError(400, 'paragraphs must be [from, to]')
+        }
+        paragraphs = b.paragraphs as [number, number]
+      }
+      json(res, 200, await runRedraft({
+        scene: b.scene,
+        paragraphs,
+        guidance: typeof b.guidance === 'string' ? b.guidance : undefined,
+      }))
     },
   },
 

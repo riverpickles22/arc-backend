@@ -192,7 +192,7 @@ function writeScene(rel: string, content: string, engine: string, scene?: string
   return check
 }
 
-function writeValidated(rel: string, content: string): { ok: boolean; output: string } {
+export function writeValidated(rel: string, content: string): { ok: boolean; output: string } {
   const abs = resolveWithin(STORY, rel)
   const existed = fs.existsSync(abs)
   const prev = existed ? fs.readFileSync(abs, 'utf8') : null
