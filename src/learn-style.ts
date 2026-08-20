@@ -14,12 +14,11 @@
 // Everything produced here is ARGUED (conventions §11) and binds nothing: the
 // queue lives in docs/style.proposed.md, which no drafting pass ever reads.
 import type Anthropic from '@anthropic-ai/sdk'
-import fs from 'node:fs'
-import path from 'node:path'
 import { MODEL, STORY } from './config'
 import { getClient } from './agent'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { generatedFor, clearGenerated } from './ledger'
+import { readJudgments } from './evidence'
 import { alignParagraphs } from 'arc-canon-graph'
 import { git, parseScene } from './story'
 import { styleContract } from './style'
@@ -218,28 +217,48 @@ export function materialize(proposals: RawProposal[], pairs: EditPair[], at: str
   return out
 }
 
-/** The scene's body as it stood at the commit before the accept — the
- *  author's previous accepted prose. proseAccept makes exactly one commit,
- *  so when the learn pass runs, HEAD^ is that boundary. Null when the scene
- *  is new there (a hand-written addition is the author's own material, not a
- *  correction of anything) or there is no parent commit yet. */
-function previousAcceptedBody(file: string): string | null {
+/** The scene's body at the commit this file's pending work started from.
+ *
+ *  This read HEAD^, on the stated assumption that an accept makes exactly one
+ *  commit. Judging by paragraph and by sentence makes that false — a scene
+ *  taken a sentence at a time produces a commit per sentence, so HEAD^ is one
+ *  sentence ago and the "before" text is arc's own draft with one change
+ *  removed. Rules were being argued from a difference the author never made.
+ *
+ *  The boundary is pinned when the file's pending work is first judged
+ *  (evidence.ts) and read back here. Null when nothing was pinned, which is
+ *  the honest answer rather than a guess at one. */
+function baselineBody(file: string): string | null {
+  // From the RECORD, not the pin. The pin under .arc/ only lives while a
+  // file's work is pending — proseAccept clears it on the way out — but every
+  // judgment writes the sha it started from into the evidence log, which is
+  // tracked and permanent. The most recent one is this file's boundary.
+  const sha = readJudgments().filter(j => j.file === file).at(-1)?.baseline ?? null
+  if (!sha) return null
   try {
     const prefix = git('rev-parse', '--show-prefix').trim()
-    const text = git('show', `HEAD^:${prefix}${file}`)
-    return parseScene(text, file)?.body ?? null
+    return parseScene(git('show', `${sha}:${prefix}${file}`), file)?.body ?? null
   } catch {
     return null
   }
 }
 
-/** The body of an accepted scene as it stands on disk, frontmatter stripped —
- *  the contract is about prose, and frontmatter edits are not voice. */
-function acceptedBody(file: string): string | null {
+/** The scene's body as the BOOK now holds it — HEAD, not disk.
+ *
+ *  Disk is the draft. It was read here on the assumption that after an accept
+ *  the two agree, which is true of the whole-draft accept and never true of
+ *  the others: proseAcceptParagraph commits one paragraph and then restores
+ *  the author's full working tree in its finally, so on return disk holds
+ *  every change they have NOT accepted. Reading it would have handed the
+ *  learning pass arc's own unaccepted prose as "what the author kept" — and
+ *  the queue renders that side as "you revised to", over the author's name.
+ *
+ *  Frontmatter is stripped either way: the contract is about prose, and a
+ *  binding edit is not voice. */
+function headBody(file: string): string | null {
   try {
-    const abs = path.join(STORY, file)
-    if (!fs.existsSync(abs)) return null
-    return parseScene(fs.readFileSync(abs, 'utf8'), file)?.body ?? null
+    const prefix = git('rev-parse', '--show-prefix').trim()
+    return parseScene(git('show', `HEAD:${prefix}${file}`), file)?.body ?? null
   } catch {
     return null
   }
@@ -261,7 +280,7 @@ export async function runLearnStyle(files: string[]): Promise<LearnResult> {
   const pairs: EditPair[] = []
   const mined: string[] = []
   for (const file of files) {
-    const kept = acceptedBody(file)
+    const kept = headBody(file)
     if (kept === null) continue
     const gen = generatedFor(file)
     if (gen) {
@@ -275,7 +294,7 @@ export async function runLearnStyle(files: string[]): Promise<LearnResult> {
       // The before is what git accepted last time. A scene that is new at
       // HEAD^ yields nothing — added prose argues no rule (same reasoning as
       // added paragraphs inside editPairs).
-      const had = previousAcceptedBody(file)
+      const had = baselineBody(file)
       if (had === null || had === kept) continue
       pairs.push(...significant(editPairs(had, kept, file, 'revision')))
     }

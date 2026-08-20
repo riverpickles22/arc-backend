@@ -145,7 +145,7 @@ export async function runDraft(chapterId: string, guidance?: string): Promise<Dr
         actions.push({ tool: 'write_scene_file', path: input.path, ok: false, detail: 'validation failed, reverted' })
         return `VALIDATION FAILED — write reverted. Fix these and retry:\n${check.output}`
       }
-      recordGenerated(input.path, input.content, { engine: 'sdk', scene: sceneId })
+      recordGenerated(input.path, input.content, { engine: 'sdk', scene: sceneId, origin: 'draft' })
       actions.push({ tool: 'write_scene_file', path: input.path, ok: true })
       written = input.path
       return `OK — written and validated (${check.output})`
@@ -188,7 +188,7 @@ export async function runDraft(chapterId: string, guidance?: string): Promise<Dr
  *  — a reverted generation never happened, and must not be mined later. */
 function writeScene(rel: string, content: string, engine: string, scene?: string): { ok: boolean; output: string } {
   const check = writeValidated(rel, content)
-  if (check.ok) recordGenerated(rel, content, { engine, scene })
+  if (check.ok) recordGenerated(rel, content, { engine, scene, origin: 'draft' })
   return check
 }
 

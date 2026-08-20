@@ -17,18 +17,23 @@ import { STORY } from './config'
 const DIR = () => path.join(STORY, '.arc', 'generated')
 const INDEX = () => path.join(STORY, '.arc', 'drafts.jsonl')
 
-interface LedgerEntry {
+export interface LedgerEntry {
   at: string
   file: string
   sha: string
   engine?: string
   scene?: string
+  /** Which pass produced this — 'draft', 'revise', 'redraft'. Recorded rather
+   *  than inferred later: without it a revised paragraph and one the author
+   *  typed themselves are the same bytes with no way to tell them apart, and
+   *  a style rule argued from the wrong one is argued from nothing. */
+  origin?: string
 }
 
 /** Record what the drafting pass just wrote. Never throws: a ledger failure
  *  must never fail a draft — losing the learning signal is a smaller harm
  *  than losing the scene. */
-export function recordGenerated(file: string, content: string, meta: { engine?: string; scene?: string } = {}): void {
+export function recordGenerated(file: string, content: string, meta: { engine?: string; scene?: string; origin?: string } = {}): void {
   try {
     const sha = createHash('sha256').update(content).digest('hex').slice(0, 16)
     fs.mkdirSync(DIR(), { recursive: true })

@@ -21,6 +21,7 @@ const {
 const { parseQueue, renderQueue, ruleId, readQueue, writeQueue, ratifyRule, queuePath, placeRule } =
   await import('../src/style-queue.ts')
 const { recordGenerated, generatedFor } = await import('../src/ledger.ts')
+const { proseAccept } = await import('../src/story.ts')
 
 // ---- the diff arithmetic -------------------------------------------------
 
@@ -342,20 +343,22 @@ test('source survives the queue file, and its evidence reads as the author again
 
 test('a hand revision to accepted prose reaches the model gate; new hand-written prose never does', async () => {
   writeQueue([])
-  const gitc = (...a: string[]) => execFileSync('git', ['-C', STORY, ...a], { encoding: 'utf8' })
-  // a fresh scene, accepted (committed), then revised by hand and accepted again
+  // A fresh scene accepted, then revised by hand and accepted again — both
+  // accepts through the verb the app actually calls, because the boundary the
+  // pass reads is recorded at the accept. Committing round it with raw git
+  // would test a path no author can reach.
   const rel = 'prose/ch-02/scene-01.md'
   writeScene(STORY, rel, 'sc.02-1', 'It was then that he saw the coast, at long last, finally.\n\nStable paragraph.')
-  gitc('add', '-A'); gitc('commit', '-qm', 'prose: accept sc.02-1')
+  proseAccept('prose: accept sc.02-1')
   writeScene(STORY, rel, 'sc.02-1', 'He saw the coast.\n\nStable paragraph.')
-  gitc('add', '-A'); gitc('commit', '-qm', 'prose: accept revision')
+  proseAccept('prose: accept revision')
   const r = await runLearnStyle([rel])
   assert.equal(r.skipped, 'no-engine', 'revision pairs were mined — only the engine was missing')
   assert.ok(r.pairsConsidered >= 1, 'the hand revision produced at least one significant pair')
   // a scene born in this commit has no before, argues nothing, costs nothing
   const fresh = 'prose/ch-03/scene-01.md'
   writeScene(STORY, fresh, 'sc.03-1', 'Entirely new prose the author wrote themselves.')
-  gitc('add', '-A'); gitc('commit', '-qm', 'prose: accept new scene')
+  proseAccept('prose: accept new scene')
   const r2 = await runLearnStyle([fresh])
   assert.equal(r2.skipped, 'no-edits')
   assert.equal(r2.pairsConsidered, 0)

@@ -33,6 +33,7 @@ import { getClient } from './agent'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { checkPathWrite, grant, type Capability } from './capability'
 import { DEFAULT_POLICY } from './context'
+import { recordGenerated } from './ledger'
 import { snapshotReads, staleReads, type Run, type WorkNode } from './run'
 import { styleContract } from './style'
 import { locksOn } from './locks'
@@ -308,7 +309,15 @@ async function reviseOne(cluster: RevisionCluster, node: WorkNode, run: Run): Pr
     // the author's. The write lands in the working tree — the draft layer —
     // so it is reviewed through the gate that already exists.
     const head = raw.slice(0, raw.length - scene.body.length)
-    fs.writeFileSync(abs, head + revised + (revised.endsWith('\n') ? '' : '\n'))
+    const next = head + revised + (revised.endsWith('\n') ? '' : '\n')
+    fs.writeFileSync(abs, next)
+
+    // What arc wrote, before the author touches it. Git only ever sees the
+    // accepted version, so without this a revision — the most common way arc
+    // writes prose — is indistinguishable from the author's own typing by the
+    // time anyone looks, and the style-learning pass would file arc's
+    // sentences as the author's revision of themselves.
+    recordGenerated(cluster.file, next, { engine: currentEngine() ?? 'unknown', scene: cluster.scene, origin: 'revise' })
 
     node.status = 'completed'
     run.emit('task.completed', node.id, { wrote: [cluster.file], notes: base.notes })

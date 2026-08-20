@@ -12,8 +12,9 @@ import type { AlignedParagraph, AlignedSentence, DocArticle, MaterialItem, Prose
 // The sentence rule and the alignment under it, shared with the viewer so the
 // side that names a sentence and the side that acts on it cannot disagree.
 import { alignParagraphs, alignSentences, mainInsertionPoint, splitSentences } from 'arc-canon-graph'
+import { clearGenerated, generatedFor } from './ledger'
+import { EVIDENCE_REL, clearBaseline, counterpartOf, pinBaseline, recordJudgment, type Granularity, type Verdict } from './evidence'
 import { STORY } from './config'
-import { clearGenerated } from './ledger'
 import { HttpError } from './http'
 import { assertUnlocked } from './locks'
 import { resolveWithin } from './safe-path'
@@ -245,10 +246,27 @@ export function proseAccept(message?: string): { hash: string; files: string[] }
   const draft = proseDraft()
   if (!draft.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer to accept')
   if (!draft.changes.length) throw new HttpError(409, 'no draft changes to accept')
+  // One entry per scene, before the commit carries them. Whole-scene
+  // granularity is the honest grain here: the author took the file entire, so
+  // the pair is arc's draft against what the file now says, and the learning
+  // pass does the paragraph arithmetic from there.
+  for (const c of draft.changes) {
+    const gen = generatedFor(c.file)
+    const wrote = gen ? parseScene(gen.content, c.file)?.body ?? gen.content : ''
+    let kept = ''
+    try { kept = parseScene(fs.readFileSync(path.join(STORY, c.file), 'utf8'), c.file)?.body ?? '' } catch { kept = '' }
+    judged(c.file, c.main?.scene ?? null, 'scene',
+      wrote && wrote.trim() !== kept.trim() ? 'accepted' : 'approved', wrote, kept)
+  }
+
   git('add', '-A', '--', 'prose')
+  git('add', '--', EVIDENCE_REL)
   const n = draft.changes.length
   const msg = message?.trim() || `prose: accept draft (${n} scene${n === 1 ? '' : 's'})`
-  git('commit', '-m', msg, '--', 'prose')
+  git('commit', '-m', msg, '--', 'prose', EVIDENCE_REL)
+  // The draft is fully judged; the next one starts from wherever the book now
+  // stands rather than from a boundary that has moved out from under it.
+  for (const c of draft.changes) clearBaseline(c.file)
   return { hash: git('rev-parse', '--short', 'HEAD').trim(), files: draft.changes.map(c => c.file) }
 }
 
@@ -324,7 +342,60 @@ function paragraphContext(file: string) {
   const split = (body: string) => body.split(/\n{2,}/).map(x => x.trim()).filter(Boolean)
   const draftParas = split(working.slice(fm[0].length))
   const mainParas = split(change.main.body)
-  return { abs, working, fm: fm[0], draftParas, mainParas, aligned: alignParagraphs(mainParas, draftParas) }
+  return {
+    abs, working, fm: fm[0], draftParas, mainParas,
+    scene: change.main.scene,
+    aligned: alignParagraphs(mainParas, draftParas),
+  }
+}
+
+// ---- what the author decided, written down ------------------------------
+//
+// The generation ledger says what arc wrote. This says what the author did
+// about it, and the two together are the only honest argument for a rule
+// about their voice. Every verb below files one entry; none of them may fail
+// because of it (evidence.ts).
+
+const headSha = (): string | null => {
+  try { return git('rev-parse', 'HEAD').trim() } catch { return null }
+}
+
+/** Arc's own text for a draft paragraph, or '' when arc wrote nothing there.
+ *
+ *  The working tree is arc's draft plus whatever the author typed over it, so
+ *  the two are aligned rather than assumed equal — an author who rewrote arc's
+ *  paragraph before accepting it has produced the most useful pair there is,
+ *  and one who accepted it untouched has produced no pair at all. */
+function arcSideOf(file: string, draftParas: string[], draftIndex: number): string {
+  const gen = generatedFor(file)
+  if (!gen) return ''
+  const body = parseScene(gen.content, file)?.body ?? gen.content
+  const genParas = body.split(/\n{2,}/).map(x => x.trim()).filter(Boolean)
+  const hit = alignParagraphs(genParas, draftParas).find(a => a.draftIndex === draftIndex)
+  if (!hit) return ''
+  if (hit.kind === 'same') return draftParas[draftIndex]
+  return hit.mainIndex === null ? '' : genParas[hit.mainIndex]
+}
+
+function judged(file: string, scene: string | null, granularity: Granularity,
+                verdict: Verdict, arcWrote: string, authorKept: string): void {
+  recordJudgment({
+    file, scene, granularity, verdict, arcWrote, authorKept,
+    origin: generatedFor(file)?.entry.origin ?? 'hand',
+    baseline: pinBaseline(file, headSha()),
+  })
+}
+
+/** The paths an accept commits: the scene, and the evidence log when it has
+ *  something new to say. A judgment is record, so it rides in the commit the
+ *  decision already makes rather than waiting to be noticed. */
+function withEvidence(file: string): string[] {
+  try {
+    git('add', '--', EVIDENCE_REL)
+    return git('status', '--porcelain', '--', EVIDENCE_REL).trim() ? [file, EVIDENCE_REL] : [file]
+  } catch {
+    return [file]
+  }
 }
 
 /** Find the aligned entry a target names, refusing anything that no longer
@@ -361,7 +432,7 @@ function locate(aligned: AlignedParagraph[], t: ParagraphTarget): AlignedParagra
  *  the author words they have not accepted.
  */
 export function proseAcceptParagraph(file: string, t: ParagraphTarget, message?: string): { hash: string; file: string } {
-  const { abs, working, fm, draftParas, mainParas, aligned } = paragraphContext(file)
+  const { abs, working, fm, draftParas, mainParas, aligned, scene } = paragraphContext(file)
   const hit = locate(aligned, t)
 
   const merged = [...mainParas]
@@ -371,8 +442,22 @@ export function proseAcceptParagraph(file: string, t: ParagraphTarget, message?:
 
   try {
     fs.writeFileSync(abs, fm + merged.join('\n\n') + '\n')
+
+    // Before the commit, so the judgment rides in it. A deletion has no
+    // draft-side text at all; for the other two, arc's own words come from
+    // the ledger and are compared rather than assumed — taking arc's
+    // paragraph untouched is an approval, and editing it first is the pair.
+    if (hit.kind === 'del') {
+      judged(file, scene, 'paragraph', 'accepted', '', '')
+    } else {
+      const kept = draftParas[hit.draftIndex!]
+      const wrote = arcSideOf(file, draftParas, hit.draftIndex!)
+      judged(file, scene, 'paragraph', wrote && wrote !== kept ? 'accepted' : 'approved', wrote, kept)
+    }
+
+    const paths = withEvidence(file)
     git('add', '--', file)
-    git('commit', '-m', message?.trim() || `prose: accept one change in ${path.basename(file)}`, '--', file)
+    git('commit', '-m', message?.trim() || `prose: accept one change in ${path.basename(file)}`, '--', ...paths)
     return { hash: git('rev-parse', '--short', 'HEAD').trim(), file }
   } finally {
     fs.writeFileSync(abs, working)   // the author's unaccepted words, always
@@ -394,7 +479,7 @@ export function proseAcceptParagraph(file: string, t: ParagraphTarget, message?:
  *  a refused insertion goes away, and a refused deletion comes back.
  */
 export function proseRejectParagraph(file: string, t: ParagraphTarget): { file: string } {
-  const { abs, working, fm, draftParas, mainParas, aligned } = paragraphContext(file)
+  const { abs, working, fm, draftParas, mainParas, aligned, scene } = paragraphContext(file)
   const hit = locate(aligned, t)
 
   const next = [...draftParas]
@@ -413,6 +498,14 @@ export function proseRejectParagraph(file: string, t: ParagraphTarget): { file: 
     fs.writeFileSync(abs, working)
     throw new HttpError(500, `refusing that paragraph would have left ${file} unparseable — nothing was changed`)
   }
+
+  // Only after the write survives its own check. A refusal is the strongest
+  // signal in the log — arc put this in front of the author and they said no —
+  // and it is the only one git never records, because refusing commits
+  // nothing. Without this the evidence is overwritten and gone.
+  judged(file, scene, 'paragraph', 'rejected',
+    hit.kind === 'del' ? '' : draftParas[hit.draftIndex!],
+    hit.mainIndex === null ? '' : mainParas[hit.mainIndex])
   return { file }
 }
 
@@ -451,7 +544,7 @@ interface SentenceTarget { paragraph: number; side: 'main' | 'draft'; sentence: 
  *  sentence verbs were careful about identity within a paragraph while
  *  addressing the paragraph itself by position. */
 function sentenceContext(file: string, paragraph: number) {
-  const { abs, working, fm, draftParas, mainParas, aligned } = paragraphContext(file)
+  const { abs, working, fm, draftParas, mainParas, aligned, scene } = paragraphContext(file)
   if (paragraph < 0 || paragraph >= draftParas.length) throw new HttpError(400, `no paragraph ${paragraph} in ${file}`)
 
   const hit = aligned.find(a => a.draftIndex === paragraph)
@@ -461,7 +554,7 @@ function sentenceContext(file: string, paragraph: number) {
     // rather than pretend.
     throw new HttpError(400, 'this paragraph is new in the draft — accept or reject it whole')
   }
-  return { abs, working, fm, draftParas, mainParas, main: hit.mainIndex }
+  return { abs, working, fm, draftParas, mainParas, main: hit.mainIndex, scene }
 }
 
 /** Rebuild one paragraph, applying a decision to exactly one sentence.
@@ -469,20 +562,33 @@ function sentenceContext(file: string, paragraph: number) {
  *  `keep` answers, for each aligned sentence, whether the rebuilt paragraph
  *  carries it. Everything the decision does not name keeps its current state,
  *  which is what leaves the rest of the paragraph pending. */
-function mergeSentence(
-  mainPara: string,
-  draftPara: string,
-  t: SentenceTarget,
-  keep: (s: AlignedSentence, isTarget: boolean) => boolean,
-): string {
-  const mainSents = splitSentences(mainPara).map(s => s.text)
-  const draftSents = splitSentences(draftPara).map(s => s.text)
-  const aligned = alignSentences(mainSents, draftSents)
-
-  const hit = aligned.find(s => s.side === t.side && s.index === t.sentence && s.kind !== 'same')
+/** The aligned sentences of a judged paragraph, and the target within them.
+ *
+ *  Computed once and handed to both the merge and the evidence entry, so the
+ *  pair the author sees, the merge that lands, and the rule argued later all
+ *  rest on one alignment. */
+function sentenceAlignment(mainPara: string, draftPara: string, t: SentenceTarget) {
+  const aligned = alignSentences(
+    splitSentences(mainPara).map(x => x.text),
+    splitSentences(draftPara).map(x => x.text),
+  )
+  const hit = aligned.find(x => x.side === t.side && x.index === t.sentence && x.kind !== 'same')
   if (!hit) {
     throw new HttpError(400, `no pending ${t.side === 'main' ? 'deleted' : 'added'} sentence ${t.sentence} in paragraph ${t.paragraph} — the draft may have moved on`)
   }
+  // A rewrite is a del and an ins that the author judges through two separate
+  // calls; the other half is recovered from the alignment rather than lost.
+  const other = counterpartOf(aligned, t.side, t.sentence)
+  const arcWrote = hit.kind === 'ins' ? hit.text : (other?.text ?? '')
+  const mainHad = hit.kind === 'del' ? hit.text : (other?.text ?? '')
+  return { aligned, hit, arcWrote, mainHad }
+}
+
+function mergeSentence(
+  aligned: AlignedSentence[],
+  hit: AlignedSentence,
+  keep: (s: AlignedSentence, isTarget: boolean) => boolean,
+): string {
   const kept = aligned.filter(s => keep(s, s === hit)).map(s => s.text)
   // Sentences tile their paragraph, so a dropped sentence takes its own
   // trailing space with it and the survivors keep theirs. One seam is not
@@ -506,9 +612,10 @@ function mergeSentence(
  *  deleted sentence commits the deletion; accepting an added one commits its
  *  arrival. */
 export function proseAcceptSentence(file: string, t: SentenceTarget, message?: string): { hash: string; file: string } {
-  const { abs, working, fm, draftParas, mainParas, main } = sentenceContext(file, t.paragraph)
+  const { abs, working, fm, draftParas, mainParas, main, scene } = sentenceContext(file, t.paragraph)
+  const { aligned, hit, arcWrote } = sentenceAlignment(mainParas[main], draftParas[t.paragraph], t)
 
-  const merged = mergeSentence(mainParas[main], draftParas[t.paragraph], t, (s, isTarget) => {
+  const merged = mergeSentence(aligned, hit, (s, isTarget) => {
     if (s.kind === 'same') return true
     if (s.kind === 'ins') return isTarget          // an added sentence lands only if accepted
     return !isTarget                                // a deleted one stays unless its deletion is accepted
@@ -520,8 +627,11 @@ export function proseAcceptSentence(file: string, t: SentenceTarget, message?: s
 
   try {
     fs.writeFileSync(abs, fm + next.join('\n\n') + '\n')
+    // Taking arc's sentence, or agreeing with its cut: an approval either way.
+    judged(file, scene, 'sentence', 'approved', arcWrote, arcWrote)
+    const paths = withEvidence(file)
     git('add', '--', file)
-    git('commit', '-m', message?.trim() || `prose: accept one sentence in ${path.basename(file)}`, '--', file)
+    git('commit', '-m', message?.trim() || `prose: accept one sentence in ${path.basename(file)}`, '--', ...paths)
     return { hash: git('rev-parse', '--short', 'HEAD').trim(), file }
   } finally {
     fs.writeFileSync(abs, working)   // the author's unaccepted words, always
@@ -534,9 +644,10 @@ export function proseAcceptSentence(file: string, t: SentenceTarget, message?: s
  *  change means the draft stops carrying it. Refusing an added sentence drops
  *  it; refusing a deleted one puts it back. */
 export function proseRejectSentence(file: string, t: SentenceTarget): { file: string } {
-  const { abs, fm, draftParas, mainParas, main } = sentenceContext(file, t.paragraph)
+  const { abs, fm, draftParas, mainParas, main, scene } = sentenceContext(file, t.paragraph)
+  const { aligned, hit, arcWrote, mainHad } = sentenceAlignment(mainParas[main], draftParas[t.paragraph], t)
 
-  const merged = mergeSentence(mainParas[main], draftParas[t.paragraph], t, (s, isTarget) => {
+  const merged = mergeSentence(aligned, hit, (s, isTarget) => {
     if (s.kind === 'same') return true
     if (s.kind === 'ins') return !isTarget         // a refused insertion goes away
     return isTarget                                 // a refused deletion comes back
@@ -547,6 +658,8 @@ export function proseRejectSentence(file: string, t: SentenceTarget): { file: st
   else next.splice(t.paragraph, 1)
 
   fs.writeFileSync(abs, fm + next.join('\n\n') + '\n')
+  // The sentence arc offered, and the sentence that stands instead.
+  judged(file, scene, 'sentence', 'rejected', arcWrote, mainHad)
   return { file }
 }
 
@@ -557,11 +670,22 @@ export function proseDiscard(file: string): void {
   const abs = resolveWithin(path.join(STORY, 'prose'), file.slice('prose/'.length))
   const change = proseDraft().changes.find(c => c.file === file)
   if (!change) throw new HttpError(404, `no draft change for ${file}`)
+  // BEFORE the ledger is cleared, because clearing it unlinks the blob and
+  // takes the evidence with it. Discarding is the loudest refusal in the
+  // product — a whole scene arc wrote, thrown away entire — and it was the
+  // one decision that destroyed its own record on the way out.
+  const gen = generatedFor(file)
+  if (gen) {
+    judged(file, change.main?.scene ?? null, 'scene', 'discarded',
+      parseScene(gen.content, file)?.body ?? gen.content, '')
+  }
+
   if (change.status === 'added') fs.rmSync(abs)
   else git('checkout', 'HEAD', '--', file)
   // A generation the author threw away must never be diffed against a later
   // hand-written scene at the same path.
   clearGenerated([file])
+  clearBaseline(file)
 }
 
 interface Asset { body: Buffer; contentType: string }
