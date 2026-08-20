@@ -1,7 +1,7 @@
 // Entry point: resolve config (fails at startup rather than mid-request —
 // importing config checks both repo paths) and listen.
 import { describeConfig, PORT } from './config'
-import { describeStyle } from './style'
+import { describeStyle, migrateAuthorStyle } from './style'
 import { currentEngine } from './engine'
 import { createArcServer } from './server'
 import { startWatcher } from './watch'
@@ -10,6 +10,12 @@ import { startWatcher } from './watch'
 // is synchronous and cached for the process; paying for it at startup keeps
 // the one place left that can block the loop out of the request path.
 const engine = currentEngine()
+
+// The author layer moves into its own versioned directory the first time any
+// server starts after the change — idempotent, and the old path becomes a
+// symlink so nothing that reads it directly has to know.
+const migrated = migrateAuthorStyle()
+if (migrated) console.log(`  style  author layer now versioned at ${migrated}`)
 
 console.log('arc-backend\n' + describeConfig() + `\n  style  ${describeStyle()}` + `\n  engine ${engine ?? 'none'}`)
 createArcServer().listen(PORT, () => {

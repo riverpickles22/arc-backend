@@ -69,7 +69,7 @@ export function readDismissed(): DismissedRule[] {
 
 /** Remember a refusal. Never throws: failing to remember costs a repeated
  *  proposal, and failing the dismissal itself would cost the author's click. */
-export function rememberDismissal(rule: ProposedRule, at: string): void {
+export function rememberDismissal(rule: { id: string; rule: string }, at: string): void {
   try {
     const known = readDismissed()
     if (known.some(d => d.id === rule.id)) return
@@ -122,6 +122,7 @@ export function parseQueue(text: string): ProposedRule[] {
         // means draft, so old entries parse and file exactly as they did.
         ...(r.source === 'revision' ? { source: 'revision' as const } : {}),
         ...(r.source === 'refusal' ? { source: 'refusal' as const } : {}),
+        ...(r.source === 'history' ? { source: 'history' as const } : {}),
         // Same discipline for the layer recommendation: spread only when it
         // is there, so a queue written without one round-trips unchanged.
         ...(r.layer === 'author' ? { layer: 'author' as const } : {}),
@@ -147,7 +148,8 @@ const renderOne = (r: ProposedRule): string => {
   // over their own sentence would be claiming credit for their voice.
   const [before, after] = r.source === 'revision' ? ['you had', 'you revised to']
     : r.source === 'refusal' ? ['arc wrote', 'you refused it, keeping']
-      : ['arc wrote', 'you kept']
+      : r.source === 'history' ? ['the book had', 'it moved to']
+        : ['arc wrote', 'you kept']
   for (const e of r.evidence) {
     lines.push(`- **${e.scene}** — ${before}: ${JSON.stringify(e.wrote)}`)
     lines.push(`  ${after}: ${JSON.stringify(e.kept)}`)
@@ -170,9 +172,9 @@ export function readQueue(): ProposedRule[] {
 }
 
 export function writeQueue(rules: ProposedRule[]): void {
-  const p = queuePath()
-  fs.mkdirSync(path.dirname(p), { recursive: true })
-  fs.writeFileSync(p, renderQueue(rules))
+  // Preserve whatever touchstones the file holds: two kinds share it, and a
+  // rule save must not silently discard the other kind's proposals.
+  writeQueueFile(rules, readTouchstones())
 }
 
 /** Append, collapsing anything already queued under the same id. Returns the
@@ -218,12 +220,20 @@ export function placeRule(existing: string, rule: ProposedRule): string {
   if (!rule.section) return body + renderRatified(rule)
 
   const lines = body.split('\n')
-  const wanted = headingKey(rule.section)
+  const at = sectionTail(lines, rule.section)
+  if (at === null) return body + renderRatified(rule)
+  return [...lines.slice(0, at), '', rule.rule.trim(), ...lines.slice(at)].join('\n')
+}
+
+/** Where new content lands inside a named section: just past its last
+ *  non-blank line. Null when the heading is not in the file. */
+function sectionTail(lines: string[], section: string): number | null {
+  const wanted = headingKey(section)
   const head = lines.findIndex(l => {
     const m = /^(#{1,6})\s+(.*?)\s*$/.exec(l)
     return !!m && headingKey(m[2]) === wanted
   })
-  if (head < 0) return body + renderRatified(rule)
+  if (head < 0) return null
 
   const level = (/^(#{1,6})/.exec(lines[head]) as RegExpExecArray)[1].length
   let end = lines.length
@@ -234,8 +244,7 @@ export function placeRule(existing: string, rule: ProposedRule): string {
   // Trim the section's own trailing blank lines, then reopen one.
   let tail = end
   while (tail > head + 1 && lines[tail - 1].trim() === '') tail--
-
-  return [...lines.slice(0, tail), '', rule.rule.trim(), ...lines.slice(tail)].join('\n')
+  return tail
 }
 
 /** Ratify a proposed rule into a layer, or dismiss it. Wholly deterministic —
@@ -264,4 +273,150 @@ export function ratifyRule(
   const remaining = queue.filter(r => r.id !== id)
   writeQueue(remaining)
   return { path: target, remaining, rule }
+}
+
+// ---- touchstones: passages proposed, not rules --------------------------
+//
+// A touchstone is a calibration passage from the manuscript, labelled with
+// the quality it demonstrates. It shares this queue file but NOT the rule
+// shape: RuleEvidence requires `wrote` and `kept`, and the tolerant parser
+// drops anything missing either — a touchstone overloaded onto ProposedRule
+// would render once and vanish on the next read. Its own marker, its own
+// budget, its own renderer.
+
+export type { ProposedTouchstone } from 'arc-canon-graph'
+import type { ProposedTouchstone } from 'arc-canon-graph'
+
+/** Touchstones cannot crowd rules out of a run, nor rules touchstones. */
+export const MAX_TOUCHSTONES_PER_RUN = 3
+
+const TOUCHSTONE_RECORD = /<!--\s*arc:touchstone\s+(\{[\s\S]*?\})\s*-->/g
+
+/** Stable id over the passage itself: the same passage proposed again
+ *  collapses, and a dismissed passage stays dismissed — but a REVISED passage
+ *  hashes fresh, so improving the prose reopens the question. */
+export const touchstoneId = (t: { scene: string; paragraph: number; passage: string }): string =>
+  't-' + createHash('sha256').update(`${t.scene}:${t.paragraph}:${t.passage.trim()}`).digest('hex').slice(0, 8)
+
+export function parseTouchstones(text: string): ProposedTouchstone[] {
+  const out: ProposedTouchstone[] = []
+  for (const m of text.matchAll(TOUCHSTONE_RECORD)) {
+    try {
+      const t = JSON.parse(m[1]) as Partial<ProposedTouchstone>
+      if (typeof t.quality !== 'string' || typeof t.scene !== 'string' || typeof t.passage !== 'string') continue
+      if (typeof t.paragraph !== 'number') continue
+      out.push({
+        id: typeof t.id === 'string' && t.id ? t.id : touchstoneId(t as ProposedTouchstone),
+        quality: t.quality,
+        scene: t.scene,
+        file: typeof t.file === 'string' ? t.file : '',
+        paragraph: t.paragraph,
+        passage: t.passage,
+        at: typeof t.at === 'string' ? t.at : '',
+      })
+    } catch {
+      continue
+    }
+  }
+  return out
+}
+
+const renderTouchstone = (t: ProposedTouchstone): string => [
+  `<!-- arc:touchstone ${JSON.stringify(t)} -->`,
+  '',
+  `### Touchstone — ${t.quality}`,
+  '',
+  ...t.passage.trim().split('\n').map(l => `> ${l}`),
+  '',
+  `- **from** ${t.file || t.scene} ¶${t.paragraph + 1}`,
+  '',
+].join('\n')
+
+export function readTouchstones(): ProposedTouchstone[] {
+  try {
+    return parseTouchstones(fs.readFileSync(queuePath(), 'utf8'))
+  } catch {
+    return []
+  }
+}
+
+/** Rewrite the queue file carrying BOTH kinds. Every writer goes through
+ *  here, so neither kind can erase the other on a save. */
+function writeQueueFile(rules: ProposedRule[], touchstones: ProposedTouchstone[]): void {
+  const p = queuePath()
+  fs.mkdirSync(path.dirname(p), { recursive: true })
+  const body = [renderQueue(rules), ...touchstones.map(renderTouchstone)].join('\n')
+  fs.writeFileSync(p, body)
+}
+
+export function writeTouchstones(touchstones: ProposedTouchstone[]): void {
+  writeQueueFile(readQueue(), touchstones)
+}
+
+/** Append touchstones, collapsing known ids and honouring dismissals — the
+ *  same two courtesies rules get. Returns what was genuinely new. */
+export function appendTouchstones(fresh: ProposedTouchstone[]): { added: ProposedTouchstone[] } {
+  const queue = readTouchstones()
+  const known = new Set([...queue.map(t => t.id), ...readDismissed().map(d => d.id)])
+  const added = fresh.filter(t => !known.has(t.id)).slice(0, MAX_TOUCHSTONES_PER_RUN)
+  if (added.length) writeQueueFile(readQueue(), [...queue, ...added])
+  return { added }
+}
+
+/** The marker a RATIFIED touchstone carries in the contract itself, so its
+ *  standing against the manuscript can be computed rather than remembered.
+ *  Distinct from the queue marker on purpose: one is a question, the other
+ *  is an anchor. */
+export const TOUCHSTONE_ANCHOR = /<!--\s*arc:touchstone-anchor\s+(\{[\s\S]*?\})\s*-->/g
+
+const fileish = (t: ProposedTouchstone): string =>
+  t.file ? t.file.replace(/^prose\//, '').replace(/\.md$/, '') : t.scene
+
+/** How a ratified touchstone reads in the contract: the label format §6
+ *  already uses — touchstonesOf() finds it by the bold lead — plus the
+ *  anchor comment that makes staleness computable. */
+const renderRatifiedTouchstone = (t: ProposedTouchstone): string => [
+  '',
+  `**${t.quality} — from ${fileish(t)}:**`,
+  `<!-- arc:touchstone-anchor ${JSON.stringify({ quality: t.quality, scene: t.scene, paragraph: t.paragraph, quote: t.passage.trim() })} -->`,
+  '',
+  ...t.passage.trim().split('\n').map(l => `> ${l}`),
+  '',
+].join('\n')
+
+/** Place a ratified touchstone at the end of the Touchstones section, or at
+ *  the file's end when no such heading exists. */
+export function placeTouchstone(existing: string, t: ProposedTouchstone): string {
+  const body = existing.replace(/\s*$/, existing.trim() ? '\n' : '')
+  const lines = body.split('\n')
+  const at = sectionTail(lines, 'Touchstones')
+  if (at === null) return body + renderRatifiedTouchstone(t)
+  return [...lines.slice(0, at), renderRatifiedTouchstone(t), ...lines.slice(at)].join('\n')
+}
+
+/** Ratify a proposed touchstone into the story contract, or dismiss it.
+ *  Deterministic, like ratifyRule — no model runs here. Touchstones only
+ *  ever land in the story layer: they are passages of THIS manuscript, and
+ *  a book's calibration passages are not the author's cross-book voice. */
+export function ratifyTouchstone(
+  id: string,
+  action: 'ratify' | 'dismiss',
+  contractPath: string,
+): { path: string | null; remaining: ProposedTouchstone[]; touchstone: ProposedTouchstone } {
+  const queue = readTouchstones()
+  const t = queue.find(x => x.id === id)
+  if (!t) throw new HttpError(404, `no proposed touchstone ${id}`)
+
+  let target: string | null = null
+  if (action === 'dismiss') rememberDismissal({ id: t.id, rule: `touchstone: ${t.quality} (${t.scene} ¶${t.paragraph + 1})` }, new Date().toISOString())
+  if (action === 'ratify') {
+    target = contractPath
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    const before = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : ''
+    fs.writeFileSync(target, placeTouchstone(before, t))
+  }
+
+  const remaining = queue.filter(x => x.id !== id)
+  writeQueueFile(readQueue(), remaining)
+  return { path: target, remaining, touchstone: t }
 }

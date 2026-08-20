@@ -30,10 +30,12 @@ import { runAnalysis } from './analyze'
 import { runSuggest } from './suggest'
 import { runDraft } from './draft'
 import { currentEngine } from './engine'
-import { authorStylePath, loadStyleLayers } from './style'
-import { DISMISSED_REL, QUEUE_REL, ratifyRule, readQueue } from './style-queue'
+import { authorStylePath, commitAuthorStyle, loadStyleLayers } from './style'
+import { DISMISSED_REL, QUEUE_REL, ratifyRule, ratifyTouchstone, readQueue, readTouchstones } from './style-queue'
 import { runLearnStyle } from './learn-style'
 import { readJudgments } from './evidence'
+import { proposeTouchstoneRefresh, touchstoneStates } from './touchstones'
+import { runBootstrapStyle } from './bootstrap-style'
 import { createLock, locks, removeLock } from './locks'
 import { addNote, deleteNote, listNotes, updateNote as reviseNote } from './notes'
 import { decideWork, workNote } from './work'
@@ -426,7 +428,26 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   '/api/style': {
     GET: (_req, res) => {
       const { author, story } = loadStyleLayers()
-      json(res, 200, { author, story, proposed: readQueue() } satisfies StyleResponse)
+      json(res, 200, {
+        author, story,
+        proposed: readQueue(),
+        proposedTouchstones: readTouchstones(),
+        // Every ratified touchstone's standing against the prose as it is
+        // now — staleness computed, not remembered.
+        touchstones: touchstoneStates(),
+      } satisfies StyleResponse)
+    },
+  },
+
+  // Refresh the touchstones: find every calibration passage the manuscript
+  // has rewritten out from under the contract, and PROPOSE its nearest living
+  // descendant. Deterministic end to end — resolution decides which are
+  // stale, word distance picks the replacement, the passage is copied from
+  // the scene file. No model, no engine guard, nothing binds until ratified.
+  '/api/style/touchstones/refresh': {
+    POST: (_req, res) => {
+      const r = proposeTouchstoneRefresh()
+      json(res, 200, { proposed: r.added.length, current: r.current, skipped: r.skipped })
     },
   },
 
@@ -449,6 +470,20 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     },
   },
 
+  // The bootstrap: one deliberate pass over the book's committed history and
+  // the author's notes, for a manuscript that made months of decisions before
+  // the learning loop was listening. Files STORY-layer proposals only, under
+  // the same cap and the same evidence bar as the live pass.
+  '/api/style/bootstrap': {
+    POST: async (_req, res) => {
+      if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
+        throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+      }
+      const r = await runBootstrapStyle()
+      json(res, 200, { proposed: r.added.length, considered: r.pairsConsidered, skipped: r.skipped })
+    },
+  },
+
   // Ratify a proposed rule into a layer, or dismiss it. Deterministic: no
   // model runs here. Ratifying commits the two style files — the contract's
   // visible history (git log --follow -- docs/style.md) IS the "grows slowly"
@@ -456,13 +491,17 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // tree, which is a ratification too.
   '/api/style/proposed': {
     POST: async (req, res) => {
-      const body = (await parsedBody(req)) as { id?: unknown; action?: unknown; layer?: unknown }
+      const body = (await parsedBody(req)) as { id?: unknown; action?: unknown; layer?: unknown; kind?: unknown }
       if (typeof body.id !== 'string' || !body.id) throw new HttpError(400, 'id required')
       if (body.action !== 'ratify' && body.action !== 'dismiss') throw new HttpError(400, "action must be 'ratify' or 'dismiss'")
       const layer = body.layer === 'author' ? 'author' : 'story'
 
-      const { path: target, remaining } = ratifyRule(body.id, body.action, layer, l =>
-        l === 'author' ? authorStylePath(process.env, os.homedir()) : path.join(STORY, 'docs', 'style.md'))
+      // A touchstone is a passage of THIS manuscript; it only ever lands in
+      // the story contract, whatever tab the click came from.
+      const { path: target, remaining } = body.kind === 'touchstone'
+        ? ratifyTouchstone(body.id, body.action, path.join(STORY, 'docs', 'style.md'))
+        : ratifyRule(body.id, body.action, layer, l =>
+          l === 'author' ? authorStylePath(process.env, os.homedir()) : path.join(STORY, 'docs', 'style.md'))
 
       // Only the story layer lives in the story repo; the author layer is in
       // the user's home and is not arc's to commit.
@@ -473,10 +512,17 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         // asks the author again.
         const tracked = ['docs/style.md', QUEUE_REL, DISMISSED_REL]
           .filter(rel => { try { git('add', '--', rel); return true } catch { return false } })
-        git('commit', '-m', `style: ${body.action} proposed rule ${body.id}`, '--', ...tracked)
+        git('commit', '-m', `style: ${body.action} proposed ${body.kind === 'touchstone' ? 'touchstone' : 'rule'} ${body.id}`, '--', ...tracked)
         committed = true
       } catch {
         committed = false // not a git repo, or nothing staged — the file change stands either way
+      }
+
+      // The author layer has its own repo and its own history; a ratification
+      // into it is committed there, so `committed` finally means the same
+      // thing for both layers.
+      if (body.action === 'ratify' && body.kind !== 'touchstone' && layer === 'author' && target) {
+        committed = commitAuthorStyle(target, `style: ratify proposed rule ${body.id}`)
       }
 
       json(res, 200, { ok: true, action: body.action, path: target, remaining: remaining.length, committed } satisfies RatifyRuleResponse)

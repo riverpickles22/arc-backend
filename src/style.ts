@@ -11,21 +11,38 @@
 //
 // This module is the ONLY place either path is resolved. Passes that write or
 // judge prose call styleContract(); nothing else needs to know the layout.
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { StyleLayerPayload as StyleLayer } from 'arc-canon-graph'
 import { STORY } from './config'
 
-/** Where the author-level contract lives, or null when the author has none.
- *  Pure: environment and home directory come in as arguments. */
+/** Where the author-level contract canonically lives.
+ *  Pure: environment and home directory come in as arguments.
+ *
+ *  Its own directory — <arc home>/style/ — and deliberately not the arc home
+ *  itself. The style directory is versioned as its own repo, because a
+ *  ratification into the author layer is a decision and decisions deserve
+ *  history; the rest of ~/.arc is machine state (generation ledger, run
+ *  telemetry, baselines) that is promised to be safe to delete, and a repo
+ *  over all of it would quietly turn scratch into record. */
 export function authorStylePath(
   env: { ARC_AUTHOR_STYLE?: string; ARC_HOME?: string },
   home: string,
 ): string {
   if (env.ARC_AUTHOR_STYLE) return env.ARC_AUTHOR_STYLE
-  if (env.ARC_HOME) return path.join(env.ARC_HOME, 'style.md')
-  return path.join(home, '.arc', 'style.md')
+  return path.join(env.ARC_HOME ?? path.join(home, '.arc'), 'style', 'style.md')
+}
+
+/** Where it lived before the style directory existed: <arc home>/style.md.
+ *  Read as a fallback until migration has run, so nobody's contract goes
+ *  silently unloaded in between. */
+export function legacyAuthorStylePath(
+  env: { ARC_HOME?: string },
+  home: string,
+): string {
+  return path.join(env.ARC_HOME ?? path.join(home, '.arc'), 'style.md')
 }
 
 /** Frontmatter is a binding mechanism for docs articles (§7); in a style
@@ -39,9 +56,69 @@ const read = (source: StyleLayer['source'], p: string): StyleLayer | null =>
 /** Both layers as they exist on disk. Either may be absent; absent is normal,
  *  not an error — a writer with one book needs only the story layer. */
 export function loadStyleLayers(): { author: StyleLayer | null; story: StyleLayer | null } {
+  const canonical = read('author', authorStylePath(process.env, os.homedir()))
+  const legacy = process.env.ARC_AUTHOR_STYLE
+    ? null   // an explicit override names one file; there is no elsewhere
+    : read('author', legacyAuthorStylePath(process.env, os.homedir()))
   return {
-    author: read('author', authorStylePath(process.env, os.homedir())),
+    author: canonical ?? legacy,
     story: read('story', path.join(STORY, 'docs', 'style.md')),
+  }
+}
+
+// ---- the author layer's own history -------------------------------------
+
+const styleGit = (dir: string, ...args: string[]): string =>
+  execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+
+/** Move <arc home>/style.md into its versioned directory, once, idempotently.
+ *
+ *  Runs at startup so no request pays for it and no step is the author's to
+ *  remember. The old path becomes a symlink to the new file, so everything
+ *  that reads ~/.arc/style.md directly — the arc-canon skill, an editor
+ *  bookmark — keeps working without knowing anything moved. Never throws:
+ *  a failed migration leaves the legacy fallback doing what it always did. */
+export function migrateAuthorStyle(): string | null {
+  if (process.env.ARC_AUTHOR_STYLE) return null
+  try {
+    const home = os.homedir()
+    const canonical = authorStylePath(process.env, home)
+    const legacy = legacyAuthorStylePath(process.env, home)
+    const dir = path.dirname(canonical)
+
+    if (!fs.existsSync(canonical)) {
+      const stat = fs.existsSync(legacy) ? fs.lstatSync(legacy) : null
+      if (!stat || !stat.isFile() || stat.isSymbolicLink()) return null   // nothing to migrate
+      fs.mkdirSync(dir, { recursive: true })
+      fs.renameSync(legacy, canonical)
+      fs.symlinkSync(canonical, legacy)
+    }
+
+    // The history, even for a file that was already in place. init and a
+    // baseline commit are both no-ops when they have already happened.
+    if (!fs.existsSync(path.join(dir, '.git'))) {
+      styleGit(dir, 'init', '-q')
+      try { styleGit(dir, 'add', '--', 'style.md'); styleGit(dir, 'commit', '-qm', 'author style: as it stood before arc versioned it') } catch { /* empty file, or identity unset */ }
+    }
+    return canonical
+  } catch (e) {
+    console.error('[warn] author-style migration skipped:', e)
+    return null
+  }
+}
+
+/** Commit the author layer after a ratification — its repo, its history.
+ *  Best effort: the ratification itself already stands on disk. */
+export function commitAuthorStyle(filePath: string, subject: string): boolean {
+  try {
+    const dir = path.dirname(filePath)
+    if (!fs.existsSync(path.join(dir, '.git'))) return false
+    styleGit(dir, 'add', '--', path.basename(filePath))
+    if (!styleGit(dir, 'status', '--porcelain', '--', path.basename(filePath)).trim()) return false
+    styleGit(dir, 'commit', '-qm', subject)
+    return true
+  } catch {
+    return false
   }
 }
 

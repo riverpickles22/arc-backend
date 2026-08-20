@@ -62,7 +62,7 @@ interface EditPair {
    *  the description.
    *  'refusal' — arc offered this and the author said no, keeping what stood.
    *  The only one git never records, because refusing commits nothing. */
-  source: 'draft' | 'revision' | 'refusal'
+  source: 'draft' | 'revision' | 'refusal' | 'history'
   wrote: string
   kept: string
   changed: number
@@ -105,7 +105,7 @@ export function changedWords(a: string, b: string): number {
  *  extracted to end, and here it would have meant learning a rule from a pair
  *  the author never saw as a pair. Pure, so the arithmetic that silently goes
  *  wrong is the part under test. */
-export function editPairs(wrote: string, kept: string, scene: string, source: 'draft' | 'revision' | 'refusal' = 'draft'): EditPair[] {
+export function editPairs(wrote: string, kept: string, scene: string, source: EditPair['source'] = 'draft'): EditPair[] {
   const a = paragraphs(wrote)
   const b = paragraphs(kept)
   const pairs: Omit<EditPair, 'n'>[] = []
@@ -160,6 +160,10 @@ the way in. Below are numbered EDIT pairs of two kinds, labelled:
 - AUTHOR HAD / REVISED TO — the author's own accepted prose, rewritten by
   their own hand. Nobody corrected anybody: this is the author's preference
   showing directly, the strongest voice signal in this table.
+- THE BOOK HAD / IT MOVED TO — two successive ACCEPTED states of the
+  manuscript. The author ratified the movement, but either side may have been
+  machine-drafted on their behalf, so this is the weakest evidence here:
+  weight it below a direct edit, and never below-the-line alone.
 - ARC WROTE / AUTHOR REFUSED, KEEPING — arc offered this and the author said
   no; the right-hand side is what stands instead. A refusal is only evidence
   about FORM when the two sides differ in how they are written. Many refusals
@@ -207,10 +211,13 @@ export function buildLearnPrompt(input: {
 }): string {
   const table = input.pairs.map(p => [
     `--- EDIT ${p.n} (${p.scene}) ---`,
-    p.source === 'revision' ? `AUTHOR HAD: ${p.wrote}` : `ARC WROTE: ${p.wrote}`,
+    p.source === 'revision' ? `AUTHOR HAD: ${p.wrote}`
+      : p.source === 'history' ? `THE BOOK HAD: ${p.wrote}`
+        : `ARC WROTE: ${p.wrote}`,
     p.source === 'revision' ? `REVISED TO: ${p.kept || '(cut entirely)'}`
       : p.source === 'refusal' ? `AUTHOR REFUSED, KEEPING: ${p.kept || '(nothing — the passage went)'}`
-        : `AUTHOR KEPT: ${p.kept || '(cut entirely)'}`,
+        : p.source === 'history' ? `IT MOVED TO: ${p.kept || '(cut entirely)'}`
+          : `AUTHOR KEPT: ${p.kept || '(cut entirely)'}`,
   ].join('\n')).join('\n\n')
 
   return [
@@ -283,7 +290,8 @@ export function materialize(proposals: RawProposal[], pairs: EditPair[], at: str
     // about how arc should write, and it files as such.
     const source = cited.every(x => x.source === 'revision') ? 'revision' as const
       : cited.every(x => x.source === 'refusal') ? 'refusal' as const
-        : 'draft' as const
+        : cited.every(x => x.source === 'history') ? 'history' as const
+          : 'draft' as const
 
     // The author layer is what stays true across books, so one book's evidence
     // cannot argue for it. Spanning two scenes is a low bar and still a bar;
