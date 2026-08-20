@@ -8,7 +8,10 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { load as yamlLoad } from 'js-yaml'
-import type { DocArticle, MaterialItem, ProseChange, ProseDraft, ProseScene, SceneContract } from 'arc-canon-graph'
+import type { AlignedParagraph, AlignedSentence, DocArticle, MaterialItem, ProseChange, ProseDraft, ProseScene, SceneContract } from 'arc-canon-graph'
+// The sentence rule and the alignment under it, shared with the viewer so the
+// side that names a sentence and the side that acts on it cannot disagree.
+import { alignParagraphs, alignSentences, mainInsertionPoint, splitSentences } from 'arc-canon-graph'
 import { STORY } from './config'
 import { clearGenerated } from './ledger'
 import { HttpError } from './http'
@@ -293,6 +296,46 @@ export function proseWrite(file: string, body: string, baseline?: string): Prose
   return scene
 }
 
+/** A paragraph named the way a sentence already is: which version it belongs
+ *  to, and its index into THAT version's own list.
+ *
+ *  Position alone was never a name. A paragraph index derived from the draft
+ *  and applied to main selects a different paragraph the moment the draft
+ *  inserts or removes one, and the mistake is silent — the author accepts the
+ *  paragraph they are looking at and a different one leaves the book. */
+interface ParagraphTarget { side: 'main' | 'draft'; paragraph: number }
+
+/** The two versions of a scene, their paragraphs, and the alignment between
+ *  them. Every paragraph verb starts here so they cannot disagree about which
+ *  paragraph of main a draft paragraph answers to. */
+function paragraphContext(file: string) {
+  const draft = proseDraft()
+  if (!draft.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer')
+  const change = draft.changes.find(c => c.file === file)
+  if (!change) throw new HttpError(404, `no draft change for ${file}`)
+  if (change.status !== 'modified' || !change.main) {
+    throw new HttpError(400, 'a paragraph can only be judged on a modified scene — take an added or deleted scene whole')
+  }
+  const abs = resolveWithin(path.join(STORY, 'prose'), file.slice('prose/'.length))
+  const working = fs.readFileSync(abs, 'utf8')
+  const fm = working.match(FM_RE)
+  if (!fm) throw new HttpError(400, `${file} has no scene frontmatter`)
+
+  const split = (body: string) => body.split(/\n{2,}/).map(x => x.trim()).filter(Boolean)
+  const draftParas = split(working.slice(fm[0].length))
+  const mainParas = split(change.main.body)
+  return { abs, working, fm: fm[0], draftParas, mainParas, aligned: alignParagraphs(mainParas, draftParas) }
+}
+
+/** Find the aligned entry a target names, refusing anything that no longer
+ *  resolves — a stale client index must be an error, never a guess. */
+function locate(aligned: AlignedParagraph[], t: ParagraphTarget): AlignedParagraph {
+  const hit = aligned.find(a => (t.side === 'main' ? a.mainIndex : a.draftIndex) === t.paragraph)
+  if (!hit) throw new HttpError(400, `no ${t.side}-side paragraph ${t.paragraph} in this draft — it may have moved on`)
+  if (hit.kind === 'same') throw new HttpError(400, `paragraph ${t.paragraph} is unchanged — there is nothing to judge`)
+  return hit
+}
+
 /** Accept ONE paragraph of a scene, leaving every other change pending.
  *
  *  Accept has been all-or-nothing: `git add -A -- prose` takes every edit in
@@ -306,35 +349,28 @@ export function proseWrite(file: string, body: string, baseline?: string): Prose
  *  one change; the working tree keeps the rest, so the remaining diff is
  *  exactly what has not been decided yet.
  *
+ *  The three kinds are three different edits to main, and conflating them is
+ *  what the positional scheme did:
+ *    changed — main's paragraph carries the draft's text
+ *    ins     — the draft's paragraph is SPLICED IN at its insertion point,
+ *              displacing nothing
+ *    del     — main's paragraph goes away, which is what accepting a
+ *              deletion means and what could not be expressed before
+ *
  *  The working tree is restored in a finally: a failure here must never cost
  *  the author words they have not accepted.
  */
-export function proseAcceptParagraph(file: string, index: number, message?: string): { hash: string; file: string } {
-  const draft = proseDraft()
-  if (!draft.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer to accept')
-  const change = draft.changes.find(c => c.file === file)
-  if (!change) throw new HttpError(404, `no draft change for ${file}`)
-  if (change.status !== 'modified' || !change.main) {
-    throw new HttpError(400, 'a paragraph can only be accepted on a modified scene — accept an added or deleted scene whole')
-  }
-  const abs = resolveWithin(path.join(STORY, 'prose'), file.slice('prose/'.length))
-  const working = fs.readFileSync(abs, 'utf8')
-  const fm = working.match(FM_RE)
-  if (!fm) throw new HttpError(400, `${file} has no scene frontmatter`)
+export function proseAcceptParagraph(file: string, t: ParagraphTarget, message?: string): { hash: string; file: string } {
+  const { abs, working, fm, draftParas, mainParas, aligned } = paragraphContext(file)
+  const hit = locate(aligned, t)
 
-  const split = (body: string) => body.split(/\n{2,}/).map(x => x.trim()).filter(Boolean)
-  const draftParas = split(working.slice(fm[0].length))
-  const mainParas = split(change.main.body)
-  if (index < 0 || index >= draftParas.length) throw new HttpError(400, `no paragraph ${index} in ${file}`)
-
-  // main's paragraphs, with the accepted one carrying the draft's text. A
-  // paragraph the draft added sits at the end of what main had.
   const merged = [...mainParas]
-  if (index < merged.length) merged[index] = draftParas[index]
-  else merged.push(draftParas[index])
+  if (hit.kind === 'changed') merged[hit.mainIndex!] = draftParas[hit.draftIndex!]
+  else if (hit.kind === 'ins') merged.splice(mainInsertionPoint(aligned, hit.draftIndex!), 0, draftParas[hit.draftIndex!])
+  else merged.splice(hit.mainIndex!, 1)
 
   try {
-    fs.writeFileSync(abs, fm[0] + merged.join('\n\n') + '\n')
+    fs.writeFileSync(abs, fm + merged.join('\n\n') + '\n')
     git('add', '--', file)
     git('commit', '-m', message?.trim() || `prose: accept one change in ${path.basename(file)}`, '--', file)
     return { hash: git('rev-parse', '--short', 'HEAD').trim(), file }
@@ -354,38 +390,153 @@ export function proseAcceptParagraph(file: string, index: number, message?: stri
  *  This is the easier direction, and deliberately never reaches git: refusing
  *  a change means the draft stops carrying it, so main's words go back into
  *  the working tree and nothing is committed. Everything pending elsewhere
- *  stays pending.
- *
- *  Paragraphs are matched by position — the same assumption
- *  proseAcceptParagraph already makes, and it has the same limit: a draft that
- *  inserts a paragraph mid-scene shifts every index after it. Judging by
- *  sentence (A37-3) needs real alignment and will bring it.
+ *  stays pending. The three kinds mirror accept — a refused rewrite reverts,
+ *  a refused insertion goes away, and a refused deletion comes back.
  */
-export function proseRejectParagraph(file: string, index: number): { file: string } {
-  const draft = proseDraft()
-  if (!draft.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer to reject')
-  const change = draft.changes.find(c => c.file === file)
-  if (!change) throw new HttpError(404, `no draft change for ${file}`)
-  if (change.status !== 'modified' || !change.main) {
-    throw new HttpError(400, 'a paragraph can only be rejected on a modified scene — discard an added scene whole')
-  }
-  const abs = resolveWithin(path.join(STORY, 'prose'), file.slice('prose/'.length))
-  const working = fs.readFileSync(abs, 'utf8')
-  const fm = working.match(FM_RE)
-  if (!fm) throw new HttpError(400, `${file} has no scene frontmatter`)
-
-  const split = (body: string) => body.split(/\n{2,}/).map(x => x.trim()).filter(Boolean)
-  const draftParas = split(working.slice(fm[0].length))
-  const mainParas = split(change.main.body)
-  if (index < 0 || index >= draftParas.length) throw new HttpError(400, `no paragraph ${index} in ${file}`)
+export function proseRejectParagraph(file: string, t: ParagraphTarget): { file: string } {
+  const { abs, fm, draftParas, mainParas, aligned } = paragraphContext(file)
+  const hit = locate(aligned, t)
 
   const next = [...draftParas]
-  // Past the end of what main held, the draft invented this paragraph:
-  // refusing it means it goes away, not that it reverts to nothing.
-  if (index < mainParas.length) next[index] = mainParas[index]
-  else next.splice(index, 1)
+  if (hit.kind === 'changed') next[hit.draftIndex!] = mainParas[hit.mainIndex!]
+  else if (hit.kind === 'ins') next.splice(hit.draftIndex!, 1)
+  else next.splice(draftInsertionPoint(aligned, hit.mainIndex!), 0, mainParas[hit.mainIndex!])
 
-  fs.writeFileSync(abs, fm[0] + next.join('\n\n') + '\n')
+  fs.writeFileSync(abs, fm + next.join('\n\n') + '\n')
+  return { file }
+}
+
+/** Where a main-side paragraph belongs in the DRAFT's array — the mirror of
+ *  mainInsertionPoint, for putting a refused deletion back where it was. */
+function draftInsertionPoint(aligned: AlignedParagraph[], at: number): number {
+  let after = 0
+  for (const a of aligned) {
+    if (a.mainIndex === at) return a.draftIndex ?? after
+    if (a.draftIndex !== null) after = a.draftIndex + 1
+  }
+  return after
+}
+
+// ---- judging one sentence (A37-3) ---------------------------------------
+//
+// The paragraph verbs force an all-or-nothing decision about text the author
+// would happily split: a revision rewrites a paragraph to answer one note, and
+// usually the new second sentence is better while the new fourth loses
+// something. These take the decision down to the sentence, in the before text
+// and the after text alike.
+//
+// The sentence is named by identity and re-derived here by the SHARED rule
+// (arc-canon-graph's splitSentences, held to graph/sentence-vectors.json in
+// both languages). The client never sends prose.
+
+interface SentenceTarget { paragraph: number; side: 'main' | 'draft'; sentence: number }
+
+/** The two paragraph versions a sentence decision needs, plus the scene's
+ *  frontmatter and full working text.
+ *
+ *  `paragraph` is a DRAFT-side index, and main's counterpart is resolved
+ *  through the shared paragraph alignment rather than assumed to sit at the
+ *  same number. Before that, a scene whose draft inserted a paragraph anywhere
+ *  above handed every later sentence decision the wrong before-text — the
+ *  sentence verbs were careful about identity within a paragraph while
+ *  addressing the paragraph itself by position. */
+function sentenceContext(file: string, paragraph: number) {
+  const { abs, working, fm, draftParas, mainParas, aligned } = paragraphContext(file)
+  if (paragraph < 0 || paragraph >= draftParas.length) throw new HttpError(400, `no paragraph ${paragraph} in ${file}`)
+
+  const hit = aligned.find(a => a.draftIndex === paragraph)
+  if (!hit || hit.mainIndex === null) {
+    // The draft invented this paragraph whole: there is no before text to
+    // align against, so it has no sentence granularity to offer. Say so
+    // rather than pretend.
+    throw new HttpError(400, 'this paragraph is new in the draft — accept or reject it whole')
+  }
+  return { abs, working, fm, draftParas, mainParas, main: hit.mainIndex }
+}
+
+/** Rebuild one paragraph, applying a decision to exactly one sentence.
+ *
+ *  `keep` answers, for each aligned sentence, whether the rebuilt paragraph
+ *  carries it. Everything the decision does not name keeps its current state,
+ *  which is what leaves the rest of the paragraph pending. */
+function mergeSentence(
+  mainPara: string,
+  draftPara: string,
+  t: SentenceTarget,
+  keep: (s: AlignedSentence, isTarget: boolean) => boolean,
+): string {
+  const mainSents = splitSentences(mainPara).map(s => s.text)
+  const draftSents = splitSentences(draftPara).map(s => s.text)
+  const aligned = alignSentences(mainSents, draftSents)
+
+  const hit = aligned.find(s => s.side === t.side && s.index === t.sentence && s.kind !== 'same')
+  if (!hit) {
+    throw new HttpError(400, `no pending ${t.side === 'main' ? 'deleted' : 'added'} sentence ${t.sentence} in paragraph ${t.paragraph} — the draft may have moved on`)
+  }
+  const kept = aligned.filter(s => keep(s, s === hit)).map(s => s.text)
+  // Sentences tile their paragraph, so a dropped sentence takes its own
+  // trailing space with it and the survivors keep theirs. One seam is not
+  // covered by that: the LAST sentence of a version has no trailing space, so
+  // keeping it and then keeping something after it runs the two together —
+  // `…down their backs.They sent her…`, which real prose produced on the first
+  // try and no synthetic fixture had. Re-separate only where the seam is bare;
+  // spacing the author chose is left alone.
+  const out = kept
+    .map((t, i) => (i === kept.length - 1 || /\s$/.test(t) ? t : t + ' '))
+    .join('')
+  return out.trim()
+}
+
+/** Accept ONE sentence into the book, leaving the rest of the paragraph — and
+ *  every other change — pending.
+ *
+ *  Same mechanism as proseAcceptParagraph and the same safety: build a version
+ *  of the scene that is main's text everywhere except this one sentence,
+ *  commit it, restore the author's working tree in a finally. Accepting a
+ *  deleted sentence commits the deletion; accepting an added one commits its
+ *  arrival. */
+export function proseAcceptSentence(file: string, t: SentenceTarget, message?: string): { hash: string; file: string } {
+  const { abs, working, fm, draftParas, mainParas, main } = sentenceContext(file, t.paragraph)
+
+  const merged = mergeSentence(mainParas[main], draftParas[t.paragraph], t, (s, isTarget) => {
+    if (s.kind === 'same') return true
+    if (s.kind === 'ins') return isTarget          // an added sentence lands only if accepted
+    return !isTarget                                // a deleted one stays unless its deletion is accepted
+  })
+
+  const next = [...mainParas]
+  if (merged) next[main] = merged
+  else next.splice(main, 1)
+
+  try {
+    fs.writeFileSync(abs, fm + next.join('\n\n') + '\n')
+    git('add', '--', file)
+    git('commit', '-m', message?.trim() || `prose: accept one sentence in ${path.basename(file)}`, '--', file)
+    return { hash: git('rev-parse', '--short', 'HEAD').trim(), file }
+  } finally {
+    fs.writeFileSync(abs, working)   // the author's unaccepted words, always
+  }
+}
+
+/** Refuse ONE sentence, leaving the rest of the paragraph pending.
+ *
+ *  Never reaches git, for the reason proseRejectParagraph does not: refusing a
+ *  change means the draft stops carrying it. Refusing an added sentence drops
+ *  it; refusing a deleted one puts it back. */
+export function proseRejectSentence(file: string, t: SentenceTarget): { file: string } {
+  const { abs, fm, draftParas, mainParas, main } = sentenceContext(file, t.paragraph)
+
+  const merged = mergeSentence(mainParas[main], draftParas[t.paragraph], t, (s, isTarget) => {
+    if (s.kind === 'same') return true
+    if (s.kind === 'ins') return !isTarget         // a refused insertion goes away
+    return isTarget                                 // a refused deletion comes back
+  })
+
+  const next = [...draftParas]
+  if (merged) next[t.paragraph] = merged
+  else next.splice(t.paragraph, 1)
+
+  fs.writeFileSync(abs, fm + next.join('\n\n') + '\n')
   return { file }
 }
 

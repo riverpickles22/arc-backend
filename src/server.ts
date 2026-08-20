@@ -15,13 +15,13 @@ import type {
   AnnotationsResponse, HealthResponse, MaterialResponse, NoteResponse, NotesResponse,
   AgentsResponse, HookResponse, LensesResponse, OkResponse, ReviseResponse, RunDecisionResponse, RunDetailResponse, RunResponse, RunsResponse,
   UpdateMaterialResponse, WorkDecisionResponse, WorkResponse,
-  ProseAcceptResponse, ProseResponse,
+  ProseAcceptResponse, ProseParagraphRequest, ProseResponse, ProseSentenceRequest,
   RatifyRuleResponse, StyleResponse,
 } from 'arc-canon-graph'
 import { STORY } from './config'
 import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
-import { docsArticles, git, materialItems, updateMaterial, proseAccept, proseAcceptParagraph, proseRejectParagraph, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig } from './story'
+import { docsArticles, git, materialItems, updateMaterial, proseAccept, proseAcceptParagraph, proseRejectParagraph, proseAcceptSentence, proseRejectSentence, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig } from './story'
 import { handleChat } from './agent'
 import { annotations, createAnnotation, deleteAnnotation, updateAnnotation } from './annotations'
 import { attention } from './attention'
@@ -105,6 +105,38 @@ function chatRequest(body: unknown): ChatRequest {
     }
   }
   return { messages: b.messages as ChatMessage[] }
+}
+
+/** Validate a sentence decision's shape. The sentence is named by identity —
+ *  side plus index — and prose never travels this direction, so there is
+ *  nothing here to sanitise, only to check. */
+function paragraphTarget(body: unknown): ProseParagraphRequest {
+  const b = body as { file?: unknown; paragraph?: unknown; side?: unknown; message?: unknown }
+  if (typeof b?.file !== 'string' || !Number.isInteger(b?.paragraph)) {
+    throw new HttpError(400, 'file and paragraph required')
+  }
+  if (b.side !== 'main' && b.side !== 'draft') throw new HttpError(400, 'side must be "main" or "draft"')
+  return {
+    file: b.file,
+    side: b.side,
+    paragraph: b.paragraph as number,
+    message: typeof b.message === 'string' ? b.message : undefined,
+  }
+}
+
+function sentenceTarget(body: unknown): ProseSentenceRequest {
+  const b = body as { file?: unknown; paragraph?: unknown; side?: unknown; sentence?: unknown; message?: unknown }
+  if (typeof b?.file !== 'string' || !Number.isInteger(b?.paragraph) || !Number.isInteger(b?.sentence)) {
+    throw new HttpError(400, 'file, paragraph and sentence required')
+  }
+  if (b.side !== 'main' && b.side !== 'draft') throw new HttpError(400, 'side must be "main" or "draft"')
+  return {
+    file: b.file,
+    paragraph: b.paragraph as number,
+    side: b.side,
+    sentence: b.sentence as number,
+    message: typeof b.message === 'string' ? b.message : undefined,
+  }
 }
 
 const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
@@ -484,12 +516,13 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     },
   },
 
-  // Accept one paragraph, leaving the rest of the draft pending.
+  // Accept one paragraph, leaving the rest of the draft pending. The body
+  // names the paragraph by identity — side plus that side's own index — and
+  // never carries prose, exactly as the sentence verbs do.
   '/api/prose/accept-paragraph': {
     POST: async (req, res) => {
-      const b = (await parsedBody(req)) as { file?: unknown; paragraph?: unknown; message?: unknown }
-      if (typeof b.file !== 'string' || typeof b.paragraph !== 'number') throw new HttpError(400, 'file and paragraph required')
-      json(res, 200, proseAcceptParagraph(b.file, b.paragraph, typeof b.message === 'string' ? b.message : undefined))
+      const t = paragraphTarget(await parsedBody(req))
+      json(res, 200, proseAcceptParagraph(t.file, t, t.message))
     },
   },
 
@@ -498,9 +531,24 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // has not been decided.
   '/api/prose/reject-paragraph': {
     POST: async (req, res) => {
-      const b = (await parsedBody(req)) as { file?: unknown; paragraph?: unknown }
-      if (typeof b.file !== 'string' || typeof b.paragraph !== 'number') throw new HttpError(400, 'file and paragraph required')
-      json(res, 200, proseRejectParagraph(b.file, b.paragraph))
+      const t = paragraphTarget(await parsedBody(req))
+      json(res, 200, proseRejectParagraph(t.file, t))
+    },
+  },
+
+  // Sentence granularity (A37-3). The body names the sentence by identity and
+  // never carries prose; the server re-splits by the shared rule and merges.
+  '/api/prose/accept-sentence': {
+    POST: async (req, res) => {
+      const t = sentenceTarget(await parsedBody(req))
+      json(res, 200, proseAcceptSentence(t.file, t, t.message))
+    },
+  },
+
+  '/api/prose/reject-sentence': {
+    POST: async (req, res) => {
+      const t = sentenceTarget(await parsedBody(req))
+      json(res, 200, proseRejectSentence(t.file, t))
     },
   },
 

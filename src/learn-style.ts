@@ -20,6 +20,7 @@ import { MODEL, STORY } from './config'
 import { getClient } from './agent'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { generatedFor, clearGenerated } from './ledger'
+import { alignParagraphs } from 'arc-canon-graph'
 import { git, parseScene } from './story'
 import { styleContract } from './style'
 import { appendToQueue, readQueue, ruleId, type ProposedRule, type RuleEvidence } from './style-queue'
@@ -78,55 +79,34 @@ export function changedWords(a: string, b: string): number {
   return prev[y.length]
 }
 
-/** Longest common subsequence of paragraphs, as index pairs. The identical
- *  paragraphs are the anchors; everything between them is the edit. */
-function anchors(a: string[], b: string[]): [number, number][] {
-  const n = a.length
-  const m = b.length
-  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
-  for (let i = n - 1; i >= 0; i--) {
-    for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
-    }
-  }
-  const out: [number, number][] = []
-  let i = 0
-  let j = 0
-  while (i < n && j < m) {
-    if (a[i] === b[j]) { out.push([i, j]); i++; j++ }
-    else if (dp[i + 1][j] >= dp[i][j + 1]) i++
-    else j++
-  }
-  return out
-}
-
 /** Pair what arc wrote against what the author kept, paragraph by paragraph.
  *
  *  Rewrites and deletions become pairs; a paragraph the author ADDED outright
  *  does not. An addition has nothing on arc's side to compare against, so it
  *  cannot support a rule about how arc should write — it is the author adding
- *  their own material, not correcting arc's. Pure, so the arithmetic that
- *  silently goes wrong is the part under test. */
+ *  their own material, not correcting arc's.
+ *
+ *  The alignment is arc-canon-graph's, the same one the accept gate merges
+ *  against and the viewer renders. This module used to carry its own copy;
+ *  two implementations of one alignment is the arrangement diff-seq.ts was
+ *  extracted to end, and here it would have meant learning a rule from a pair
+ *  the author never saw as a pair. Pure, so the arithmetic that silently goes
+ *  wrong is the part under test. */
 export function editPairs(wrote: string, kept: string, scene: string, source: 'draft' | 'revision' = 'draft'): EditPair[] {
   const a = paragraphs(wrote)
   const b = paragraphs(kept)
   const pairs: Omit<EditPair, 'n'>[] = []
 
-  const marks = [...anchors(a, b), [a.length, b.length] as [number, number]]
-  let ai = 0
-  let bi = 0
-  for (const [am, bm] of marks) {
-    const removed = a.slice(ai, am)
-    const added = b.slice(bi, bm)
-    // Positional pairing inside a changed block: removed[k] is what arc wrote
-    // where added[k] is what the author put instead. Surplus removals are
-    // cuts (kept: ''); surplus additions are the author's own new prose.
-    for (let k = 0; k < removed.length; k++) {
-      const to = added[k] ?? ''
-      pairs.push({ scene, source, wrote: removed[k], kept: to, changed: changedWords(removed[k], to) })
+  for (const al of alignParagraphs(a, b)) {
+    if (al.kind === 'changed') {
+      const was = a[al.mainIndex!], now = b[al.draftIndex!]
+      pairs.push({ scene, source, wrote: was, kept: now, changed: changedWords(was, now) })
+    } else if (al.kind === 'del') {
+      // A cut is a pair with an empty kept side: the author's answer to that
+      // paragraph was that the book is better without it.
+      const was = a[al.mainIndex!]
+      pairs.push({ scene, source, wrote: was, kept: '', changed: changedWords(was, '') })
     }
-    ai = am + 1
-    bi = bm + 1
   }
   return pairs.map((p, i) => ({ n: i + 1, ...p }))
 }
