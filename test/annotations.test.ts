@@ -5,11 +5,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
+import { load as yamlLoad } from 'js-yaml'
 import { git, makeStory, writeScene } from './fixture.ts'
 
 const story = makeStory()
 process.env.ARC_STORY_PATH = story
 const { annotations, createAnnotation, deleteAnnotation, updateAnnotation, orphaned } = await import('../src/annotations.ts')
+const { CORE } = await import('../src/config.ts')
 const { HttpError } = await import('../src/http.ts')
 
 function resetScene(body: string) {
@@ -165,4 +167,41 @@ test('delete removes a keypoint and refuses a note', () => {
   assert.ok(!annotations().some(a => a.id === kp.id), 'the keypoint is gone')
   assert.throws(() => deleteAnnotation(note.id), /never deleted/)
   assert.ok(annotations().some(a => a.id === note.id), 'the note survives')
+})
+
+// ---- the two repos hold each other to one shape -------------------------
+//
+// arc-core's schema decides what a keypoint may be; createAnnotation decides
+// what one actually is. Nothing connected them: arc-core's test carried a
+// dict typed out beside it, annotated "mirrored field for field", which is
+// true until someone changes this function and does not know that file
+// exists. So the shape lives in arc-core as a specimen — validated there
+// against the schema, and held HERE against the real output.
+
+test("the keypoint createAnnotation writes has the shape arc-core validates", () => {
+  resetScene('First paragraph here.\n\nSecond paragraph mentions Diego in the doorway.')
+  const kp = createAnnotation({
+    scene: 'sc.01-1', paragraph: 1, quote: 'Second paragraph.',
+    body: 'what this passage must get across', kind: 'keypoint', by: 'agent',
+  })
+
+  // What went to disk, not what the function returned — the file is what the
+  // validator will read, and resolveAnnotations adds fields on the way out.
+  const onDisk = yamlLoad(
+    fs.readFileSync(path.join(story, 'annotations', `${kp.id.replace('.', '-')}.yaml`), 'utf8'),
+  ) as Record<string, unknown>
+
+  const specimen = yamlLoad(
+    fs.readFileSync(path.join(CORE, 'schema', 'fixtures', 'keypoint-from-backend.yaml'), 'utf8'),
+  ) as Record<string, unknown>
+
+  assert.deepEqual(Object.keys(onDisk).sort(), Object.keys(specimen).sort(),
+    'createAnnotation writes exactly the keys arc-core validates — no more, no fewer')
+  assert.equal('status' in onDisk, false, 'and no status: a keypoint has no lifecycle')
+  for (const k of Object.keys(specimen)) {
+    assert.equal(typeof onDisk[k], typeof specimen[k], `${k} keeps the specimen's type`)
+  }
+  const anchor = onDisk.anchor as Record<string, unknown>
+  assert.deepEqual(Object.keys(anchor).sort(), Object.keys(specimen.anchor as object).sort(),
+    'the anchor too — a paragraph keypoint carries scene, paragraph and quote')
 })
