@@ -242,6 +242,64 @@ test('a paragraph reject is refused on an added scene, and on a bad index', () =
   reset()
 })
 
+test('a paragraph verdict leaves other scenes untouched', () => {
+  // Mirrors the sentence-level assertion: the second scene is created and
+  // committed BEFORE the draft exists, or committing it would swallow
+  // scene-01's pending change and prove nothing.
+  reset()
+  const other = 'prose/ch-01/scene-03.md'
+  writeScene(story, other, 'sc.01-3', 'Another scene entirely.')
+  git(story, 'add', '-A')
+  if (git(story, 'status', '--porcelain').trim()) {
+    git(story, 'commit', '-qm', 'prose: a third scene, for the paragraph verbs')
+  }
+
+  const file = 'prose/ch-01/scene-01.md'
+  const abs = path.join(story, file)
+  const before = fs.readFileSync(abs, 'utf8')
+  const fm = before.slice(0, before.indexOf('---', 3) + 4)
+  fs.writeFileSync(abs, fm + 'First, rewritten.\n\nSecond, also rewritten.\n')
+
+  const otherAbs = path.join(story, other)
+  fs.writeFileSync(otherAbs, fs.readFileSync(otherAbs, 'utf8').replace('Another scene entirely.', 'Another scene, changed.'))
+
+  proseRejectParagraph(file, { side: 'draft', paragraph: 0 })
+
+  assert.match(fs.readFileSync(otherAbs, 'utf8'), /Another scene, changed\./,
+    'the other scene keeps its pending change')
+  assert.equal(proseDraft().changes.filter(c => c.file === other).length, 1,
+    'and is still pending, not swept into the refusal')
+  reset()
+})
+
+test('a refusal that would break the scene changes nothing and says so', () => {
+  // Refusing is the one verb whose write IS the outcome: accept commits and
+  // then restores the working tree in a finally, so a bad write cannot
+  // survive it. Reject has to check its own result.
+  reset()
+  const file = 'prose/ch-01/scene-01.md'
+  const abs = path.join(story, file)
+  const before = fs.readFileSync(abs, 'utf8')
+  const fm = before.slice(0, before.indexOf('---', 3) + 4)
+  fs.writeFileSync(abs, fm + 'First, rewritten.\n\nSecond paragraph.\n')
+  git(story, 'add', '--', file)
+  if (git(story, 'status', '--porcelain', '--', file).trim()) {
+    git(story, 'commit', '-qm', 'prose: baseline for the broken-frontmatter case', '--', file)
+  }
+
+  // The author has broken their own frontmatter in the editor — it still
+  // looks like frontmatter, so the verb accepts the file, but the scene no
+  // longer declares which scene it is.
+  const broken = '---\nchapter: ch.01\nstatus: proposed\n---\n'
+  fs.writeFileSync(abs, broken + 'First, rewritten again.\n\nSecond paragraph.\n')
+  const working = fs.readFileSync(abs, 'utf8')
+
+  assert.throws(() => proseRejectParagraph(file, { side: 'draft', paragraph: 0 }), HttpError)
+  assert.equal(fs.readFileSync(abs, 'utf8'), working,
+    'the author keeps every word they had, to the byte')
+  reset()
+})
+
 // ---- a paragraph is named, not counted ---------------------------------
 //
 // The positional scheme read an index off the DRAFT and applied it to MAIN.
@@ -472,8 +530,19 @@ test('sentence verbs refuse what they cannot honestly do', () => {
   assert.throws(() => proseRejectSentence(file, { paragraph: 0, side: 'draft', sentence: 0 }), HttpError)
   // Nor does an index past the end.
   assert.throws(() => proseRejectSentence(file, { paragraph: 0, side: 'draft', sentence: 9 }), HttpError)
-  // A whole-new paragraph has no before text to align against.
-  assert.throws(() => proseRejectSentence(file, { paragraph: 5, side: 'draft', sentence: 0 }), HttpError)
+  reset()
+})
+
+test('a paragraph the draft invented offers no sentence granularity', () => {
+  // This asserted itself with paragraph 5 of a two-paragraph fixture, which
+  // trips the out-of-range guard above and never reaches the branch it names.
+  // The paragraph has to actually EXIST in the draft and not in main.
+  const { file } = twoSentenceDraft(
+    'He shipped the oars. The swell ran black.\n\nSecond paragraph.\n\nA paragraph main never had. It has two sentences.\n')
+  assert.throws(
+    () => proseRejectSentence(file, { paragraph: 2, side: 'draft', sentence: 0 }),
+    (e: Error) => e instanceof HttpError && /new in the draft/.test(e.message),
+    'the refusal names why, rather than reporting a bad index')
   reset()
 })
 

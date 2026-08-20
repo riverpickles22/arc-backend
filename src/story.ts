@@ -394,7 +394,7 @@ export function proseAcceptParagraph(file: string, t: ParagraphTarget, message?:
  *  a refused insertion goes away, and a refused deletion comes back.
  */
 export function proseRejectParagraph(file: string, t: ParagraphTarget): { file: string } {
-  const { abs, fm, draftParas, mainParas, aligned } = paragraphContext(file)
+  const { abs, working, fm, draftParas, mainParas, aligned } = paragraphContext(file)
   const hit = locate(aligned, t)
 
   const next = [...draftParas]
@@ -402,7 +402,17 @@ export function proseRejectParagraph(file: string, t: ParagraphTarget): { file: 
   else if (hit.kind === 'ins') next.splice(hit.draftIndex!, 1)
   else next.splice(draftInsertionPoint(aligned, hit.mainIndex!), 0, mainParas[hit.mainIndex!])
 
+  // The scene has to still BE a scene afterwards. Accept gets this for free —
+  // it commits and then restores the author's tree in a finally, so a bad
+  // write cannot survive the call. Reject's write IS the outcome, so it
+  // verifies its own result the way proseWrite does: write, parse, and put the
+  // author's words back if what came out is not a scene. Refusing a change
+  // must never be the thing that costs them the rest of their draft.
   fs.writeFileSync(abs, fm + next.join('\n\n') + '\n')
+  if (!parseScene(fs.readFileSync(abs, 'utf8'), file)) {
+    fs.writeFileSync(abs, working)
+    throw new HttpError(500, `refusing that paragraph would have left ${file} unparseable — nothing was changed`)
+  }
   return { file }
 }
 
