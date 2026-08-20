@@ -24,6 +24,65 @@ export type { ProposedRule, RuleEvidence }
 export const QUEUE_REL = 'docs/style.proposed.md'
 export const queuePath = (): string => path.join(STORY, QUEUE_REL)
 
+/** Rules the author has already declined.
+ *
+ *  ruleId is a hash of the rule's text, and appendToQueue only ever checked
+ *  the CURRENT queue — so a dismissed rule was re-argued by the next pass,
+ *  arrived with the identical id, and was filed again. The author said no and
+ *  it came back, every run, which is the fastest way to teach someone to stop
+ *  reading a queue.
+ *
+ *  Tracked and committed, because a dismissal is a decision and decisions are
+ *  record. It keeps the rule's text, not only its hash: an author looking at
+ *  this file should be able to see what they turned down. */
+export const DISMISSED_REL = 'docs/style.dismissed.md'
+const dismissedPath = (): string => path.join(STORY, DISMISSED_REL)
+
+const DISMISSED_HEADER = `# Rules you have declined
+
+Machine-written. Arc argued for these and you said no, so it will not argue
+for them again — a proposal whose text hashes to one of these ids is dropped
+before it reaches your queue. Delete an entry to let arc make its case again.
+`
+
+const DISMISSED_RECORD = /<!--\s*arc:dismissed\s+(\{[\s\S]*?\})\s*-->/g
+
+interface DismissedRule { id: string; rule: string; at: string }
+
+export function readDismissed(): DismissedRule[] {
+  try {
+    const text = fs.readFileSync(dismissedPath(), 'utf8')
+    const out: DismissedRule[] = []
+    for (const m of text.matchAll(DISMISSED_RECORD)) {
+      try {
+        const r = JSON.parse(m[1]) as Partial<DismissedRule>
+        if (typeof r.id === 'string' && typeof r.rule === 'string') {
+          out.push({ id: r.id, rule: r.rule, at: typeof r.at === 'string' ? r.at : '' })
+        }
+      } catch { continue }
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+/** Remember a refusal. Never throws: failing to remember costs a repeated
+ *  proposal, and failing the dismissal itself would cost the author's click. */
+export function rememberDismissal(rule: ProposedRule, at: string): void {
+  try {
+    const known = readDismissed()
+    if (known.some(d => d.id === rule.id)) return
+    const next = [...known, { id: rule.id, rule: rule.rule, at }]
+    const body = next.map(d =>
+      `<!-- arc:dismissed ${JSON.stringify(d)} -->\n\n- ${d.rule.trim()}\n`).join('\n')
+    fs.mkdirSync(path.dirname(dismissedPath()), { recursive: true })
+    fs.writeFileSync(dismissedPath(), `${DISMISSED_HEADER}\n${body}`)
+  } catch (e) {
+    console.error('[warn] could not record the dismissal (the rule still left the queue):', e)
+  }
+}
+
 const HEADER = `# Proposed style rules
 
 Machine-written. Arc watched what it drafted and what you kept, and argues
@@ -120,7 +179,9 @@ export function writeQueue(rules: ProposedRule[]): void {
  *  rules that were genuinely new, so a caller can report honestly. */
 export function appendToQueue(fresh: ProposedRule[]): { added: ProposedRule[]; queue: ProposedRule[] } {
   const queue = readQueue()
-  const known = new Set(queue.map(r => r.id))
+  // Already queued, or already declined. The second half is what stops the
+  // author being asked the same question every run.
+  const known = new Set([...queue.map(r => r.id), ...readDismissed().map(d => d.id)])
   const added = fresh.filter(r => !known.has(r.id))
   if (added.length) writeQueue([...queue, ...added])
   return { added, queue: [...queue, ...added] }
@@ -132,6 +193,16 @@ export function appendToQueue(fresh: ProposedRule[]): { added: ProposedRule[]; q
  *  the moment the author agrees with it. The history is in git. */
 const renderRatified = (r: ProposedRule): string =>
   `\n${r.section ? `## ${r.section}\n\n` : ''}${r.rule.trim()}\n`
+
+/** A heading, reduced to the thing that identifies it.
+ *
+ *  Contracts number their sections — this book's are "## 3. Rhythm" and
+ *  "## 6. Touchstones" — and an exact-title match never found them, so every
+ *  ratification opened a SECOND "Rhythm" at the end of the file. The existing
+ *  test passed only because its fixture used a bare "## Rhythm", which no
+ *  real contract here does. The number is ordering, not identity. */
+const headingKey = (title: string): string =>
+  title.trim().replace(/^\d+[.)]\s*/, '').toLowerCase()
 
 /** Place a ratified rule in the contract text.
  *
@@ -147,10 +218,10 @@ export function placeRule(existing: string, rule: ProposedRule): string {
   if (!rule.section) return body + renderRatified(rule)
 
   const lines = body.split('\n')
-  const wanted = rule.section.trim().toLowerCase()
+  const wanted = headingKey(rule.section)
   const head = lines.findIndex(l => {
     const m = /^(#{1,6})\s+(.*?)\s*$/.exec(l)
-    return !!m && m[2].toLowerCase() === wanted
+    return !!m && headingKey(m[2]) === wanted
   })
   if (head < 0) return body + renderRatified(rule)
 
@@ -182,6 +253,7 @@ export function ratifyRule(
   if (!rule) throw new HttpError(404, `no proposed rule ${id}`)
 
   let target: string | null = null
+  if (action === 'dismiss') rememberDismissal(rule, new Date().toISOString())
   if (action === 'ratify') {
     target = layerPathFor(layer)
     fs.mkdirSync(path.dirname(target), { recursive: true })

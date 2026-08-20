@@ -18,7 +18,7 @@ const {
   editPairs, changedWords, significant, buildLearnPrompt, parseProposals, materialize,
   independentExamples, refusalPairs, runLearnStyle, MIN_CHANGED_WORDS, MAX_PROPOSALS_PER_RUN, QUEUE_SUPPRESS_AT,
 } = await import('../src/learn-style.ts')
-const { parseQueue, renderQueue, ruleId, readQueue, writeQueue, ratifyRule, queuePath, placeRule } =
+const { parseQueue, renderQueue, ruleId, readQueue, writeQueue, ratifyRule, queuePath, placeRule, appendToQueue, readDismissed } =
   await import('../src/style-queue.ts')
 const { recordGenerated, generatedFor } = await import('../src/ledger.ts')
 const { readJudgments } = await import('../src/evidence.ts')
@@ -504,4 +504,62 @@ test('a rule with more evidence than the card shows is not punished for it', () 
   const [out] = materialize([{ rule: 'Well evidenced.', section: null, layer: null, edits: [1, 2, 3, 4] }], pairs, 'now')
   assert.ok(out, 'four independent examples clear a bar of two')
   assert.equal(out.evidence.length, 3, 'and the card still shows three')
+})
+
+test('a ratified rule joins a numbered section instead of opening a second one', () => {
+  // The real contract's headings, verbatim. An exact-title match found none
+  // of them, so every ratification into this book appended a duplicate.
+  const contract = [
+    '# The Feral Dogs of Cuba — Prose Style Guide',
+    '',
+    '## 3. Rhythm',
+    '',
+    '- **Em dashes are a last resort.**',
+    '',
+    '## 4. Diction',
+    '',
+    '- Plain words.',
+    '',
+  ].join('\n')
+  const rule = {
+    id: 'p-1', rule: 'Two in a paragraph is a smell.', section: '3. Rhythm',
+    at: 'now', evidence: [],
+  }
+  const out = placeRule(contract, rule)
+  assert.equal(out.match(/^## 3\. Rhythm/gm)?.length, 1, 'one Rhythm section, not two')
+  assert.equal(out.match(/^## /gm)?.length, 2, 'and no new heading anywhere')
+  const rhythm = out.slice(out.indexOf('## 3. Rhythm'), out.indexOf('## 4. Diction'))
+  assert.match(rhythm, /Two in a paragraph is a smell\./, 'the rule landed inside it')
+  assert.match(rhythm, /Em dashes are a last resort/, 'beside what was already there')
+
+  // Bare and numbered names each other: the number is ordering, not identity.
+  assert.match(placeRule(contract, { ...rule, section: 'Rhythm' }), /## 3\. Rhythm/)
+  assert.equal(placeRule(contract, { ...rule, section: 'Rhythm' }).match(/^## /gm)?.length, 2)
+})
+
+test('a dismissed rule does not come back', () => {
+  writeQueue([])
+  const rule = {
+    id: ruleId('Never open on the weather.'), rule: 'Never open on the weather.',
+    section: null, at: 'now', evidence: [{ scene: 'sc.01-1', wrote: 'x', kept: 'y' }],
+  }
+  appendToQueue([rule])
+  assert.equal(readQueue().length, 1)
+
+  ratifyRule(rule.id, 'dismiss', 'story', () => path.join(STORY, 'docs/style.md'))
+  assert.equal(readQueue().length, 0, 'it leaves the queue')
+  assert.ok(readDismissed().some(d => d.id === rule.id), 'and is remembered')
+
+  // The next pass argues the identical rule: ruleId is a hash of the text, so
+  // it arrives with the same id it was refused under.
+  const { added } = appendToQueue([{ ...rule, at: 'later' }])
+  assert.deepEqual(added, [], 'and is not filed again')
+  assert.equal(readQueue().length, 0, 'the author is not asked twice')
+
+  // The text is kept, not only the hash — someone reading the file should be
+  // able to see what they turned down.
+  assert.match(fs.readFileSync(path.join(STORY, 'docs/style.dismissed.md'), 'utf8'), /Never open on the weather\./)
+
+  fs.rmSync(path.join(STORY, 'docs/style.dismissed.md'))
+  writeQueue([])
 })

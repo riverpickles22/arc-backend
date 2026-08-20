@@ -31,8 +31,9 @@ import { runSuggest } from './suggest'
 import { runDraft } from './draft'
 import { currentEngine } from './engine'
 import { authorStylePath, loadStyleLayers } from './style'
-import { QUEUE_REL, ratifyRule, readQueue } from './style-queue'
+import { DISMISSED_REL, QUEUE_REL, ratifyRule, readQueue } from './style-queue'
 import { runLearnStyle } from './learn-style'
+import { readJudgments } from './evidence'
 import { createLock, locks, removeLock } from './locks'
 import { addNote, deleteNote, listNotes, updateNote as reviseNote } from './notes'
 import { decideWork, workNote } from './work'
@@ -429,6 +430,25 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     },
   },
 
+  // Run the learning pass on demand. The author decides when a review episode
+  // is closed; draft-drain is a proxy for that, and this is the author saying
+  // it outright. Same pass, same queue, same non-binding result.
+  '/api/style/learn': {
+    POST: async (_req, res) => {
+      if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
+        throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+      }
+      // Every scene the author has judged since the last pass, plus anything
+      // arc has written and nobody has looked at yet.
+      const files = [...new Set([
+        ...readJudgments().map(j => j.file),
+        ...proseScenes().map(sc => sc.file),
+      ])].filter(f => f.startsWith('prose/'))
+      const r = await runLearnStyle(files)
+      json(res, 200, { proposed: r.added.length, considered: r.pairsConsidered, skipped: r.skipped })
+    },
+  },
+
   // Ratify a proposed rule into a layer, or dismiss it. Deterministic: no
   // model runs here. Ratifying commits the two style files — the contract's
   // visible history (git log --follow -- docs/style.md) IS the "grows slowly"
@@ -448,8 +468,12 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       // the user's home and is not arc's to commit.
       let committed = false
       try {
-        git('add', '--', 'docs/style.md', QUEUE_REL)
-        git('commit', '-m', `style: ${body.action} proposed rule ${body.id}`, '--', 'docs/style.md', QUEUE_REL)
+        // The dismissal list rides along: saying no is a decision, and a
+        // decision that lives only in a working tree is one a fresh clone
+        // asks the author again.
+        const tracked = ['docs/style.md', QUEUE_REL, DISMISSED_REL]
+          .filter(rel => { try { git('add', '--', rel); return true } catch { return false } })
+        git('commit', '-m', `style: ${body.action} proposed rule ${body.id}`, '--', ...tracked)
         committed = true
       } catch {
         committed = false // not a git repo, or nothing staged — the file change stands either way
