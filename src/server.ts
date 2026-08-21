@@ -15,7 +15,7 @@ import type {
   AnnotationsResponse, HealthResponse, MaterialResponse, NoteResponse, NotesResponse,
   AgentsResponse, HookResponse, LensesResponse, OkResponse, ReviseResponse, RunDecisionResponse, RunDetailResponse, RunResponse, RunsResponse,
   UpdateMaterialResponse, WorkDecisionResponse, WorkResponse,
-  ProseAcceptResponse, ProseParagraphRequest, ProseResponse, ProseSentenceRequest,
+  ProseAcceptResponse, ProseCheckHit, ProseChecksResponse, ProseParagraphRequest, ProseResponse, ProseSentenceRequest,
   RatifyRuleResponse, StyleResponse,
 } from 'arc-canon-graph'
 import { STORY } from './config'
@@ -35,9 +35,10 @@ import { DISMISSED_REL, QUEUE_REL, ratifyRule, ratifyTouchstone, readQueue, read
 import { runLearnStyle } from './learn-style'
 import { readJudgments } from './evidence'
 import { proposeTouchstoneRefresh, touchstoneStates } from './touchstones'
+import { proseChecks } from 'arc-canon-graph'
 import { runBootstrapStyle } from './bootstrap-style'
 import { runRedraft } from './redraft'
-import { createLock, locks, removeLock } from './locks'
+import { createLock, locks, locksOn, removeLock } from './locks'
 import { addNote, deleteNote, listNotes, updateNote as reviseNote } from './notes'
 import { decideWork, workNote } from './work'
 import { closeRun, getRun, listRuns, observe, openRun, pendingOutcome, registerRun } from './runs'
@@ -708,6 +709,34 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       if (b.paragraph !== undefined && typeof b.paragraph !== 'string') throw new HttpError(400, 'paragraph must be a string')
       if (b.file !== undefined && typeof b.file !== 'string') throw new HttpError(400, 'file must be a string')
       json(res, 200, await runSuggest({ kind: b.kind, selection: b.selection, paragraph: b.paragraph, file: b.file }))
+    },
+  },
+
+  // The mechanical checks: the proven channel over the manuscript. No
+  // engine guard, deliberately — nothing here needs a model, which is the
+  // whole point: a doubled space arrives as a fact, instantly and free,
+  // where every other reading this surface offers is a model's opinion.
+  '/api/prose/checks': {
+    GET: (_req, res) => {
+      const findings: ProseCheckHit[] = []
+      for (const sc of proseScenes()) {
+        const hits = proseChecks(sc.body)
+        if (!hits.length) continue
+        // A finding inside settled prose names its lock — the author reads
+        // "there is a typo, and you locked it" and decides; nothing repairs.
+        const locked = new Map(locksOn(sc.scene, sc.body)
+          .filter(l => l.resolution.paragraph !== null &&
+            (l.resolution.state === 'resolved' || l.resolution.state === 'drifted'))
+          .map(l => [l.resolution.paragraph!, l.id]))
+        const wide = locksOn(sc.scene, sc.body).find(l =>
+          (l.scope === 'scene' || l.scope === 'chapter') &&
+          (l.resolution.state === 'resolved' || l.resolution.state === 'drifted'))
+        for (const h of hits) {
+          const lock = locked.get(h.paragraph) ?? wide?.id
+          findings.push({ scene: sc.scene, file: sc.file, ...h, ...(lock ? { lock } : {}) })
+        }
+      }
+      json(res, 200, { findings } satisfies ProseChecksResponse)
     },
   },
 

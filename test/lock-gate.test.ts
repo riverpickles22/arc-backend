@@ -161,3 +161,31 @@ test('an incoherent lock enforces nothing — rejected, not guessed at', () => {
     'a lock claiming two sizes at once blocks neither')
   reset()
 })
+
+// ---- the proven channel names the locks it cannot touch (A43-2) ----------
+
+test('a mechanical finding inside locked prose carries the lock id, and nothing repairs', async () => {
+  const fm = lockedFixture()
+  // Seed a doubled space INSIDE the locked paragraph and one outside it.
+  fs.writeFileSync(abs, fm + 'Paragraph A  with a doubled space.\n\nThe settled paragraph. It has two sentences.\n\nParagraph C.\n')
+  git(story, 'add', '--', file)
+  git(story, 'commit', '-qm', 'prose: checks fixture', '--', file)
+  fs.writeFileSync(path.join(LOCKS, 'lock-007.yaml'),
+    'id: lock.007\nanchor:\n  scene: sc.01-1\n  paragraph: 0\n  quote: Paragraph A  with a doubled space.\n')
+
+  const { createArcServer } = await import('../src/server.ts')
+  const srv = createArcServer()
+  await new Promise<void>(r => srv.listen(0, r))
+  const port = (srv.address() as { port: number }).port
+  const res = await fetch(`http://localhost:${port}/api/prose/checks`)
+  const body = await res.json() as { findings: { check: string; paragraph: number; lock?: string; scene: string }[] }
+  srv.close()
+
+  const mine = body.findings.filter(f => f.scene === 'sc.01-1')
+  const inLock = mine.find(f => f.paragraph === 0)
+  assert.ok(inLock, 'the fault is found even inside settled prose')
+  assert.equal(inLock!.check, 'doubled-space')
+  assert.equal(inLock!.lock, 'lock.007', 'and it names the lock — report it, never repair it')
+  assert.ok(!('fix' in (inLock as object)) && !('repair' in (inLock as object)), 'no repair is offered, anywhere')
+  reset()
+})
