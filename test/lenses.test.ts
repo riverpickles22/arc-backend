@@ -25,13 +25,13 @@ const SCENE = {
 test('one node per lens, each anchored on the same scene', () => {
   const nodes = planLensGraph(SCENE)
   assert.equal(nodes.length, LENSES.length)
-  assert.equal(nodes.length, 4)
+  assert.equal(nodes.length, 5)
   for (const n of nodes) {
     assert.deepEqual(n.anchors, ['sc.01-1'], 'one shared anchor — the scene')
     assert.equal(n.kind, 'lens')
   }
   assert.deepEqual(nodes.map(n => n.id).sort(),
-    ['lens:character', 'lens:continuity', 'lens:historical', 'lens:style'])
+    ['lens:character', 'lens:continuity', 'lens:grammar', 'lens:historical', 'lens:style'])
 })
 
 test('NO lens holds write, propose or create capability', () => {
@@ -108,16 +108,19 @@ test('each node fingerprints exactly what it will read', () => {
 
 // ---- what a lens is allowed to say ---------------------------------------
 
-test('only the style lens is handed the style contract', () => {
+test('the style contract reaches exactly the lenses that judge against it', () => {
   const nodes = planLensGraph(SCENE)
   const style = LENSES.find(l => l.name === 'style')!
   const character = LENSES.find(l => l.name === 'character')!
   const CONTRACT = 'THE NO-COMMENT LAW: never explain a feeling the body can show.'
 
   assert.match(buildLensPrompt(style, SCENE, '{}', CONTRACT), /NO-COMMENT LAW/)
+  const grammar = LENSES.find(l => l.name === 'grammar')!
+  assert.match(buildLensPrompt(grammar, SCENE, '{}', CONTRACT), /NO-COMMENT LAW/,
+    'grammar judges deliberate breaks against the contract, so it is handed the contract')
   assert.doesNotMatch(buildLensPrompt(character, SCENE, '{}', CONTRACT), /NO-COMMENT LAW/,
     'a lens is given what its question needs and nothing else')
-  assert.equal(nodes.length, 4)
+  assert.equal(nodes.length, 5)
 })
 
 test('the prompt tells a lens it has nothing beyond its own context', () => {
@@ -174,4 +177,16 @@ test('utilization is not-applicable when nothing was supplied, never perfect', a
   const { utilization } = await import('../src/context.ts')
   assert.equal(utilization([], []), null,
     'a 1.0 would rank the worst-scoped lens as the best in the table')
+})
+
+test('the grammar lens joins the fan-out: argued, style-bound, and blind to the world', () => {
+  const grammar = LENSES.find(l => l.name === 'grammar')!
+  assert.ok(grammar, 'the fifth lens exists')
+  assert.equal(grammar.wantsStyle, true, 'deliberate breaks are judged against the author\'s contract, not a grammar book')
+  assert.deepEqual(grammar.selectors({ scene: 'sc.01-1', chapter: 'ch.01', status: 'proposed', pov: 'char.x', events: ['event.e'], facts: ['char.x', 'place.p'], contract: null, file: 'f', body: '' }), [],
+    'grammar sees no entities — like the style lens, and for the same reason')
+  assert.match(grammar.rules, /never report one/i, 'the mechanical half is named as none of its business')
+  assert.match(grammar.rules, /deliberate/, 'and craft is expected to be the answer')
+  // The synthesis pass counts what actually fans out.
+  assert.equal(LENSES.length, 5)
 })

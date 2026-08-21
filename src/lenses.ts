@@ -8,7 +8,7 @@
 //
 // THE STORY IS THE SCOPING, not the prompts. Each lens's claim names what it
 // may read, and its findings cite the evidence that put a fact in its context.
-// Four lenses sharing one anchor and sharing one context pack would prove
+// Lenses sharing one anchor and sharing one context pack would prove
 // nothing: they would all inherit the same retrieval, including its mistakes.
 // So each derives its own manifest from its own selectors (A13-5), and the
 // test is that the manifests demonstrably differ.
@@ -100,6 +100,30 @@ does not carry.`,
         { kind: 'anchor' as const, of: scene.chapter, because: 'the scene declares no events, so its chapter is the only continuity anchor there is' },
         { kind: 'neighbours' as const, of: scene.chapter, because: `what ${scene.chapter} touches` },
       ],
+  },
+  {
+    name: 'grammar',
+    rules: `You are arc's GRAMMAR LENS — the ADVISORY half of grammar, and the register
+discipline is the whole brief. The mechanical faults (doubled spaces,
+unbalanced quotes, typos) are found by a deterministic checker elsewhere and
+are NONE of your business: never report one, because reporting a fact at a
+model's confidence understates it.
+
+Yours are the judgment calls: fragments, comma splices, run-ons, dialogue
+that is not a sentence, agreement slips inside long accumulations. In
+literary fiction most of these are CRAFT — a fragment can be the style, and
+this book's contract licenses specific breaks. Read the style contract
+below first; anything it licenses is not a finding, however a grammar book
+feels about it. Flag only what reads as an accident rather than a choice:
+a break the contract does not license, applied inconsistently, or one that
+trips the reader where the surrounding prose is regular. Every finding is a
+claim for the author to judge, with the sentence quoted as evidence — and
+"this is deliberate" is an answer you should expect to be right.`,
+    // Like the style lens, deliberately: grammar sees no entities. The
+    // sharpest proof the projections differ — this lens needs the author's
+    // licensed breaks, and nothing about the world.
+    selectors: () => [],
+    wantsStyle: true,
   },
 ]
 
@@ -248,7 +272,7 @@ async function runLens(spec: LensSpec, node: WorkNode, scene: ProseScene, run: R
   }
 }
 
-const SYNTHESIS_RULES = `You are arc's SYNTHESIS PASS. Four lenses have each read the same scene
+const SYNTHESIS_RULES = `You are arc's SYNTHESIS PASS. Five lenses have each read the same scene
 through a different question and returned their findings. Merge them for the
 author.
 

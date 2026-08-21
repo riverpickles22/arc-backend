@@ -121,12 +121,13 @@ test('the lens fan-out is concurrent on claude-cli: wall_ms well under serial_ms
   const run = new Run('cli', 'a13-6: fan-out concurrency on the claude-cli engine')
   const out = await runLensFanOut(scene, run)
 
-  assert.equal(out.lenses.length, 4)
+  const { LENSES } = await import('../src/lenses.ts')
+  assert.equal(out.lenses.length, LENSES.length)
   assert.deepEqual(out.lenses.filter(l => l.error).map(l => `${l.lens}: ${l.error}`), [])
-  // Under spawnSync wall_ms equalled the sum of the four calls. The margin is
+  // Under spawnSync wall_ms equalled the sum of the calls. The margin is
   // deliberately loose — this asserts "concurrent", not a speed target.
   assert.ok(out.wall_ms < out.serial_ms * 0.6,
-    `wall ${out.wall_ms}ms vs serial ${out.serial_ms}ms — the four lenses overlapped`)
+    `wall ${out.wall_ms}ms vs serial ${out.serial_ms}ms — the lenses overlapped`)
   assert.ok(out.wall_ms < DELAY_MS * 3,
     `wall ${out.wall_ms}ms is nearer one lens (${DELAY_MS}ms) than four`)
 })
@@ -194,7 +195,7 @@ test('the server keeps answering while a generation is in flight', async () => {
   const res = await lenses
   assert.equal(res.status, 200)
   const body = await res.json()
-  assert.equal(body.lenses.length, 4)
+  assert.equal(body.lenses.length, (await import('../src/lenses.ts')).LENSES.length)
   assert.ok(body.wall_ms < body.serial_ms * 0.6, 'over the wire too')
 
   // The stream carried the run's events, so the viewer saw the work happen.
