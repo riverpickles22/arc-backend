@@ -48,13 +48,26 @@ export function locks(): ResolvedLock[] {
 export function locksOn(scene: string, body: string): ResolvedLock[] {
   const dir = DIR()
   if (!fs.existsSync(dir)) return []
+  // A chapter lock covers every scene whose frontmatter names its chapter —
+  // membership is the story's knowledge, read here, not the resolver's.
+  const chapter = proseScenes().find(s => s.scene === scene)?.chapter ?? null
   const mine: LockLike[] = []
   for (const name of fs.readdirSync(dir).sort()) {
     if (!name.endsWith('.yaml')) continue
     const item = yamlLoad(fs.readFileSync(path.join(dir, name), 'utf8')) as LockLike | null
-    if (item && typeof item.id === 'string' && item.anchor?.scene === scene) mine.push(item)
+    if (!item || typeof item.id !== 'string') continue
+    if (item.anchor?.scene === scene || (chapter !== null && item.anchor?.chapter === chapter)) mine.push(item)
   }
   return resolveLocks(mine, s => (s === scene ? body : null))
+}
+
+/** The refusal, in the author's terms: a paragraph number where one applies,
+ *  the scope's own name where it does not (A40-1). One wording for every
+ *  write path, so the 423 reads the same wherever it fires. */
+export function describeViolation(scene: string, v: { lock: ResolvedLock; paragraph: number | null }): string {
+  if (v.lock.scope === 'chapter') return `${scene}: this chapter is locked (${v.lock.id})`
+  if (v.lock.scope === 'scene') return `${scene}: this section is locked (${v.lock.id})`
+  return `${scene}: paragraph ${(v.paragraph ?? 0) + 1} is locked (${v.lock.id})`
 }
 
 /** Refuse `next` if it changes any paragraph locked in `current`. One
@@ -62,10 +75,9 @@ export function locksOn(scene: string, body: string): ResolvedLock[] {
 export function assertUnlocked(scene: string, current: string, next: string, who: string): void {
   const hits = lockViolations(current, next, locksOn(scene, current))
   if (!hits.length) return
-  const one = hits[0]
   throw new HttpError(423,
-    `${scene}: paragraph ${one.paragraph + 1} is locked (${hits.map(h => h.lock.id).join(', ')}) — ` +
-    `the author marked it settled. ${who} must leave it verbatim, or the author unlocks it first.`)
+    `${describeViolation(scene, hits[0])} — the author marked it settled. ` +
+    `${who} must leave it verbatim, or the author unlocks it first.`)
 }
 
 const fileFor = (id: string) => path.join(DIR(), `${id.replace(/^lock\./, 'lock-')}.yaml`)

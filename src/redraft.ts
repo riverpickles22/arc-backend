@@ -46,7 +46,7 @@ import { canonJson, validateStory } from './canon'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { HttpError } from './http'
 import { recordGenerated } from './ledger'
-import { locksOn } from './locks'
+import { describeViolation, locksOn } from './locks'
 import { parseScene, proseScenes } from './story'
 import { styleContract } from './style'
 
@@ -208,9 +208,16 @@ export async function runRedraft(t: RedraftTarget): Promise<DraftSceneResponse> 
   // them verbatim; a passage redraft over one is refused outright — settled
   // prose inside the very range the author wants rebuilt is a contradiction
   // only they can resolve, from the viewer's unlock.
-  const sceneLocks = locksOn(t.scene, scene.body)
-    .filter(l => l.resolution.paragraph !== null &&
-      (l.resolution.state === 'resolved' || l.resolution.state === 'drifted'))
+  const live = locksOn(t.scene, scene.body)
+    .filter(l => l.resolution.state === 'resolved' || l.resolution.state === 'drifted')
+  // A section or chapter lock settles the scene entire (A40-1): a rebuild of
+  // settled prose is a contradiction only the author's unlock resolves.
+  const whole = live.find(l => l.scope === 'scene' || l.scope === 'chapter')
+  if (whole) {
+    throw new HttpError(423,
+      `${whole.scope === 'chapter' ? 'this chapter' : 'this section'} is locked (${whole.id}) — the author settled it entire; unlock it to redraft`)
+  }
+  const sceneLocks = live.filter(l => l.resolution.paragraph !== null)
   const fenced = sceneLocks.map(l => l.resolution.paragraph!)
   if (range) {
     const hit = sceneLocks.find(l => l.resolution.paragraph! >= range!.from && l.resolution.paragraph! <= range!.to)
@@ -266,8 +273,7 @@ export async function runRedraft(t: RedraftTarget): Promise<DraftSceneResponse> 
   const violated = lockViolations(scene.body, rebuilt, sceneLocks)
   if (violated.length) {
     throw new HttpError(423,
-      `the redraft touched locked prose — paragraph ${violated[0].paragraph + 1} ` +
-      `(${violated.map(v => v.lock.id).join(', ')}) is settled; nothing was written`)
+      `the redraft touched locked prose — ${describeViolation(t.scene, violated[0])}; nothing was written`)
   }
   const leaked = withholdViolations(literalWithholds(scene.contract?.must_withhold), rebuilt)
   if (leaked.length) {

@@ -120,3 +120,44 @@ test('discard is refused only when the locked passage lives nowhere but the draf
   assert.equal(fs.readFileSync(abs, 'utf8'), working, 'and the draft is untouched')
   reset()
 })
+
+// ---- scopes reach the gate (A40-1): section and chapter locks ------------
+
+test('a section lock refuses every accept into its scene, in its own words', () => {
+  const fm = lockedFixture()
+  fs.rmSync(path.join(LOCKS, 'lock-001.yaml'))
+  fs.writeFileSync(path.join(LOCKS, 'lock-003.yaml'),
+    'id: lock.003\nanchor:\n  scene: sc.01-1\n')
+  fs.writeFileSync(abs, fm + 'Paragraph A, revised.\n\nThe settled paragraph. It has two sentences.\n\nParagraph C.\n')
+
+  assert.throws(() => proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }),
+    (e: unknown) => e instanceof HttpError && e.status === 423 && /this section is locked \(lock\.003\)/.test(e.message),
+    'the refusal names the scope, not a paragraph number that does not apply')
+  reset()
+})
+
+test('a chapter lock covers every scene whose frontmatter names it', () => {
+  const fm = lockedFixture()
+  fs.rmSync(path.join(LOCKS, 'lock-001.yaml'))
+  // The fixture scene's frontmatter says chapter: ch.01 — the lock names the
+  // chapter and never the scene, and still fences it.
+  fs.writeFileSync(path.join(LOCKS, 'lock-004.yaml'),
+    'id: lock.004\nanchor:\n  chapter: ch.01\n')
+  fs.writeFileSync(abs, fm + 'Paragraph A, revised.\n\nThe settled paragraph. It has two sentences.\n\nParagraph C.\n')
+
+  assert.throws(() => proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }),
+    (e: unknown) => e instanceof HttpError && e.status === 423 && /this chapter is locked \(lock\.004\)/.test(e.message))
+  reset()
+})
+
+test('an incoherent lock enforces nothing — rejected, not guessed at', () => {
+  const fm = lockedFixture()
+  fs.rmSync(path.join(LOCKS, 'lock-001.yaml'))
+  fs.writeFileSync(path.join(LOCKS, 'lock-005.yaml'),
+    'id: lock.005\nanchor:\n  chapter: ch.01\n  paragraph: 1\n')
+  fs.writeFileSync(abs, fm + 'Paragraph A, revised.\n\nThe settled paragraph. It has two sentences.\n\nParagraph C.\n')
+  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 })
+  assert.match(git(story, 'show', `HEAD:${file}`), /Paragraph A, revised\./,
+    'a lock claiming two sizes at once blocks neither')
+  reset()
+})

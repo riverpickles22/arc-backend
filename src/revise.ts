@@ -36,7 +36,7 @@ import { DEFAULT_POLICY } from './context'
 import { recordGenerated } from './ledger'
 import { snapshotReads, staleReads, type Run, type WorkNode } from './run'
 import { styleContract } from './style'
-import { locksOn } from './locks'
+import { describeViolation, locksOn } from './locks'
 import { lockViolations } from 'arc-canon-graph/annotations.ts'
 import { parseScene } from './story'
 
@@ -273,9 +273,16 @@ async function reviseOne(cluster: RevisionCluster, node: WorkNode, run: Run): Pr
     // the fence real — a worker that rewrites a locked paragraph fails, and
     // nothing is written. The author hears the lock's name, not an override.
     const sceneLocks = locksOn(cluster.scene, scene.body)
-    const fenced = sceneLocks
-      .filter(l => l.resolution.paragraph !== null &&
-        (l.resolution.state === 'resolved' || l.resolution.state === 'drifted'))
+    const live = sceneLocks.filter(l => l.resolution.state === 'resolved' || l.resolution.state === 'drifted')
+    // A section or chapter lock settles the scene ENTIRE (A40-1): there is
+    // nothing here a revision may touch, so refuse before spending a pass.
+    const whole = live.find(l => l.scope === 'scene' || l.scope === 'chapter')
+    if (whole) {
+      node.status = 'failed'
+      return { ...base, refused: `${whole.scope === 'chapter' ? 'this chapter' : 'this section'} is locked (${whole.id}) — the author settled it entire` }
+    }
+    const fenced = live
+      .filter(l => l.resolution.paragraph !== null)
       .map(l => l.resolution.paragraph! + 1)
     const lockNotice = fenced.length
       ? `\n\nLOCKED PARAGRAPHS — the author has marked paragraph${fenced.length === 1 ? '' : 's'} ` +
@@ -292,8 +299,7 @@ async function reviseOne(cluster: RevisionCluster, node: WorkNode, run: Run): Pr
     const violated = lockViolations(scene.body, revised, sceneLocks)
     if (violated.length) {
       throw new Error(
-        `revision touched locked prose — paragraph ${violated[0].paragraph + 1} ` +
-        `(${violated.map(v => v.lock.id).join(', ')}) is settled; nothing was written`)
+        `revision touched locked prose — ${describeViolation(cluster.scene, violated[0])}; nothing was written`)
     }
 
     // Staleness FIRST: if something this node read has moved since it read it,
