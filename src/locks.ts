@@ -151,7 +151,8 @@ export function removeLock(id: string): void {
   // extra link, and removing it restores the original bytes.
   for (const other of readLocks()) {
     if (other.absorbed_by !== id) continue
-    const { absorbed_by: _lifted, ...restored } = other
+    const restored = { ...other }
+    delete restored.absorbed_by
     fs.writeFileSync(fileFor(other.id),
       yamlDump(restored, { indent: 2, lineWidth: 100, noRefs: true, sortKeys: false }))
   }
