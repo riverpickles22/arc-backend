@@ -307,11 +307,20 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   '/api/locks': {
     GET: (_req, res) => json(res, 200, { locks: locks() } satisfies LocksResponse),
     POST: async (req, res) => {
-      const b = (await parsedBody(req)) as { scene?: unknown; paragraph?: unknown; quote?: unknown }
-      if (typeof b.scene !== 'string' || !b.scene) throw new HttpError(400, 'scene required')
-      if (typeof b.paragraph !== 'number' || b.paragraph < 0) throw new HttpError(400, 'paragraph required')
-      if (typeof b.quote !== 'string') throw new HttpError(400, 'quote required')
-      json(res, 200, { lock: createLock({ scene: b.scene, paragraph: b.paragraph, quote: b.quote }) })
+      const b = (await parsedBody(req)) as { scene?: unknown; chapter?: unknown; paragraph?: unknown; quote?: unknown }
+      // The three shapes (A40-1): a paragraph with its quote, a scene alone,
+      // a chapter alone. createLock refuses blends with the reason.
+      if (typeof b.scene !== 'string' && typeof b.chapter !== 'string') throw new HttpError(400, 'a lock names a scene or a chapter')
+      if (b.paragraph !== undefined && (typeof b.paragraph !== 'number' || b.paragraph < 0)) throw new HttpError(400, 'paragraph must be a whole number from 0')
+      if (b.quote !== undefined && typeof b.quote !== 'string') throw new HttpError(400, 'quote must be a string')
+      json(res, 200, {
+        lock: createLock({
+          ...(typeof b.scene === 'string' ? { scene: b.scene } : {}),
+          ...(typeof b.chapter === 'string' ? { chapter: b.chapter } : {}),
+          ...(typeof b.paragraph === 'number' ? { paragraph: b.paragraph } : {}),
+          ...(typeof b.quote === 'string' ? { quote: b.quote } : {}),
+        }),
+      })
     },
   },
 
