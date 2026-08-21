@@ -16,7 +16,7 @@ import { clearGenerated, generatedFor } from './ledger'
 import { EVIDENCE_REL, clearBaseline, counterpartOf, pinBaseline, recordJudgment, type Granularity, type Verdict } from './evidence'
 import { STORY } from './config'
 import { HttpError } from './http'
-import { assertUnlocked } from './locks'
+import { assertUnlocked, locksOn } from './locks'
 import { resolveWithin } from './safe-path'
 import { canonicalYaml } from './agent'
 import { validateStory } from './canon'
@@ -246,6 +246,19 @@ export function proseAccept(message?: string): { hash: string; files: string[] }
   const draft = proseDraft()
   if (!draft.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer to accept')
   if (!draft.changes.length) throw new HttpError(409, 'no draft changes to accept')
+  // THE LOCKS, before anything else — including the evidence log. Settled
+  // prose is settled against every write path, and the accept gate was the
+  // last one that never asked (A40-3): an author could lock a paragraph and
+  // then overwrite it by accepting a stale draft. The check runs before any
+  // judgment is recorded, because a decision that never landed must not
+  // become style evidence.
+  for (const c of draft.changes) {
+    if (c.status !== 'modified' || !c.main) continue   // an added scene has no settled text to protect
+    let workingBody: string
+    try { workingBody = parseScene(fs.readFileSync(path.join(STORY, c.file), 'utf8'), c.file)?.body ?? '' } catch { continue }
+    assertUnlocked(c.main.scene, c.main.body, workingBody, 'this accept')
+  }
+
   // One entry per scene, before the commit carries them. Whole-scene
   // granularity is the honest grain here: the author took the file entire, so
   // the pair is arc's draft against what the file now says, and the learning
@@ -440,6 +453,10 @@ export function proseAcceptParagraph(file: string, t: ParagraphTarget, message?:
   else if (hit.kind === 'ins') merged.splice(mainInsertionPoint(aligned, hit.draftIndex!), 0, draftParas[hit.draftIndex!])
   else merged.splice(hit.mainIndex!, 1)
 
+  // Locks first, evidence second, commit third: a refused accept costs no
+  // words (nothing has been written yet) and records no judgment (A40-3).
+  if (scene) assertUnlocked(scene, mainParas.join('\n\n'), merged.join('\n\n'), 'this accept')
+
   try {
     fs.writeFileSync(abs, fm + merged.join('\n\n') + '\n')
 
@@ -478,6 +495,14 @@ export function proseAcceptParagraph(file: string, t: ParagraphTarget, message?:
  *  stays pending. The three kinds mirror accept — a refused rewrite reverts,
  *  a refused insertion goes away, and a refused deletion comes back.
  */
+/** THE REJECT VERBS AND LOCKS — decided deliberately, not left to fall
+ *  through (A40-3). Rejecting is allowed on locked prose, because refusing a
+ *  change RESTORES main's words into the working tree — and main's words are
+ *  the very text the lock protects. A reject can only ever move a locked
+ *  paragraph toward its settled state, never away from it; refusing the
+ *  author that restoration would make the lock protect the draft against
+ *  the book. (proseWrite's assertUnlocked guards arbitrary edits; a reject
+ *  is not arbitrary — its output is main's text by construction.) */
 export function proseRejectParagraph(file: string, t: ParagraphTarget): { file: string } {
   const { abs, working, fm, draftParas, mainParas, aligned, scene } = paragraphContext(file)
   const hit = locate(aligned, t)
@@ -625,6 +650,9 @@ export function proseAcceptSentence(file: string, t: SentenceTarget, message?: s
   if (merged) next[main] = merged
   else next.splice(main, 1)
 
+  // Same order as the paragraph verb: locks, then evidence, then the commit.
+  if (scene) assertUnlocked(scene, mainParas.join('\n\n'), next.join('\n\n'), 'this accept')
+
   try {
     fs.writeFileSync(abs, fm + next.join('\n\n') + '\n')
     // Taking arc's sentence, or agreeing with its cut: an approval either way.
@@ -670,6 +698,30 @@ export function proseDiscard(file: string): void {
   const abs = resolveWithin(path.join(STORY, 'prose'), file.slice('prose/'.length))
   const change = proseDraft().changes.find(c => c.file === file)
   if (!change) throw new HttpError(404, `no draft change for ${file}`)
+
+  // Discard and locks, decided rather than fallen through (A40-3). Rolling
+  // back to HEAD usually RESTORES settled prose, which honours every lock —
+  // so discard stays allowed. The one case it must refuse: a lock whose
+  // protected text lives only in the DRAFT (the author locked a passage and
+  // has not accepted it yet). Discarding would destroy the very words the
+  // lock exists to keep, silently.
+  const working = (() => { try { return parseScene(fs.readFileSync(abs, 'utf8'), file) } catch { return null } })()
+  if (working) {
+    const inDraft = locksOn(working.scene, working.body)
+      .filter(l => l.resolution.state === 'resolved' || l.resolution.state === 'drifted')
+    if (inDraft.length) {
+      const headBody = change.main?.body ?? ''
+      const inHead = new Set(locksOn(working.scene, headBody)
+        .filter(l => l.resolution.state === 'resolved' || l.resolution.state === 'drifted')
+        .map(l => l.id))
+      const casualty = inDraft.find(l => !inHead.has(l.id))
+      if (casualty) {
+        throw new HttpError(423,
+          `${working.scene}: the passage lock ${casualty.id} protects exists only in this draft — ` +
+          `discarding would destroy locked prose. Accept the locked paragraph first, or unlock it.`)
+      }
+    }
+  }
   // BEFORE the ledger is cleared, because clearing it unlinks the blob and
   // takes the evidence with it. Discarding is the loudest refusal in the
   // product — a whole scene arc wrote, thrown away entire — and it was the
