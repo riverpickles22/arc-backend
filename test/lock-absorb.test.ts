@@ -118,11 +118,15 @@ test('the Feral Dogs prologue: locked as a chapter, unlocked with every paragrap
   // story is not checked out (CI).
   const real = path.join(process.env.HOME!, 'workspace', 'arc', 'feral-dogs-of-cuba')
   if (!fs.existsSync(path.join(real, 'locks'))) return
-  // The author's live data: they may have unlocked everything since (they
-  // did, on 2026-08-21, working the prologue through the gate). An empty
-  // directory is an honest skip, not a failure — the byte-for-byte property
-  // this test pins is already held by the synthetic cases above.
-  if (!fs.readdirSync(path.join(real, 'locks')).some(n => n.endsWith('.yaml'))) return
+  // The author's live data moves under this test — they unlocked everything
+  // on 08-21, then consolidated to a single section lock on 08-25 — and the
+  // fixture only means something when the prologue actually carries multiple
+  // PARAGRAPH locks to absorb. Anything else is an honest skip: the
+  // byte-for-byte property is already pinned by the synthetic cases above.
+  const files = fs.readdirSync(path.join(real, 'locks')).filter(n => n.endsWith('.yaml'))
+  const paragraphLocks = files.filter(n =>
+    /paragraph:/.test(fs.readFileSync(path.join(real, 'locks', n), 'utf8')))
+  if (paragraphLocks.length < 2) return
 
   reset()
   const sceneSrc = fs.readFileSync(path.join(real, 'prose/ch-00/scene-01.md'), 'utf8')

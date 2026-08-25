@@ -227,6 +227,14 @@ export function proseDraft(): ProseDraft {
     if (status !== 'added') {
       try { main = parseScene(git('show', `HEAD:${repoRel}`), file) } catch { /* not at HEAD */ }
     }
+    // A GHOST is not a change. Accepting normalizes paragraphs into the
+    // commit while the finally restores the author's original bytes, so a
+    // trailing space could keep a scene "modified" forever with nothing
+    // visible to accept — every paragraph 'same', no verdicts, an
+    // unacceptable pill. If the working tree and HEAD are identical under
+    // the paragraph model (and in frontmatter), there is no change to
+    // review, and the draft layer says so by staying silent.
+    if (status === 'modified' && main && modelEqual(main, file)) continue
     changes.push({ file, status, main })
   }
 
@@ -362,6 +370,24 @@ function paragraphContext(file: string) {
   }
 }
 
+/** Identical under the paragraph model: same frontmatter, same paragraphs
+ *  once trimmed and split the way every diff, verdict and lock resolves
+ *  them. Whitespace the model cannot see is not a difference the author can
+ *  act on. */
+function modelEqual(main: ProseScene, file: string): boolean {
+  try {
+    const raw = fs.readFileSync(resolveWithin(path.join(STORY, 'prose'), file.slice('prose/'.length)), 'utf8')
+    const working = parseScene(raw, file)
+    if (!working) return false
+    const norm = (body: string) => body.split(/\n{2,}/).map(x => x.trim()).filter(Boolean).join('\n\n')
+    const fmOf = (text: string, body: string) => text.slice(0, text.length - body.length)
+    const headRaw = git('show', `HEAD:${git('rev-parse', '--show-prefix').trim()}${file}`)
+    return norm(working.body) === norm(main.body) && fmOf(raw, working.body) === fmOf(headRaw, main.body)
+  } catch {
+    return false
+  }
+}
+
 // ---- what the author decided, written down ------------------------------
 //
 // The generation ledger says what arc wrote. This says what the author did
@@ -457,8 +483,9 @@ export function proseAcceptParagraph(file: string, t: ParagraphTarget, message?:
   // words (nothing has been written yet) and records no judgment (A40-3).
   if (scene) assertUnlocked(scene, mainParas.join('\n\n'), merged.join('\n\n'), 'this accept')
 
+  const committed = fm + merged.join('\n\n') + '\n'
   try {
-    fs.writeFileSync(abs, fm + merged.join('\n\n') + '\n')
+    fs.writeFileSync(abs, committed)
 
     // Before the commit, so the judgment rides in it. A deletion has no
     // draft-side text at all; for the other two, arc's own words come from
@@ -477,8 +504,23 @@ export function proseAcceptParagraph(file: string, t: ParagraphTarget, message?:
     git('commit', '-m', message?.trim() || `prose: accept one change in ${path.basename(file)}`, '--', ...paths)
     return { hash: git('rev-parse', '--short', 'HEAD').trim(), file }
   } finally {
-    fs.writeFileSync(abs, working)   // the author's unaccepted words, always
+    restoreWorking(abs, working, committed)   // the author's unaccepted words, always
   }
+}
+
+/** The finally that does not manufacture ghosts. The commit normalizes
+ *  paragraphs; the author's original bytes may differ only in whitespace the
+ *  model cannot see. Restoring those bytes over the freshly committed text
+ *  would leave the scene "modified" forever with nothing visible to accept —
+ *  so when the two are paragraph-identical, the committed bytes stand.
+ *  Anything the model CAN see is the author's, and is restored exactly. */
+function restoreWorking(abs: string, working: string, committed: string): void {
+  const paras = (text: string) => {
+    const fm = text.match(FM_RE)
+    const body = fm ? text.slice(fm[0].length) : text
+    return (fm?.[0] ?? '') + body.split(/\n{2,}/).map(x => x.trim()).filter(Boolean).join('\n\n')
+  }
+  fs.writeFileSync(abs, paras(working) === paras(committed) ? committed : working)
 }
 
 /** Reject ONE paragraph of a scene, leaving every other change pending.
@@ -653,8 +695,9 @@ export function proseAcceptSentence(file: string, t: SentenceTarget, message?: s
   // Same order as the paragraph verb: locks, then evidence, then the commit.
   if (scene) assertUnlocked(scene, mainParas.join('\n\n'), next.join('\n\n'), 'this accept')
 
+  const committed = fm + next.join('\n\n') + '\n'
   try {
-    fs.writeFileSync(abs, fm + next.join('\n\n') + '\n')
+    fs.writeFileSync(abs, committed)
     // Taking arc's sentence, or agreeing with its cut: an approval either way.
     judged(file, scene, 'sentence', main, 'approved', arcWrote, arcWrote)
     const paths = withEvidence(file)
@@ -662,7 +705,7 @@ export function proseAcceptSentence(file: string, t: SentenceTarget, message?: s
     git('commit', '-m', message?.trim() || `prose: accept one sentence in ${path.basename(file)}`, '--', ...paths)
     return { hash: git('rev-parse', '--short', 'HEAD').trim(), file }
   } finally {
-    fs.writeFileSync(abs, working)   // the author's unaccepted words, always
+    restoreWorking(abs, working, committed)   // the author's unaccepted words, always
   }
 }
 

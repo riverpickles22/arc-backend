@@ -566,3 +566,64 @@ test('a sentence appended after main\'s last one keeps a space at the seam', () 
   assert.doesNotMatch(head, /heavy\.Salt/)
   reset()
 })
+
+// ---- whitespace ghosts are not changes (2026-08-25, from the author) ------
+//
+// The commit normalizes paragraphs; the finally restored the author's
+// original bytes. One trailing space could keep a scene "modified" forever
+// with nothing visible to accept — every paragraph 'same', no verdicts, an
+// unacceptable pill.
+
+/** The suite shares one fixture and HEAD drifts under it, so each ghost test
+ *  pins its OWN baseline first — the exact lesson the fixture's other
+ *  helpers already teach. */
+function ghostBaseline(file: string): { abs: string; fm: string } {
+  reset()
+  const abs = path.join(story, file)
+  const before = fs.readFileSync(abs, 'utf8')
+  const fm = before.slice(0, before.indexOf('---', 3) + 4)
+  fs.writeFileSync(abs, fm + 'Ghost baseline one.\n\nGhost baseline two.\n')
+  git(story, 'add', '--', file)
+  if (git(story, 'status', '--porcelain', '--', file).trim()) {
+    git(story, 'commit', '-qm', 'prose: ghost baseline', '--', file)
+  }
+  return { abs, fm }
+}
+
+test('a scene differing from HEAD only in invisible whitespace is not a draft change', () => {
+  const file = 'prose/ch-01/scene-01.md'
+  const { abs, fm } = ghostBaseline(file)
+  // A trailing space at a paragraph end, and a third blank line between
+  // paragraphs: both invisible to the paragraph model.
+  fs.writeFileSync(abs, fm + 'Ghost baseline one. \n\n\nGhost baseline two.\n')
+  assert.equal(proseDraft().changes.filter(c => c.file === file).length, 0,
+    'nothing the author can act on means nothing to review')
+  // A real edit still reports.
+  fs.writeFileSync(abs, fm + 'Ghost baseline one, changed.\n\nGhost baseline two.\n')
+  assert.equal(proseDraft().changes.filter(c => c.file === file).length, 1)
+  reset()
+})
+
+test('accepting the last visible change does not leave a whitespace ghost behind', () => {
+  const file = 'prose/ch-01/scene-01.md'
+  const { abs, fm } = ghostBaseline(file)
+  // One real edit AND a trailing space elsewhere — the ghost's recipe.
+  fs.writeFileSync(abs, fm + 'Ghost baseline one, revised.\n\nGhost baseline two. \n')
+  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 })
+
+  assert.equal(fs.readFileSync(abs, 'utf8'), git(story, 'show', `HEAD:${file}`),
+    'the working tree snaps to HEAD when only invisible whitespace remained')
+  assert.equal(proseDraft().changes.filter(c => c.file === file).length, 0)
+  reset()
+})
+
+test('the restore never eats words the model can see', () => {
+  const file = 'prose/ch-01/scene-01.md'
+  const { abs, fm } = ghostBaseline(file)
+  // Two real edits; accept one — the other must survive to the byte.
+  fs.writeFileSync(abs, fm + 'Ghost baseline one, revised.\n\nGhost baseline two, also revised.\n')
+  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 })
+  assert.match(fs.readFileSync(abs, 'utf8'), /Ghost baseline two, also revised\./,
+    'unaccepted words are restored exactly, as always')
+  reset()
+})
