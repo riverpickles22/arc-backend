@@ -205,3 +205,35 @@ test("the keypoint createAnnotation writes has the shape arc-core validates", ()
   assert.deepEqual(Object.keys(anchor).sort(), Object.keys(specimen.anchor as object).sort(),
     'the anchor too — a paragraph keypoint carries scene, paragraph and quote')
 })
+
+// A49-1: the anchor remembers its paragraphs — the verbatim text of what the
+// note covers, captured at creation, because prose does not stand still.
+test('a passage note captures its paragraph verbatim; a spanning quote captures each', () => {
+  resetScene('The lamp had been lit for an hour.\n\nShe went down to the rocks anyway.\n\nThe tide argued all night.')
+  const one = createAnnotation({ scene: 'sc.01-1', paragraph: 1, quote: 'down to the rocks', body: 'snapshot: one paragraph' })
+  assert.deepEqual(one.anchor.paragraphs, ['She went down to the rocks anyway.'])
+
+  // A quote reaching across the break covers both paragraphs, in order.
+  const two = createAnnotation({
+    scene: 'sc.01-1', paragraph: 1,
+    quote: 'She went down to the rocks anyway. The tide argued all night.',
+    body: 'snapshot: two paragraphs',
+  })
+  assert.deepEqual(two.anchor.paragraphs,
+    ['She went down to the rocks anyway.', 'The tide argued all night.'])
+
+  // No quote: exactly the anchored paragraph.
+  const bare = createAnnotation({ scene: 'sc.01-1', paragraph: 0, body: 'snapshot: quoteless' })
+  assert.deepEqual(bare.anchor.paragraphs, ['The lamp had been lit for an hour.'])
+
+  // A scene note has no snapshot — the scene is its referent.
+  const scenewide = createAnnotation({ scene: 'sc.01-1', body: 'about the whole section' })
+  assert.equal(scenewide.anchor.paragraphs, undefined)
+
+  // The snapshot is a record: it survives the passage being rewritten away,
+  // which is the moment it is FOR.
+  resetScene('Entirely new prose.\n\nNothing of the old scene remains.')
+  const back = annotations().find(x => x.body === 'snapshot: one paragraph')!
+  assert.equal(back.resolution.state, 'orphaned')
+  assert.deepEqual(back.anchor.paragraphs, ['She went down to the rocks anyway.'])
+})

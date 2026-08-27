@@ -9,7 +9,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { dump as yamlDump, load as yamlLoad } from 'js-yaml'
 import type { AnnotationLike, CreateAnnotationRequest, ResolvedAnnotation } from 'arc-canon-graph'
-import { orphanedAnnotations, resolveAnnotations } from 'arc-canon-graph/annotations.ts'
+import { orphanedAnnotations, paragraphsOf, resolveAnnotations } from 'arc-canon-graph/annotations.ts'
 import { STORY } from './config'
 import { HttpError } from './http'
 import { proseScenes } from './story'
@@ -71,10 +71,31 @@ export function createAnnotation(input: CreateAnnotationRequest): ResolvedAnnota
     throw new HttpError(400, `no such scene: ${input.scene}`)
   }
   const keypoint = input.kind === 'keypoint'
+  // The snapshot: the covered paragraphs' verbatim text, captured NOW,
+  // because the note's referent will not stand still (A49-1). Coverage is
+  // the anchored paragraph, extended forward only as far as the quote
+  // actually reaches — a quote that spans a break covers both paragraphs,
+  // and each captured entry is one of them.
+  const snapshot = (() => {
+    if (!onPassage) return undefined
+    const body = sceneBodies()(input.scene)
+    if (body === null) return undefined
+    const paras = paragraphsOf(body)
+    if (input.paragraph! >= paras.length) return undefined
+    const covered = [paras[input.paragraph!]]
+    const squash = (t: string) => t.replace(/\s+/g, ' ').trim()
+    const q = squash(input.quote ?? '')
+    if (q) {
+      let i = input.paragraph! + 1
+      while (!squash(covered.join(' ')).includes(q) && i < paras.length) covered.push(paras[i++])
+    }
+    return covered
+  })()
   const note: AnnotationLike = {
     id: nextId(),
     anchor: onPassage
-      ? { scene: input.scene, paragraph: input.paragraph, quote: (input.quote ?? '').trim() }
+      ? { scene: input.scene, paragraph: input.paragraph, quote: (input.quote ?? '').trim(),
+          ...(snapshot ? { paragraphs: snapshot } : {}) }
       : { scene: input.scene },
     body: input.body.trim(),
     // A keypoint has no lifecycle: it exists or it doesn't. Giving it a
