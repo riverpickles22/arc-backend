@@ -18,9 +18,11 @@ import { MODEL, STORY } from './config'
 import { getClient } from './agent'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { generatedFor, clearGenerated } from './ledger'
-import { readJudgments, readWatermark, setWatermark } from './evidence'
+import { addMinedNotes, readJudgments, readMinedNotes, readWatermark, setWatermark } from './evidence'
+import type { ResolvedAnnotation } from 'arc-canon-graph'
 import { alignParagraphs } from 'arc-canon-graph'
-import { git, parseScene } from './story'
+import { git, parseScene, proseScenes } from './story'
+import { annotations } from './annotations'
 import { styleContract } from './style'
 import { appendToQueue, readQueue, ruleId, type ProposedRule, type RuleEvidence } from './style-queue'
 
@@ -61,11 +63,18 @@ interface EditPair {
    *  it. The purest voice signal: nobody described the change, the change is
    *  the description.
    *  'refusal' — arc offered this and the author said no, keeping what stood.
-   *  The only one git never records, because refusing commits nothing. */
-  source: 'draft' | 'revision' | 'refusal' | 'history'
+   *  The only one git never records, because refusing commits nothing.
+   *  'note' — the author wrote a note ON the passage and later resolved it
+   *  with the passage changed (A49-2). The only source where the requirement
+   *  is STATED in the author's own words rather than inferred from an edit. */
+  source: 'draft' | 'revision' | 'refusal' | 'history' | 'note'
   wrote: string
   kept: string
   changed: number
+  /** the note's body — present only on source 'note' */
+  said?: string
+  /** which annotation argued this pair, so it argues exactly once */
+  noteId?: string
 }
 
 const paragraphs = (body: string): string[] =>
@@ -148,6 +157,50 @@ export function refusalPairs(files: string[], since: string): Omit<EditPair, 'n'
     }))
 }
 
+/** Resolved notes as pairs — the author's stated requirement beside the
+ *  prose it was stated about (A49-2).
+ *
+ *  Only notes whose anchor captured its paragraphs (A49-1) can argue: the
+ *  snapshot is the BEFORE, and the paragraphs standing where the anchor
+ *  resolves today are the AFTER. Only the author's own notes count — mining
+ *  arc's keypoints or agent notes would teach arc from itself. Orphaned
+ *  anchors are skipped (what the passage became is unknowable), unchanged
+ *  passages are skipped (the note resolved without the prose moving, so it
+ *  says nothing about form), and mined ids are skipped (a note teaches
+ *  once). Pure over its inputs so the test owns every branch. */
+export function notePairs(
+  notes: ResolvedAnnotation[],
+  mined: Set<string>,
+  bodyOf: (scene: string) => string | null,
+): Omit<EditPair, 'n'>[] {
+  const squash = (t: string) => t.replace(/\s+/g, ' ').trim()
+  const out: Omit<EditPair, 'n'>[] = []
+  for (const n of notes) {
+    if (n.kind === 'keypoint' || n.by === 'agent') continue
+    if (n.status !== 'resolved' || mined.has(n.id)) continue
+    const snapshot = n.anchor.paragraphs
+    if (!snapshot?.length || !n.body.trim()) continue
+    if (n.resolution.state !== 'resolved' && n.resolution.state !== 'drifted') continue
+    const body = bodyOf(n.anchor.scene)
+    if (body === null || n.resolution.paragraph === null) continue
+    const paras = paragraphs(body)
+    const kept = paras.slice(n.resolution.paragraph, n.resolution.paragraph + snapshot.length).join('\n\n')
+    const wrote = snapshot.join('\n\n')
+    if (!kept || squash(kept) === squash(wrote)) continue
+    out.push({
+      scene: n.anchor.scene,
+      paragraph: n.anchor.paragraph ?? -1,
+      source: 'note',
+      wrote,
+      kept,
+      changed: changedWords(wrote, kept),
+      said: n.body.trim(),
+      noteId: n.id,
+    })
+  }
+  return out
+}
+
 /** The bar, applied in one place so the test can pin it. */
 export const significant = (pairs: EditPair[]): EditPair[] =>
   pairs.filter(p => p.changed >= MIN_CHANGED_WORDS)
@@ -170,6 +223,15 @@ the way in. Below are numbered EDIT pairs of two kinds, labelled:
   turn on fact, continuity, or what a character would do — those say nothing
   about the author's sentences, and you must ignore them here rather than
   reach for a style rule to explain them.
+- AUTHOR NOTED / AS NOTED / IT BECAME — the author wrote a note ON the
+  passage, in their own words, and later resolved it with the passage
+  changed. The only pair here where the requirement is STATED rather than
+  inferred — but the note may be about fact or continuity rather than form,
+  and the after-side may have been machine-drafted on their behalf before
+  they accepted it. Treat the note's words as the author's intent, judge
+  FORM only from what actually changed, and apply the same discipline as
+  everywhere else: ignore the pair entirely when the change is not about
+  how the sentences are written.
 
 An empty right-hand side means the paragraph was cut entirely.
 
@@ -211,13 +273,16 @@ export function buildLearnPrompt(input: {
 }): string {
   const table = input.pairs.map(p => [
     `--- EDIT ${p.n} (${p.scene}) ---`,
+    ...(p.source === 'note' ? [`AUTHOR NOTED: ${p.said ?? ''}`] : []),
     p.source === 'revision' ? `AUTHOR HAD: ${p.wrote}`
       : p.source === 'history' ? `THE BOOK HAD: ${p.wrote}`
-        : `ARC WROTE: ${p.wrote}`,
+        : p.source === 'note' ? `AS NOTED: ${p.wrote}`
+          : `ARC WROTE: ${p.wrote}`,
     p.source === 'revision' ? `REVISED TO: ${p.kept || '(cut entirely)'}`
       : p.source === 'refusal' ? `AUTHOR REFUSED, KEEPING: ${p.kept || '(nothing — the passage went)'}`
         : p.source === 'history' ? `IT MOVED TO: ${p.kept || '(cut entirely)'}`
-          : `AUTHOR KEPT: ${p.kept || '(cut entirely)'}`,
+          : p.source === 'note' ? `IT BECAME: ${p.kept || '(cut entirely)'}`
+            : `AUTHOR KEPT: ${p.kept || '(cut entirely)'}`,
   ].join('\n')).join('\n\n')
 
   return [
@@ -395,6 +460,15 @@ export async function runLearnStyle(files: string[]): Promise<LearnResult> {
   const refusals = significant(refusalPairs(files, mark).map((p, i) => ({ n: pairs.length + i + 1, ...p })))
   pairs.push(...refusals)
 
+  // What the author asked for in words: resolved notes whose passage moved
+  // (A49-2). Deduplicated by note id in the watermark, so a note argues once.
+  const noted = significant(
+    notePairs(annotations(), readMinedNotes(), f => {
+      const sc = proseScenes().find(x => x.scene === f)
+      return sc ? sc.body : null
+    }).map((p, i) => ({ n: pairs.length + i + 1, ...p })))
+  pairs.push(...noted)
+
   // Accepted unedited, or nothing arc wrote: no model, no tokens.
   if (!pairs.length) {
     if (mined.length) clearGenerated(mined)
@@ -439,5 +513,7 @@ export async function runLearnStyle(files: string[]): Promise<LearnResult> {
     ? readJudgments().filter(j => files.includes(j.file)).at(-1)?.at
     : null
   if (newest) setWatermark(newest)
+  // The notes have argued too — each exactly once.
+  addMinedNotes(considered.filter(p => p.noteId).map(p => p.noteId!))
   return { added, skipped: null, pairsConsidered: considered.length }
 }

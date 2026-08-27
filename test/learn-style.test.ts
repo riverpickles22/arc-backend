@@ -16,7 +16,7 @@ process.env.ARC_DRAFT_ENGINE = 'none'
 
 const {
   editPairs, changedWords, significant, buildLearnPrompt, parseProposals, materialize,
-  independentExamples, refusalPairs, runLearnStyle, MIN_CHANGED_WORDS, MAX_PROPOSALS_PER_RUN, QUEUE_SUPPRESS_AT,
+  independentExamples, refusalPairs, notePairs, runLearnStyle, MIN_CHANGED_WORDS, MAX_PROPOSALS_PER_RUN, QUEUE_SUPPRESS_AT,
 } = await import('../src/learn-style.ts')
 const { parseQueue, renderQueue, ruleId, readQueue, writeQueue, ratifyRule, queuePath, placeRule, appendToQueue, readDismissed } =
   await import('../src/style-queue.ts')
@@ -562,4 +562,69 @@ test('a dismissed rule does not come back', () => {
 
   fs.rmSync(path.join(STORY, 'docs/style.dismissed.md'))
   writeQueue([])
+})
+
+// ---- notes as evidence (A49-2): the author's stated requirement ----------
+
+const noteOf = (over: Record<string, unknown>) => ({
+  id: 'note.101', kind: 'note', by: 'author', status: 'resolved',
+  body: 'make this smell-first — lead with what he smells, not what he sees',
+  anchor: { scene: 'sc.01-1', paragraph: 0, quote: '', paragraphs: ['He saw the harbor first.'] },
+  resolution: { state: 'resolved', paragraph: 0 },
+  created_at: '2026-08-26',
+  ...over,
+} as never)
+
+const bodyWas = (text: string) => (scene: string) => (scene === 'sc.01-1' ? text : null)
+
+test('a resolved note whose passage moved argues a pair carrying the author\'s words', () => {
+  const pairs = notePairs([noteOf({})], new Set(), bodyWas('Green rot and woodsmoke reached him before the harbor did.'))
+  assert.equal(pairs.length, 1)
+  assert.equal(pairs[0].source, 'note')
+  assert.equal(pairs[0].wrote, 'He saw the harbor first.')
+  assert.equal(pairs[0].kept, 'Green rot and woodsmoke reached him before the harbor did.')
+  assert.match(pairs[0].said!, /smell-first/)
+  assert.equal(pairs[0].noteId, 'note.101')
+})
+
+test('everything that must NOT argue, does not', () => {
+  const after = bodyWas('Different prose now.')
+  // open, working, dropped: the author has not closed the loop.
+  for (const status of ['open', 'working', 'dropped']) {
+    assert.equal(notePairs([noteOf({ status })], new Set(), after).length, 0, `status ${status}`)
+  }
+  // a keypoint is structural; an agent note would teach arc from itself.
+  assert.equal(notePairs([noteOf({ kind: 'keypoint' })], new Set(), after).length, 0, 'keypoint')
+  assert.equal(notePairs([noteOf({ by: 'agent' })], new Set(), after).length, 0, 'agent note')
+  // already mined: a note argues exactly once.
+  assert.equal(notePairs([noteOf({})], new Set(['note.101']), after).length, 0, 'mined')
+  // orphaned: what the passage became is unknowable.
+  assert.equal(notePairs([noteOf({ resolution: { state: 'orphaned', paragraph: null } })], new Set(), after).length, 0, 'orphaned')
+  // no snapshot (a note from before A49-1): nothing to pair against.
+  assert.equal(notePairs([noteOf({ anchor: { scene: 'sc.01-1', paragraph: 0, quote: '' } })], new Set(), after).length, 0, 'no snapshot')
+  // the passage did not move: the note resolved without the prose changing.
+  assert.equal(notePairs([noteOf({})], new Set(), bodyWas('He saw the harbor first.')).length, 0, 'unchanged')
+})
+
+test('the prompt shows a note pair as AUTHOR NOTED / AS NOTED / IT BECAME', () => {
+  const pairs = notePairs([noteOf({})], new Set(), bodyWas('Green rot and woodsmoke reached him before the harbor did.'))
+  const prompt = buildLearnPrompt({
+    pairs: pairs.map((p, i) => ({ n: i + 1, ...p })),
+    style: '## Openings\nSmell before sight.',
+    pending: [],
+  })
+  assert.match(prompt, /AUTHOR NOTED: make this smell-first/)
+  assert.match(prompt, /AS NOTED: He saw the harbor first\./)
+  assert.match(prompt, /IT BECAME: Green rot/)
+})
+
+test('mined note ids persist in the watermark beside the timestamp', async () => {
+  const { readMinedNotes, addMinedNotes, setWatermark, readWatermark } = await import('../src/evidence.ts')
+  setWatermark('2026-08-26T00:00:00Z')
+  addMinedNotes(['note.201', 'note.202'])
+  assert.deepEqual([...readMinedNotes()].sort(), ['note.201', 'note.202'])
+  // the two bookkeeping facts share the file without clobbering each other
+  setWatermark('2026-08-27T00:00:00Z')
+  assert.deepEqual([...readMinedNotes()].sort(), ['note.201', 'note.202'])
+  assert.equal(readWatermark(), '2026-08-27T00:00:00Z')
 })

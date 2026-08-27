@@ -45,8 +45,35 @@ export function readWatermark(): string {
 export function setWatermark(at: string): void {
   try {
     fs.mkdirSync(path.dirname(WATERMARK()), { recursive: true })
-    fs.writeFileSync(WATERMARK(), JSON.stringify({ at }, null, 2))
+    const prior = (() => {
+      try { return JSON.parse(fs.readFileSync(WATERMARK(), 'utf8')) as Record<string, unknown> } catch { return {} }
+    })()
+    fs.writeFileSync(WATERMARK(), JSON.stringify({ ...prior, at }, null, 2))
   } catch { /* bookkeeping only — a lost watermark re-argues a rule the id collapses */ }
+}
+
+/** Notes the learning pass has already mined (A49-2). Same file, same
+ *  disposable character: losing it re-argues evidence the queue's own
+ *  dedup and the tombstones absorb, never corrupts the record. */
+export function readMinedNotes(): Set<string> {
+  try {
+    const raw = (JSON.parse(fs.readFileSync(WATERMARK(), 'utf8')) as { notes?: unknown }).notes
+    return new Set(Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+export function addMinedNotes(ids: string[]): void {
+  if (!ids.length) return
+  try {
+    fs.mkdirSync(path.dirname(WATERMARK()), { recursive: true })
+    const prior = (() => {
+      try { return JSON.parse(fs.readFileSync(WATERMARK(), 'utf8')) as Record<string, unknown> } catch { return {} }
+    })()
+    const notes = [...readMinedNotes(), ...ids]
+    fs.writeFileSync(WATERMARK(), JSON.stringify({ ...prior, notes }, null, 2))
+  } catch { /* bookkeeping only */ }
 }
 
 /** How the author answered one piece of arc's prose.
