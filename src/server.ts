@@ -38,6 +38,8 @@ import { proposeTouchstoneRefresh, touchstoneStates } from './touchstones'
 import { proseChecks } from 'arc-canon-graph'
 import { runBootstrapStyle } from './bootstrap-style'
 import { runRedraft } from './redraft'
+import { adoptAlternative, dropAlternative, listRoutes, runReroute } from './reroute'
+import type { AdoptRouteResponse, RerouteResponse, RouteListResponse } from 'arc-canon-graph/api-types.ts'
 import { createLock, locks, locksOn, removeLock } from './locks'
 import { addNote, deleteNote, listNotes, updateNote as reviseNote } from './notes'
 import { decideWork, workNote } from './work'
@@ -656,6 +658,49 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         paragraphs,
         guidance: typeof b.guidance === 'string' ? b.guidance : undefined,
       }))
+    },
+  },
+
+  // The reroute pass: another way to the same destination. Alternatives land
+  // beside the manuscript, never in it — GET lists them (and the locks that
+  // would constrain a run), POST runs the pass, adopt is the lock-gated scene
+  // write that also records the ledger, drop deletes the file.
+  '/api/prose/reroute': {
+    GET: (req, res) => {
+      const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
+      const scene = url.searchParams.get('scene')
+      if (!scene) throw new HttpError(400, 'scene required')
+      json(res, 200, listRoutes(scene) satisfies RouteListResponse)
+    },
+    POST: async (req, res) => {
+      if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
+        throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+      }
+      const b = (await parsedBody(req)) as { scene?: unknown; count?: unknown; guidance?: unknown }
+      if (typeof b.scene !== 'string' || !b.scene) throw new HttpError(400, 'scene required')
+      if (b.count !== undefined && !(Number.isInteger(b.count) && (b.count as number) >= 1 && (b.count as number) <= 3)) {
+        throw new HttpError(400, 'count must be 1–3')
+      }
+      json(res, 200, await runReroute({
+        scene: b.scene,
+        count: b.count as number | undefined,
+        guidance: typeof b.guidance === 'string' ? b.guidance : undefined,
+      }) satisfies RerouteResponse)
+    },
+  },
+  '/api/prose/reroute/adopt': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { scene?: unknown; alt?: unknown }
+      if (typeof b.scene !== 'string' || !b.scene || typeof b.alt !== 'string' || !b.alt) throw new HttpError(400, 'scene and alt required')
+      json(res, 200, adoptAlternative(b.scene, b.alt) satisfies AdoptRouteResponse)
+    },
+  },
+  '/api/prose/reroute/drop': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { scene?: unknown; alt?: unknown }
+      if (typeof b.scene !== 'string' || !b.scene || typeof b.alt !== 'string' || !b.alt) throw new HttpError(400, 'scene and alt required')
+      dropAlternative(b.scene, b.alt)
+      json(res, 200, { ok: true } satisfies OkResponse)
     },
   },
 
