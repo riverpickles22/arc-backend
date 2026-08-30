@@ -2,7 +2,7 @@
   "name": "arc-backend",
   "private": true,
   "version": "0.1.0",
-  "license": "Apache-2.0",
+  "license": "FSL-1.1-Apache-2.0",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/main.ts",

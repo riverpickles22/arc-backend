@@ -69,9 +69,19 @@ The agent's system prompt puts arc-core's `conventions.md` in a cached prefix an
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE), covering this repository's
-code. It holds no story: a story's canon and prose stay under whatever terms
-its author sets.
+This repository's code is source-available under the
+[Functional Source License 1.1, Apache 2.0 Future License](LICENSE)
+(FSL-1.1-Apache-2.0). In plain words: use it, run it for your own books, change
+it, redistribute it, build on it — but do not offer it, or something
+substantially like it, as a competing product or service. Each version becomes
+Apache 2.0 two years after its release, so nothing here stays closed for good.
+
+The story format is a different matter, and always will be:
+[arc-core](https://github.com/riverpickles22/arc-core) — the conventions, the
+schemas, the validator and tools, the graph package — is Apache 2.0, so any
+tool may read, write and check an arc story, and its author may sell that
+tool. This repository holds no story: a story's canon and prose stay under
+whatever terms its author sets.
 
 Patches welcome under the same license, with a
 [DCO](https://developercertificate.org/) sign-off — `git commit -s`, no CLA.
