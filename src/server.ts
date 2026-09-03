@@ -38,7 +38,8 @@ import { proposeTouchstoneRefresh, touchstoneStates } from './touchstones'
 import { proseChecks } from 'arc-canon-graph'
 import { runBootstrapStyle } from './bootstrap-style'
 import { runRedraft } from './redraft'
-import { adoptAlternative, dropAlternative, listRoutes, runReroute } from './reroute'
+import { addRouteNote, adoptAlternative, clearAlternatives, deleteRouteNote, dropAlternative, listRoutes, routeCounts, runReroute, runRevise } from './reroute'
+import { generatedFor } from './ledger'
 import type { AdoptRouteResponse, RerouteResponse, RouteListResponse } from 'arc-canon-graph/api-types.ts'
 import { createLock, locks, locksOn, removeLock } from './locks'
 import { addNote, deleteNote, listNotes, updateNote as reviseNote } from './notes'
@@ -559,7 +560,25 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   '/api/prose/accept': {
     POST: async (req, res) => {
       const body = (await parsedBody(req)) as { message?: unknown; capture?: unknown }
+      // WHICH scenes lose their field, decided BEFORE the accept while the
+      // ledger still answers. Accept is a whole-prose commit, so its files
+      // include scenes the author merely edited by hand — those keep their
+      // routes and the notes on them. Only a scene an alternative was
+      // actually ADOPTED into is settled by this accept, and the ledger
+      // records exactly that (origin 'reroute', written at adopt).
+      const adopted = new Map<string, string>()
+      for (const c of proseDraft().changes) {
+        const gen = generatedFor(c.file)
+        if (gen?.entry.origin === 'reroute' && gen.entry.scene) adopted.set(c.file, gen.entry.scene)
+      }
       const result = proseAccept(typeof body.message === 'string' ? body.message : undefined)
+      // Kept here rather than inside proseAccept so story.ts and reroute.ts
+      // stay acyclic, and never on a paragraph or sentence accept — those do
+      // not settle the scene.
+      for (const f of result.files) {
+        const scene = adopted.get(f)
+        if (scene) clearAlternatives(scene)
+      }
       let capture
       if (body.capture === true && (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN)) {
         try {
@@ -688,6 +707,12 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       }) satisfies RerouteResponse)
     },
   },
+  // How many routes wait on each scene: one read, so the manuscript can mark
+  // every scene without asking per scene.
+  '/api/prose/reroute/counts': {
+    GET: (_req, res) => { json(res, 200, { counts: routeCounts() }) },
+  },
+
   '/api/prose/reroute/adopt': {
     POST: async (req, res) => {
       const b = (await parsedBody(req)) as { scene?: unknown; alt?: unknown }
@@ -701,6 +726,43 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       if (typeof b.scene !== 'string' || !b.scene || typeof b.alt !== 'string' || !b.alt) throw new HttpError(400, 'scene and alt required')
       dropAlternative(b.scene, b.alt)
       json(res, 200, { ok: true } satisfies OkResponse)
+    },
+  },
+
+  // Rewrite one alternative under the author's note: a new version of the
+  // same route lands beside the old one (`revises` names the parent); the
+  // ledger still learns of a route only on adopt.
+  // A note on a route: about one of its paragraphs, or about the whole of
+  // it. Notes live with the route and are the rewrite's brief.
+  '/api/prose/reroute/note': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { scene?: unknown; alt?: unknown; body?: unknown; paragraph?: unknown }
+      if (typeof b.scene !== 'string' || !b.scene || typeof b.alt !== 'string' || !b.alt) throw new HttpError(400, 'scene and alt required')
+      if (typeof b.body !== 'string' || !b.body.trim()) throw new HttpError(400, 'a note needs something in it')
+      const paragraph = b.paragraph === undefined || b.paragraph === null ? null : b.paragraph
+      if (paragraph !== null && typeof paragraph !== 'number') throw new HttpError(400, 'paragraph must be a number, or absent for a note about the whole route')
+      json(res, 200, { alternative: addRouteNote(b.scene, b.alt, b.body, paragraph) })
+    },
+  },
+  '/api/prose/reroute/note/delete': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { scene?: unknown; alt?: unknown; note?: unknown }
+      if (typeof b.scene !== 'string' || !b.scene || typeof b.alt !== 'string' || !b.alt || typeof b.note !== 'string' || !b.note) {
+        throw new HttpError(400, 'scene, alt and note required')
+      }
+      json(res, 200, { alternative: deleteRouteNote(b.scene, b.alt, b.note) })
+    },
+  },
+
+  '/api/prose/reroute/revise': {
+    POST: async (req, res) => {
+      if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
+        throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+      }
+      const b = (await parsedBody(req)) as { scene?: unknown; alt?: unknown; note?: unknown }
+      if (typeof b.scene !== 'string' || !b.scene || typeof b.alt !== 'string' || !b.alt) throw new HttpError(400, 'scene and alt required')
+      if (b.note !== undefined && typeof b.note !== 'string') throw new HttpError(400, 'note must be text')
+      json(res, 200, await runRevise({ scene: b.scene, alt: b.alt, note: typeof b.note === 'string' ? b.note.trim() : undefined }) satisfies RerouteResponse)
     },
   },
 

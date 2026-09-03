@@ -42,7 +42,7 @@ import { createHash } from 'node:crypto'
 import type Anthropic from '@anthropic-ai/sdk'
 import { dump as yamlDump, load as yamlLoad } from 'js-yaml'
 import type { CanonDoc, ProseScene, ResolvedAnnotation, ResolvedLock, SceneContract } from 'arc-canon-graph'
-import type { AdoptRouteResponse, RerouteRefusal, RerouteResponse, RouteAlternative, RouteCoverage, RouteListResponse, RouteLockNotice } from 'arc-canon-graph/api-types.ts'
+import type { AdoptRouteResponse, RerouteRefusal, RerouteResponse, RouteAlternative, RouteCoverage, RouteListResponse, RouteLockNotice, RouteNote } from 'arc-canon-graph/api-types.ts'
 import { dateOf, splitSentences } from 'arc-canon-graph'
 import { buildContextPack } from 'arc-canon-graph/context-pack-lib.ts'
 import { lockViolations, paragraphsOf } from 'arc-canon-graph/annotations.ts'
@@ -120,6 +120,19 @@ export const MIN_COUNTED_WORDS = 8
 /** Under this many countable paragraphs the gate cannot judge and says so. */
 export const MIN_COUNTED_PARAS = 3
 export const KEEP_ALTERNATIVES = 6
+/** How many other ways through a scene may hold at once. At the cap arc asks
+ *  the author to cancel one rather than evicting the oldest itself: letting go
+ *  of a route is a judgement about the work, and since A58 a route can carry
+ *  the author's own notes. Counts ROUTES, not versions — a route rewritten
+ *  three times is one way through. */
+export const MAX_ROUTES = 4
+
+/** The routes waiting on a scene: chain heads, so versions do not count. */
+export function routesWaiting(scene: string): number {
+  const alts = listAlternatives(scene)
+  const revised = new Set(alts.map(a => a.revises).filter((r): r is string => typeof r === 'string'))
+  return alts.filter(a => !revised.has(a.id)).length
+}
 
 const words = (s: string): number => s.split(/\s+/).filter(Boolean).length
 const norm = (s: string): string => s.replace(/\s+/g, ' ').trim()
@@ -469,6 +482,8 @@ function parseAlternative(text: string): RouteAlternative | null {
     coverage: Array.isArray(head.coverage) ? head.coverage as RouteCoverage[] : null,
     overlap: typeof head.overlap === 'number' ? head.overlap : null,
     ...(typeof head.retried === 'string' ? { retried: head.retried } : {}),
+    ...(typeof head.revises === 'string' ? { revises: head.revises } : {}),
+    ...(Array.isArray(head.notes) ? { notes: head.notes as RouteNote[] } : {}),
   }
 }
 
@@ -487,9 +502,14 @@ export function writeAlternative(alt: RouteAlternative): void {
   const dir = DIR(alt.scene)
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(path.join(dir, `${alt.id}.md`), serialize(alt))
-  // Generated alternatives are disposable: keep the newest few, drop the rest.
-  for (const old of listAlternatives(alt.scene).slice(KEEP_ALTERNATIVES)) {
-    fs.rmSync(path.join(dir, `${old.id}.md`), { force: true })
+  // Generated alternatives are disposable: keep the newest few ROUTES (chain
+  // heads), drop the rest — but a kept route keeps every version it came
+  // through, because "save the difference in versions" is the rewrite's
+  // contract with the author.
+  const alts = listAlternatives(alt.scene)
+  const keep = pruneKeepIds(alts, KEEP_ALTERNATIVES)
+  for (const old of alts) {
+    if (!keep.has(old.id)) fs.rmSync(path.join(dir, `${old.id}.md`), { force: true })
   }
 }
 
@@ -563,9 +583,9 @@ export const CLI_REROUTE_TIMEOUT_MS = 20 * 60 * 1000
 
 export const CLI_ENGINE_NOTE = 'ENGINE NOTE: you have no tools and no files — everything you may know is in this prompt. Do not narrate, plan, or report what you checked; the first line of your answer is the first sentence of the prose.'
 
-const ask = async (p: ReroutePrompt): Promise<string> =>
+const ask = async (p: ReroutePrompt, pass: 'reroute' | 'reroute-revise' = 'reroute'): Promise<string> =>
   currentEngine() === 'claude-cli'
-    ? (await runCliPrompt(`${flattenPrompt(p)}\n\n${CLI_ENGINE_NOTE}`, { cwd: STORY, noTools: true, timeoutMs: CLI_REROUTE_TIMEOUT_MS })).text
+    ? (await runCliPrompt(`${flattenPrompt(p)}\n\n${CLI_ENGINE_NOTE}`, { cwd: STORY, pass, noTools: true, timeoutMs: CLI_REROUTE_TIMEOUT_MS })).text
     : askSdk(p)
 
 type GateResult = { ok: true; alt: RouteAlternative } | { ok: false; reason: string }
@@ -573,7 +593,16 @@ type GateResult = { ok: true; alt: RouteAlternative } | { ok: false; reason: str
 export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
   const scene = proseScenes().find(s => s.scene === t.scene)
   if (!scene) throw new HttpError(400, `no scene ${t.scene}`)
-  const count = t.count ?? 2
+  // At the cap the author decides what goes. Checked before any token is
+  // spent, and in the backend rather than the button, because a limit only
+  // the viewer knows is not a limit.
+  const waiting = routesWaiting(t.scene)
+  if (waiting >= MAX_ROUTES) {
+    throw new HttpError(409, `this scene already holds ${MAX_ROUTES} other ways through — cancel one you are done with to make room for another`)
+  }
+  // Never take a scene past the cap: a request for two with room for one
+  // returns one rather than being refused outright.
+  const count = Math.min(t.count ?? 2, MAX_ROUTES - waiting)
   if (!Number.isInteger(count) || count < 1 || count > SEEDS.length) throw new HttpError(400, `count must be 1–${SEEDS.length}`)
 
   // ---- PRECONDITIONS: proven refusals, before anything is spent -----------
@@ -623,39 +652,13 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
   const basedOn = bodyHash(scene.body)
 
   const gate = (seed: { id: string; text: string }, text: string): GateResult => {
-    const { body, briefing: rawBriefing } = splitBriefing(stripFences(text))
-    if (!body) return { ok: false, reason: 'the pass returned nothing' }
-    const violated = lockViolations(scene.body, body, sceneLocks)
-    if (violated.length) return { ok: false, reason: `touched locked prose — ${describeViolation(t.scene, violated[0])}` }
-    if (lockOrderViolation(body, lockedTexts)) return { ok: false, reason: 'the locked paragraphs came back out of their settled order' }
-    const leaked = withholdViolations(literals, body)
-    if (leaked.length) return { ok: false, reason: `names what the contract withholds verbatim (${leaked.map(x => `"${x}"`).join(', ')})` }
-    if (andCap !== null) {
-      const chains = andChainViolations(body, andCap, lockedTexts)
-      if (chains.length) {
-        const worst = chains.sort((x, y) => y.ands - x.ands)[0]
-        return { ok: false, reason: `a sentence joins ${worst.ands} "and"s where the contract stops at ${andCap} (${chains.length} such sentence${chains.length === 1 ? '' : 's'}) — "${worst.sentence.slice(0, 160)}${worst.sentence.length > 160 ? '…' : ''}"` }
-      }
-    }
-    if (wordCap !== null) {
-      const long = longSentenceViolations(body, wordCap, lockedTexts)
-      if (long.length) {
-        const worst = long.sort((x, y) => y.words - x.words)[0]
-        return { ok: false, reason: `a sentence runs ${worst.words} words where the contract stops at ${wordCap} (${long.length} such sentence${long.length === 1 ? '' : 's'}) — "${worst.sentence.slice(0, 160)}${worst.sentence.length > 160 ? '…' : ''}"` }
-      }
-    }
-    const overlap = lexicalOverlap(body, scene.body, lockedTexts)
-    if (overlap.share !== null && overlap.share > MAX_OVERLAP) {
-      return { ok: false, reason: `reused ${Math.round(overlap.share * 100)}% of the current wording (${overlap.overlapping} of ${overlap.counted} paragraphs; the limit is ${Math.round(MAX_OVERLAP * 100)}%)` }
-    }
-    const parsed = parseCoverageTail(rawBriefing)
-    const briefing = parsed.briefing
-    const coverage = mergeCoverage(destination, parsed.coverage)
+    const checked = gateAnswer({ sceneName: t.scene, sceneBody: scene.body, sceneLocks, lockedTexts, literals, andCap, wordCap, destination }, text)
+    if (!checked.ok) return checked
     const created_at = new Date().toISOString()
-    const id = 'alt-' + createHash('sha256').update(`${seed.id}\n${created_at}\n${body}`).digest('hex').slice(0, 8)
+    const id = 'alt-' + createHash('sha256').update(`${seed.id}\n${created_at}\n${checked.body}`).digest('hex').slice(0, 8)
     return {
       ok: true,
-      alt: { id, scene: t.scene, seed: seed.id, guidance: t.guidance?.trim() || undefined, based_on: basedOn, created_at, body: body.trim(), briefing, coverage, overlap: overlap.share },
+      alt: { id, scene: t.scene, seed: seed.id, guidance: t.guidance?.trim() || undefined, based_on: basedOn, created_at, body: checked.body, briefing: checked.briefing, coverage: checked.coverage, overlap: checked.overlap },
     }
   }
 
@@ -694,4 +697,335 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
   // Deliberately NO recordGenerated here — see the header: the ledger learns
   // of a route only when it is adopted.
   return { alternatives, refused }
+}
+
+// ---- the rewrite: a route revised under the same fence (A57) --------------
+
+export interface GateCtx {
+  sceneName: string
+  sceneBody: string
+  sceneLocks: ResolvedLock[]
+  lockedTexts: string[]
+  literals: ReturnType<typeof literalWithholds>
+  andCap: number | null
+  wordCap: number | null
+  destination: string[]
+}
+
+export type GateChecked =
+  | { ok: true; body: string; briefing: string; coverage: RouteCoverage[] | null; overlap: number | null }
+  | { ok: false; reason: string }
+
+/** Every check an answer must clear before it lands beside the scene — one
+ *  set, shared by the reroute and the rewrite, so the two passes cannot
+ *  drift apart gate by gate. */
+export function gateAnswer(ctx: GateCtx, text: string): GateChecked {
+  const { body, briefing: rawBriefing } = splitBriefing(stripFences(text))
+  if (!body) return { ok: false, reason: 'the pass returned nothing' }
+  const violated = lockViolations(ctx.sceneBody, body, ctx.sceneLocks)
+  if (violated.length) return { ok: false, reason: `touched locked prose — ${describeViolation(ctx.sceneName, violated[0])}` }
+  if (lockOrderViolation(body, ctx.lockedTexts)) return { ok: false, reason: 'the locked paragraphs came back out of their settled order' }
+  const leaked = withholdViolations(ctx.literals, body)
+  if (leaked.length) return { ok: false, reason: `names what the contract withholds verbatim (${leaked.map(x => `"${x}"`).join(', ')})` }
+  if (ctx.andCap !== null) {
+    const chains = andChainViolations(body, ctx.andCap, ctx.lockedTexts)
+    if (chains.length) {
+      const worst = chains.sort((x, y) => y.ands - x.ands)[0]
+      return { ok: false, reason: `a sentence joins ${worst.ands} "and"s where the contract stops at ${ctx.andCap} (${chains.length} such sentence${chains.length === 1 ? '' : 's'}) — "${worst.sentence.slice(0, 160)}${worst.sentence.length > 160 ? '…' : ''}"` }
+    }
+  }
+  if (ctx.wordCap !== null) {
+    const long = longSentenceViolations(body, ctx.wordCap, ctx.lockedTexts)
+    if (long.length) {
+      const worst = long.sort((x, y) => y.words - x.words)[0]
+      return { ok: false, reason: `a sentence runs ${worst.words} words where the contract stops at ${ctx.wordCap} (${long.length} such sentence${long.length === 1 ? '' : 's'}) — "${worst.sentence.slice(0, 160)}${worst.sentence.length > 160 ? '…' : ''}"` }
+    }
+  }
+  const overlap = lexicalOverlap(body, ctx.sceneBody, ctx.lockedTexts)
+  if (overlap.share !== null && overlap.share > MAX_OVERLAP) {
+    return { ok: false, reason: `reused ${Math.round(overlap.share * 100)}% of the current wording (${overlap.overlapping} of ${overlap.counted} paragraphs; the limit is ${Math.round(MAX_OVERLAP * 100)}%)` }
+  }
+  const parsed = parseCoverageTail(rawBriefing)
+  return { ok: true, body: body.trim(), briefing: parsed.briefing, coverage: mergeCoverage(ctx.destination, parsed.coverage), overlap: overlap.share }
+}
+
+/** Which alternatives survive pruning: the newest `keep` chain heads and
+ *  every version they descend from. A version whose parent is already gone
+ *  reads as its own head. Pure, for the tests. */
+export function pruneKeepIds(alts: RouteAlternative[], keep: number): Set<string> {
+  const byId = new Map(alts.map(a => [a.id, a]))
+  const revised = new Set(alts.map(a => a.revises).filter((r): r is string => typeof r === 'string'))
+  const heads = alts.filter(a => !revised.has(a.id))
+  const keepSet = new Set<string>()
+  // Generated prose is disposable; the author's own words are not. A route
+  // carrying a note survives pruning however old it is — losing it would
+  // delete something the author wrote, silently and unrecoverably.
+  const noted = alts.filter(a => (a.notes ?? []).some(n => n.body?.trim()))
+  for (const h of [...heads.slice(0, keep), ...noted]) {
+    let cur: RouteAlternative | undefined = h
+    while (cur && !keepSet.has(cur.id)) {
+      keepSet.add(cur.id)
+      cur = cur.revises ? byId.get(cur.revises) : undefined
+    }
+  }
+  return keepSet
+}
+
+export const REROUTE_REVISE_RULES = `You are arc's ROUTE REWRITE pass. The author read an alternative route for a
+scene of their own novel and asked for it rewritten. The route is your
+subject — you are shown it in full. The scene's current prose is
+deliberately not shown to you.
+
+THE AUTHOR'S NOTE binds. Keep what it keeps, change what it names. Where the
+note and anything else below disagree, the note wins.
+
+THE DESTINATION binds. Every item under "must be accomplished" happens in
+your rewrite, by whatever realization you choose.
+
+THE MANUSCRIPT'S KNOWN ROUTE is fenced. The rewrite stays another way
+through: do not drift toward that ordering or staging, what it opens on or
+what it closes on.
+
+WHAT MUST SURVIVE, exactly:
+1. The scene's meaning. Every event and fact the frontmatter binds still
+   happens here, in canon's order; character state at this moment in the
+   story is unchanged.
+2. The scene contract — purpose, must_establish, must_withhold, motifs,
+   constraints. Withholding is deliberate: do not "fix" it.
+3. The style contract. It is the author's voice; run its pre-draft
+   checklist before answering.
+4. POV, tense, and the anachronism boundary.
+5. Locked paragraphs, VERBATIM, word for word, in the relative order given.
+6. Canon is truth. Never invent a fact the record would have to carry — a
+   new person, date, or place is a proposal for the author, not yours to
+   make. If the note asks for one, say so in the briefing: that is a
+   story-state question, and only the author answers it.
+
+ANSWER IN TWO PARTS, separated by a line that is exactly:
+=== BRIEFING ===
+Part one: the rewritten route alone — no frontmatter, no commentary, no
+fences. Part two, the briefing, in the ARGUED register (claims for the
+author to judge, not verdicts): what the note asked and what you changed for
+it; what you kept of the route and why it earned its place; where each
+required beat lands, by paragraph number; the style checklist item by item;
+and any fact you needed that canon does not hold.
+End the briefing with ONE fenced json block of exactly this shape, and
+nothing else inside the fence:
+\`\`\`json
+{"coverage": [{"item": "<a required beat, verbatim>", "paragraph": <1-based paragraph number, or null>}]}
+\`\`\``
+
+export interface RevisePromptInput {
+  scene: ProseScene
+  pack: string
+  style: string
+  destination: string[]
+  knownRoute: string
+  locked: { paragraph: number; text: string }[]
+  routeBody: string
+  /** the author's notes on this route — each with the paragraph it is about */
+  notes: RouteNote[]
+  /** an extra line typed at rewrite time, beside whatever the notes say */
+  extra?: string
+}
+
+/** The rewrite's brief, in the author's own words: every note on the route,
+ *  tagged with the paragraph it is about, plus anything typed at the moment
+ *  of asking. Annotating a route IS how the next version is requested. */
+export function reviseBrief(notes: RouteNote[], extra?: string): string {
+  const lines = notes
+    .filter(n => n.body?.trim())
+    .map(n => `${n.paragraph === null ? '(the route as a whole)' : `¶${n.paragraph}`} — ${n.body.trim()}`)
+  // A line typed at the moment of asking stands alone when it is the only
+  // thing said; beside notes it is tagged, so the model can tell them apart.
+  if (extra?.trim()) lines.push(lines.length ? `(said now) — ${extra.trim()}` : extra.trim())
+  return lines.join('\n')
+}
+
+/** Pure prompt assembly. The scene body is not an input by construction —
+ *  the subject is the ROUTE's text; the manuscript stays out exactly as in
+ *  the reroute, and the same touchstone strip applies to the style block. */
+export function buildRevisePrompt(a: RevisePromptInput): ReroutePrompt {
+  const locked = a.locked.length
+    ? `=== LOCKED PARAGRAPHS (reproduce VERBATIM, in this order) ===\n${a.locked.map(l => `[¶${l.paragraph + 1} in the current scene]\n${l.text}`).join('\n\n')}`
+    : ''
+  return {
+    stable: [REROUTE_REVISE_RULES, `=== THE STYLE CONTRACT (binding) ===\n${a.style}`].join('\n\n'),
+    volatile: [
+      `=== THE SCENE CONTRACT (${a.scene.scene}) ===\n${contractBlock(a.scene.contract)}`,
+      `=== CONTEXT PACK (canon truth; every item carries its inclusion reason) ===\n${a.pack}`,
+      `=== THE DESTINATION (must be accomplished, by any realization) ===\n${a.destination.map((d, i) => `${i + 1}. ${d}`).join('\n')}`,
+      `=== THE MANUSCRIPT'S KNOWN ROUTE (do not drift toward this ordering or staging) ===\n${a.knownRoute}`,
+      locked,
+      `=== THE ROUTE AS IT STANDS (your subject — rewrite this; the numbers are the ¶ the author's notes name, and are not part of the prose) ===\n${paragraphsOf(a.routeBody).map((p, i) => `¶${i + 1}  ${p}`).join('\n\n')}`,
+    ].filter(Boolean).join('\n\n'),
+    user: [
+      `=== THE AUTHOR'S NOTES ON THIS ROUTE (binding — keep what they keep, change what they name; a ¶ number is the paragraph of the route above) ===\n${reviseBrief(a.notes, a.extra)}`,
+      'Run the rewrite pass. Answer in the two parts.',
+    ].join('\n\n'),
+  }
+}
+
+export interface ReviseTarget { scene: string; alt: string; note?: string }
+
+/** Rewrite one alternative under the author's note. The result is a NEW
+ *  version of the same route — `revises` names the parent, the old version
+ *  stays on disk, and the ledger still learns of a route only on adopt. */
+export async function runRevise(t: ReviseTarget): Promise<RerouteResponse> {
+  const scene = proseScenes().find(s => s.scene === t.scene)
+  if (!scene) throw new HttpError(400, `no scene ${t.scene}`)
+  const parent = listAlternatives(t.scene).find(a => a.id === t.alt)
+  if (!parent) throw new HttpError(404, `no alternative ${t.alt} for ${t.scene}`)
+  // The notes ARE the brief. A rewrite with nothing to say is a fresh
+  // reroute, and that button already exists.
+  const brief = reviseBrief(parent.notes ?? [], t.note)
+  if (!brief.trim()) throw new HttpError(400, 'say what to change — note the route, or add a line, and the rewrite follows it')
+
+  const kps = sceneKeypoints(t.scene, annotations())
+  const destination = buildDestination(scene.contract, kps.author)
+  if (!destination.length) {
+    throw new HttpError(400, `${t.scene} declares no contract and carries no author-marked key points — there is no destination; write one first`)
+  }
+  const live = locksOn(t.scene, scene.body)
+    .filter(l => l.resolution.state === 'resolved' || l.resolution.state === 'drifted')
+  const whole = live.find(l => l.scope === 'scene' || l.scope === 'chapter')
+  if (whole) {
+    throw new HttpError(423,
+      `${whole.scope === 'chapter' ? 'this chapter' : 'this section'} is locked (${whole.id}) — the author settled it whole; a rewrite would unsettle it. Unlock it to keep working the route.`)
+  }
+  if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
+    throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+  }
+
+  // The same context assembly as the reroute, minus the parts that describe
+  // the manuscript's prose to a pass that must not drift toward it.
+  const paras = paragraphsOf(scene.body)
+  const sceneLocks: ResolvedLock[] = live.filter(l => l.scope === 'paragraph' && l.resolution.paragraph !== null)
+    .sort((x, y) => (x.resolution.paragraph as number) - (y.resolution.paragraph as number))
+  const locked = sceneLocks.map(l => ({ paragraph: l.resolution.paragraph as number, text: paras[l.resolution.paragraph as number] ?? '' }))
+  const lockedTexts = locked.map(l => l.text)
+  const canon = JSON.parse(canonJson()) as CanonDoc
+  const chapter = (canon.chapters ?? []).find(c => c.id === scene.chapter)
+  const at = dateOf(chapter?.span?.end) ?? dateOf(chapter?.span?.start)
+  const pack = at
+    ? buildContextPack(canon, { at, events: scene.events, pov: scene.pov ?? chapter?.pov })
+    : buildContextPack(canon, { chapter: scene.chapter })
+  const style = stripSceneTouchstones(styleContract(), { scene: t.scene, file: scene.file })
+  const literals = literalWithholds(scene.contract?.must_withhold)
+  const ctx: GateCtx = {
+    sceneName: t.scene, sceneBody: scene.body, sceneLocks, lockedTexts, literals,
+    andCap: andCapFromContract(style), wordCap: wordCapFromContract(style), destination,
+  }
+
+  const prompt = buildRevisePrompt({
+    scene, pack, style, destination,
+    knownRoute: buildKnownRoute(kps.author, locked), locked,
+    routeBody: parent.body, notes: parent.notes ?? [], extra: t.note,
+  })
+  const attempt = async (p: ReroutePrompt): Promise<GateChecked> => {
+    try { return gateAnswer(ctx, await ask(p, 'reroute-revise')) } catch (e) { return { ok: false, reason: `engine: ${(e as Error).message}` } }
+  }
+  const land = (checked: Extract<GateChecked, { ok: true }>, retried?: string): RouteAlternative => {
+    const created_at = new Date().toISOString()
+    const id = 'alt-' + createHash('sha256').update(`${parent.seed}\n${created_at}\n${checked.body}`).digest('hex').slice(0, 8)
+    return {
+      id, scene: t.scene, seed: parent.seed, guidance: brief.replace(/\s*\n+\s*/g, ' / '), based_on: bodyHash(scene.body),
+      created_at, body: checked.body, briefing: checked.briefing, coverage: checked.coverage,
+      overlap: checked.overlap, revises: parent.id, ...(retried ? { retried } : {}),
+    }
+  }
+
+  const first = await attempt(prompt)
+  if (first.ok) { const alt = land(first); writeAlternative(alt); return { alternatives: [alt], refused: [] } }
+  if (first.reason.startsWith('engine:')) return { alternatives: [], refused: [{ seed: parent.seed, reason: first.reason }] }
+  const again = await attempt({
+    ...prompt,
+    user: `${prompt.user}\n\nYOUR PREVIOUS ANSWER WAS REFUSED: ${first.reason}. Rewrite the route again under the author's note. The manuscript's known route stays fenced; the locked paragraphs are verbatim and in order; reuse none of the manuscript's wording; no sentence joins more "and"s or runs more words than the style contract allows.`,
+  })
+  if (again.ok) { const alt = land(again, first.reason); writeAlternative(alt); return { alternatives: [alt], refused: [] } }
+  return { alternatives: [], refused: [{ seed: parent.seed, reason: `${first.reason}; retried once: ${again.reason}` }] }
+}
+
+// ---- notes on a route, and the field that clears (A58) --------------------
+
+function loadAlt(scene: string, id: string): RouteAlternative {
+  const alt = listAlternatives(scene).find(a => a.id === id)
+  if (!alt) throw new HttpError(404, `no alternative ${id} for ${scene}`)
+  return alt
+}
+
+/** Write the alternative back in place — notes changed, prose untouched. The
+ *  route file is the note store: a note on a proposal is proposal-side data,
+ *  so it travels with the route and goes when the route goes. */
+function saveAlt(alt: RouteAlternative): void {
+  fs.writeFileSync(path.join(DIR(alt.scene), `${alt.id}.md`), serialize(alt))
+}
+
+/** File a note on a route: about one of its paragraphs, or about the whole
+ *  of it. The paragraph is an index into THIS route's body and needs no
+ *  drift resolution — a route never changes in place. */
+export function addRouteNote(scene: string, id: string, body: string, paragraph?: number | null): RouteAlternative {
+  if (!body?.trim()) throw new HttpError(400, 'a note needs something in it')
+  const alt = loadAlt(scene, id)
+  // Only the newest version of a route takes notes. An earlier version has
+  // already been answered — a note on it could reach no rewrite, and the
+  // author would be writing into a version they have moved past.
+  const superseded = listAlternatives(scene).find(a => a.revises === alt.id)
+  if (superseded) {
+    throw new HttpError(409, 'this is an earlier version of the route — notes go on the newest one, which is the version open above it')
+  }
+  const onPassage = typeof paragraph === 'number'
+  if (onPassage) {
+    const count = paragraphsOf(alt.body).length
+    if (!Number.isInteger(paragraph) || (paragraph as number) < 1 || (paragraph as number) > count) {
+      throw new HttpError(400, `this route has ${count} paragraph${count === 1 ? '' : 's'}; a note is about one of them, or about the whole route`)
+    }
+  }
+  const created_at = new Date().toISOString()
+  const note: RouteNote = {
+    id: 'rnote-' + createHash('sha256').update(`${alt.id}\n${created_at}\n${body}`).digest('hex').slice(0, 8),
+    paragraph: onPassage ? paragraph as number : null,
+    body: body.trim(),
+    created_at,
+  }
+  const next = { ...alt, notes: [...(alt.notes ?? []), note] }
+  saveAlt(next)
+  return next
+}
+
+export function deleteRouteNote(scene: string, id: string, noteId: string): RouteAlternative {
+  const alt = loadAlt(scene, id)
+  const notes = alt.notes ?? []
+  if (!notes.some(n => n.id === noteId)) throw new HttpError(404, `no note ${noteId} on ${id}`)
+  const next = { ...alt, notes: notes.filter(n => n.id !== noteId) }
+  saveAlt(next)
+  return next
+}
+
+/** Clear a scene's whole field of alternatives. Called when a scene change
+ *  is ACCEPTED into the manuscript — the adopted route became the book, and
+ *  the routes it beat go with it. Deliberately not on adopt: adopt only
+ *  writes the draft, and a draft the author then discards must not cost
+ *  them every route. Returns how many were removed. */
+export function clearAlternatives(scene: string): number {
+  const dir = DIR(scene)
+  if (!fs.existsSync(dir)) return 0
+  const alts = listAlternatives(scene)
+  for (const a of alts) fs.rmSync(path.join(dir, `${a.id}.md`), { force: true })
+  return alts.length
+}
+
+/** How many routes wait on each scene — one read for the whole story, so the
+ *  manuscript can mark every scene without a request per scene. Counts
+ *  CHAINS, not versions: three rewrites of one route are one route waiting. */
+export function routeCounts(): Record<string, number> {
+  const root = path.join(STORY, '.arc', 'alternatives')
+  if (!fs.existsSync(root)) return {}
+  const out: Record<string, number> = {}
+  for (const scene of fs.readdirSync(root)) {
+    try { if (!fs.statSync(path.join(root, scene)).isDirectory()) continue } catch { continue }
+    const n = routesWaiting(scene)     // the same counter the cap uses
+    if (n) out[scene] = n
+  }
+  return out
 }

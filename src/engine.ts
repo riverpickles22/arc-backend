@@ -7,6 +7,7 @@
 // do with the answer stays with the pass: drafting writes through the
 // validate-or-revert gate, analysis writes nothing at all.
 import { spawn, spawnSync } from 'node:child_process'
+import { buildCliArgs, type InvocationOpts } from './invocation'
 
 export type Engine = 'sdk' | 'claude-cli'
 
@@ -86,13 +87,16 @@ const CLI_MAX_OUTPUT = 16 * 1024 * 1024
  *  problem, solved by telling the child which run it belongs to. */
 export function runCliPrompt(
   prompt: string,
-  opts: { cwd: string; resume?: string | null; runId?: string; noTools?: boolean; timeoutMs?: number },
+  opts: InvocationOpts & { cwd: string; runId?: string; timeoutMs?: number },
 ): Promise<{ text: string; sessionId: string | null }> {
-  // `noTools`: the child answers from the prompt alone. A pass that WITHHOLDS
-  // something from the model (reroute withholds the current prose) has to
-  // mean it: a `claude -p` child in the story directory otherwise has the
-  // whole working tree one Read away, and the first live run proved it looks.
-  const args = ['-p', '--output-format', 'json', ...(opts.noTools ? ['--tools', ''] : []), ...(opts.resume ? ['--resume', opts.resume] : [])]
+  // Argv comes from the invocation builder (invocation.ts) — the one place
+  // flags are assembled, keyed by the pass registry. `noTools`: the child
+  // answers from the prompt alone. A pass that WITHHOLDS something from the
+  // model (reroute withholds the current prose) has to mean it: a `claude -p`
+  // child in the story directory otherwise has the whole working tree one
+  // Read away, and the first live run proved it looks. The registry forces
+  // tools off for withholding passes no matter what the caller says.
+  const args = buildCliArgs(opts)
   return new Promise((resolve, reject) => {
     const child = spawn('claude', args, {
       cwd: opts.cwd,
