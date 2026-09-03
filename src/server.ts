@@ -15,7 +15,7 @@ import type {
   AnnotationsResponse, HealthResponse, MaterialResponse, NoteResponse, NotesResponse,
   AgentsResponse, HookResponse, LensesResponse, OkResponse, ReviseResponse, RunDecisionResponse, RunDetailResponse, RunResponse, RunsResponse,
   UpdateMaterialResponse, WorkDecisionResponse, WorkResponse,
-  ProseAcceptResponse, ProseCheckHit, ProseChecksResponse, ProseParagraphRequest, ProseResponse, ProseSentenceRequest,
+  BriefingResponse, ProseAcceptResponse, ProseCheckHit, ProseChecksResponse, ProseParagraphRequest, ProseResponse, ProseSentenceRequest,
   RatifyRuleResponse, StyleResponse,
 } from 'arc-canon-graph'
 import { STORY } from './config'
@@ -25,6 +25,7 @@ import { docsArticles, git, materialItems, updateMaterial, proseAccept, proseAcc
 import { handleChat } from './agent'
 import { annotations, createAnnotation, deleteAnnotation, updateAnnotation } from './annotations'
 import { attention } from './attention'
+import { briefing } from './briefing'
 import { runCapture } from './capture'
 import { runAnalysis } from './analyze'
 import { runSuggest } from './suggest'
@@ -551,6 +552,13 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // The draft layer: working tree vs HEAD, plus ratification history.
   '/api/prose/draft': {
     GET: (_req, res) => json(res, 200, proseDraft()),
+  },
+
+  // The re-entry briefing: where the author left off, what is in flight,
+  // what is due — read from the record, never generated (harness.md §13
+  // item 2, rung 0). Deterministic and instant; no engine is touched.
+  '/api/briefing': {
+    GET: (_req, res) => json(res, 200, briefing() satisfies BriefingResponse),
   },
 
   // Accept ratifies the draft into main (a git commit scoped to prose/).
