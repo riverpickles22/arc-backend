@@ -11,7 +11,8 @@
     "test": "node --import tsx --test \"test/*.test.ts\"",
     "lint": "eslint src test",
     "work": "tsx src/work-cli.ts",
-    "redraft": "tsx src/redraft-cli.ts"
+    "redraft": "tsx src/redraft-cli.ts",
+    "notes": "tsx src/notes-cli.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.3",

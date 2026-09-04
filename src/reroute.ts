@@ -48,7 +48,7 @@ import { buildContextPack } from 'arc-canon-graph/context-pack-lib.ts'
 import { lockViolations, paragraphsOf } from 'arc-canon-graph/annotations.ts'
 import { MODEL, STORY } from './config'
 import { getClient } from './agent'
-import { annotations } from './annotations'
+import { annotations, openNotesOn } from './annotations'
 import { canonJson } from './canon'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { HttpError } from './http'
@@ -638,8 +638,7 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
     : buildContextPack(canon, { chapter: scene.chapter })
   const siblings = proseScenes().filter(s => s.chapter === scene.chapter && s.scene !== t.scene)
     .map(s => `=== ${s.file} ===\n${s.body.trim()}`).join('\n\n')
-  const openNotes = annotations().filter(n =>
-    n.anchor.scene === t.scene && (!n.status || n.status === 'open') && n.kind !== 'keypoint')
+  const openNotes = openNotesOn(t.scene)
 
   const base = {
     scene, pack, style: stripSceneTouchstones(styleContract(), { scene: t.scene, file: scene.file }), siblings, notes: openNotes,

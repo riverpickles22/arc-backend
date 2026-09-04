@@ -156,3 +156,13 @@ export function updateAnnotation(
   fs.writeFileSync(file, yamlDump(note, { indent: 2, lineWidth: 100, noRefs: true, sortKeys: false }))
   return resolveAnnotations([note], sceneBodies())[0]
 }
+
+/** The notes that drive revision work on one scene: open (or unstatused)
+ *  notes, never key points — those mark what a passage must get across and
+ *  ask for no change (A30). One filter, shared by every pass that reads
+ *  notes, so "the scene's open notes" means the same thing to redraft,
+ *  reroute and work-notes. Rail order, as annotations() sorts them. */
+export function openNotesOn(scene: string): ResolvedAnnotation[] {
+  return annotations().filter(n =>
+    n.anchor.scene === scene && (!n.status || n.status === 'open') && (n.kind ?? 'note') === 'note')
+}

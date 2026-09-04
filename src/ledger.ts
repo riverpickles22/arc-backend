@@ -28,12 +28,16 @@ export interface LedgerEntry {
    *  typed themselves are the same bytes with no way to tell them apart, and
    *  a style rule argued from the wrong one is argued from nothing. */
   origin?: string
+  /** The note ids the pass was handed when it wrote this — provenance the
+   *  viewer shows as "answered in the draft" and the receipt names. Absent
+   *  when the pass ran with no notes, or predates this field. */
+  notes?: string[]
 }
 
 /** Record what the drafting pass just wrote. Never throws: a ledger failure
  *  must never fail a draft — losing the learning signal is a smaller harm
  *  than losing the scene. */
-export function recordGenerated(file: string, content: string, meta: { engine?: string; scene?: string; origin?: string } = {}): void {
+export function recordGenerated(file: string, content: string, meta: { engine?: string; scene?: string; origin?: string; notes?: string[] } = {}): void {
   try {
     const sha = createHash('sha256').update(content).digest('hex').slice(0, 16)
     fs.mkdirSync(DIR(), { recursive: true })

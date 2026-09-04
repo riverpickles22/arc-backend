@@ -41,7 +41,7 @@ import { buildContextPack } from 'arc-canon-graph/context-pack-lib.ts'
 import { lockViolations } from 'arc-canon-graph/annotations.ts'
 import { MODEL, STORY } from './config'
 import { getClient } from './agent'
-import { annotations } from './annotations'
+import { openNotesOn } from './annotations'
 import { canonJson, validateStory } from './canon'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { HttpError } from './http'
@@ -240,8 +240,7 @@ export async function runRedraft(t: RedraftTarget): Promise<DraftSceneResponse> 
 
   const siblings = proseScenes().filter(s => s.chapter === scene.chapter && s.scene !== t.scene)
   const siblingsText = siblings.map(s => `=== ${s.file} ===\n${s.body.trim()}`).join('\n\n')
-  const openNotes = annotations().filter(n =>
-    n.anchor.scene === t.scene && (!n.status || n.status === 'open') && n.kind !== 'keypoint')
+  const openNotes = openNotesOn(t.scene)
 
   const prompt = buildRedraftPrompt({
     scene, pack, style: styleContract(), siblings: siblingsText, notes: openNotes,
@@ -292,7 +291,7 @@ export async function runRedraft(t: RedraftTarget): Promise<DraftSceneResponse> 
     throw new HttpError(409, `the validator refused the redraft — nothing was written:\n${check.output}`)
   }
 
-  recordGenerated(scene.file, next, { engine: currentEngine() ?? 'sdk', scene: t.scene, origin: 'redraft' })
+  recordGenerated(scene.file, next, { engine: currentEngine() ?? 'sdk', scene: t.scene, origin: 'redraft', notes: openNotes.map(n => n.id) })
 
   // ---- ARGUED: reported, never enforced ----------------------------------
   const reply = [

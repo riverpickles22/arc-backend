@@ -39,9 +39,10 @@ import { proposeTouchstoneRefresh, touchstoneStates } from './touchstones'
 import { proseChecks } from 'arc-canon-graph'
 import { runBootstrapStyle } from './bootstrap-style'
 import { runRedraft } from './redraft'
+import { runWorkNotes } from './work-notes'
 import { addRouteNote, adoptAlternative, clearAlternatives, deleteRouteNote, dropAlternative, listRoutes, routeCounts, runReroute, runRevise } from './reroute'
 import { generatedFor } from './ledger'
-import type { AdoptRouteResponse, RerouteResponse, RouteListResponse } from 'arc-canon-graph/api-types.ts'
+import type { AdoptRouteResponse, RerouteResponse, RouteListResponse, WorkNotesMode, WorkNotesResponse } from 'arc-canon-graph/api-types.ts'
 import { createLock, locks, locksOn, removeLock } from './locks'
 import { addNote, deleteNote, listNotes, updateNote as reviseNote } from './notes'
 import { decideWork, workNote } from './work'
@@ -685,6 +686,27 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         paragraphs,
         guidance: typeof b.guidance === 'string' ? b.guidance : undefined,
       }))
+    },
+  },
+
+  // "Work through my notes on this scene": the scene's open notes are the
+  // brief. revise is the minimal revision with the notes as instructions;
+  // redraft is the clean pass with the notes answered where the rebuild
+  // allows. A scene with no open notes is refused (409), never run on nothing.
+  '/api/prose/work-notes': {
+    POST: async (req, res) => {
+      if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
+        throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+      }
+      const b = (await parsedBody(req)) as { scene?: unknown; mode?: unknown; guidance?: unknown }
+      if (typeof b.scene !== 'string' || !b.scene) throw new HttpError(400, 'scene required')
+      if (b.mode !== undefined && b.mode !== 'revise' && b.mode !== 'redraft') throw new HttpError(400, "mode must be 'revise' or 'redraft'")
+      json(res, 200, await runWorkNotes({
+        scene: b.scene,
+        mode: b.mode as WorkNotesMode | undefined,
+        guidance: typeof b.guidance === 'string' ? b.guidance : undefined,
+        source: 'ui',
+      }) satisfies WorkNotesResponse)
     },
   },
 

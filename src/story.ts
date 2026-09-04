@@ -235,7 +235,23 @@ export function proseDraft(): ProseDraft {
     // the paragraph model (and in frontmatter), there is no change to
     // review, and the draft layer says so by staying silent.
     if (status === 'modified' && main && modelEqual(main, file)) continue
-    changes.push({ file, status, main })
+    const change: ProseChange = { file, status, main }
+    // Provenance, from the ledger: which pass wrote the pending text and
+    // which notes it was handed. A ledger entry whose text is already what
+    // HEAD holds was accepted earlier — the pending change is the author's
+    // own, and carries nothing. Proven by comparing bodies, never guessed.
+    if (status !== 'deleted') {
+      const gen = generatedFor(file)
+      if (gen?.entry.origin) {
+        const wrote = parseScene(gen.content, file)?.body
+        const accepted = main !== null && wrote !== undefined && wrote.trim() === main.body.trim()
+        if (!accepted) {
+          change.origin = gen.entry.origin
+          if (gen.entry.notes?.length) change.answers = [...gen.entry.notes]
+        }
+      }
+    }
+    changes.push(change)
   }
 
   let history: ProseDraft['history'] = []

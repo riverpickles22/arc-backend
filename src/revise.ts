@@ -323,7 +323,7 @@ async function reviseOne(cluster: RevisionCluster, node: WorkNode, run: Run): Pr
     // writes prose — is indistinguishable from the author's own typing by the
     // time anyone looks, and the style-learning pass would file arc's
     // sentences as the author's revision of themselves.
-    recordGenerated(cluster.file, next, { engine: currentEngine() ?? 'unknown', scene: cluster.scene, origin: 'revise' })
+    recordGenerated(cluster.file, next, { engine: currentEngine() ?? 'unknown', scene: cluster.scene, origin: 'revise', notes: base.notes })
 
     node.status = 'completed'
     run.emit('task.completed', node.id, { wrote: [cluster.file], notes: base.notes })
