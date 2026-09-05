@@ -568,7 +568,16 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // failure is logged, never fatal: capture must never un-accept prose.
   '/api/prose/accept': {
     POST: async (req, res) => {
-      const body = (await parsedBody(req)) as { message?: unknown; capture?: unknown }
+      const body = (await parsedBody(req)) as { message?: unknown; capture?: unknown; files?: unknown }
+      // The scene-scoped accept (A64-3): the author read ONE scene's diff and
+      // ratified that. Absent, every pending scene is taken, as before.
+      let files: string[] | undefined
+      if (body.files !== undefined) {
+        if (!Array.isArray(body.files) || !body.files.every(f => typeof f === 'string' && f)) {
+          throw new HttpError(400, 'files must be an array of scene paths')
+        }
+        files = body.files as string[]
+      }
       // WHICH scenes lose their field, decided BEFORE the accept while the
       // ledger still answers. Accept is a whole-prose commit, so its files
       // include scenes the author merely edited by hand — those keep their
@@ -580,7 +589,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         const gen = generatedFor(c.file)
         if (gen?.entry.origin === 'reroute' && gen.entry.scene) adopted.set(c.file, gen.entry.scene)
       }
-      const result = proseAccept(typeof body.message === 'string' ? body.message : undefined)
+      const result = proseAccept(typeof body.message === 'string' ? body.message : undefined, files)
       // Kept here rather than inside proseAccept so story.ts and reroute.ts
       // stay acyclic, and never on a paragraph or sentence accept — those do
       // not settle the scene.
@@ -878,13 +887,23 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   },
 
   '/api/prose/analyze': {
-    POST: async (_req, res) => {
+    POST: async (req, res) => {
       if (!currentEngine()) {
         throw new HttpError(503,
           'No generation engine. Either set ANTHROPIC_API_KEY in the environment, ' +
           'or install and log in the claude CLI (its subscription login works — no key needed), then restart the backend.')
       }
-      json(res, 200, await runAnalysis() satisfies AnalyzeResponse)
+      // Scoped to one scene when the reading stands beside that scene's own
+      // decision (A64-4); the whole draft when it does not.
+      const b = (await parsedBody(req)) as { files?: unknown }
+      let files: string[] | undefined
+      if (b?.files !== undefined) {
+        if (!Array.isArray(b.files) || !b.files.every(f => typeof f === 'string' && f)) {
+          throw new HttpError(400, 'files must be an array of scene paths')
+        }
+        files = b.files as string[]
+      }
+      json(res, 200, await runAnalysis(files) satisfies AnalyzeResponse)
     },
   },
 }

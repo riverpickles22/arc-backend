@@ -104,13 +104,26 @@ export function buildAnalysisPrompt(a: {
 /** Analyze the pending draft. Read-only by construction: no tools are given
  *  to the model on either engine, and this module never opens a file for
  *  writing. Throws HttpError(409) when there is no draft to analyze. */
-export async function runAnalysis(): Promise<AnalyzeResponse> {
+/** Read the pending draft and say what it would change — argued, never
+ *  proven, and it writes nothing.
+ *
+ *  `files` scopes the reading to particular scenes, so it can stand beside
+ *  the decision it informs, on the scene the author is actually reading
+ *  (A64-4). Without it every pending scene is read, as before. */
+export async function runAnalysis(files?: string[]): Promise<AnalyzeResponse> {
   const engine = currentEngine()
   if (!engine) throw new HttpError(503, 'No generation engine available.')
 
-  const draft = proseDraft()
-  if (!draft.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer to analyze')
-  if (!draft.changes.length) throw new HttpError(409, 'no draft changes to analyze')
+  const all = proseDraft()
+  if (!all.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer to analyze')
+  if (!all.changes.length) throw new HttpError(409, 'no draft changes to analyze')
+  const wanted = files?.length ? new Set(files) : null
+  if (wanted) {
+    for (const f of wanted) {
+      if (!all.changes.some(c => c.file === f)) throw new HttpError(409, `no draft change for ${f} — nothing to read`)
+    }
+  }
+  const draft = wanted ? { ...all, changes: all.changes.filter(c => wanted.has(c.file)) } : all
 
   const prompt = buildAnalysisPrompt({
     style: styleContract(),

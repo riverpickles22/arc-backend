@@ -265,11 +265,28 @@ export function proseDraft(): ProseDraft {
 }
 
 /** Ratify the draft into main: stage and commit prose/ only. Anything else
- *  sitting in the story's working tree (canon edits, notes) is untouched. */
-export function proseAccept(message?: string): { hash: string; files: string[] } {
-  const draft = proseDraft()
-  if (!draft.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer to accept')
-  if (!draft.changes.length) throw new HttpError(409, 'no draft changes to accept')
+ *  sitting in the story's working tree (canon edits, notes) is untouched.
+ *
+ *  `files` scopes the accept to particular scenes, which is what lets the
+ *  decision live at the scene it is about rather than in a list (A64-3): the
+ *  author reads one scene's diff and ratifies THAT, and the rest of the draft
+ *  stays pending. Without it every pending scene is taken, exactly as before —
+ *  the whole-draft accept is the same code path with no filter. */
+export function proseAccept(message?: string, files?: string[]): { hash: string; files: string[] } {
+  const all = proseDraft()
+  if (!all.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer to accept')
+  if (!all.changes.length) throw new HttpError(409, 'no draft changes to accept')
+  // A scope that names nothing pending is a mistake worth reporting, not a
+  // silent whole-book accept — the difference between the two is the book.
+  const wanted = files?.length ? new Set(files) : null
+  if (wanted) {
+    for (const f of wanted) {
+      if (!all.changes.some(c => c.file === f)) throw new HttpError(409, `no draft change for ${f} — nothing was accepted`)
+    }
+  }
+  const draft: ProseDraft = wanted
+    ? { ...all, changes: all.changes.filter(c => wanted.has(c.file)) }
+    : all
   // THE LOCKS, before anything else — including the evidence log. Settled
   // prose is settled against every write path, and the accept gate was the
   // last one that never asked (A40-3): an author could lock a paragraph and
@@ -296,11 +313,17 @@ export function proseAccept(message?: string): { hash: string; files: string[] }
       wrote && wrote.trim() !== kept.trim() ? 'accepted' : 'approved', wrote, kept)
   }
 
-  git('add', '-A', '--', 'prose')
+  // Staging and committing name the same paths, so a scoped accept cannot
+  // sweep in a scene the author has not read: `git add -A -- <paths>` stages
+  // deletions too, which a scene the draft removes needs.
+  const paths = wanted ? [...wanted] : ['prose']
+  git('add', '-A', '--', ...paths)
   git('add', '--', EVIDENCE_REL)
   const n = draft.changes.length
-  const msg = message?.trim() || `prose: accept draft (${n} scene${n === 1 ? '' : 's'})`
-  git('commit', '-m', msg, '--', 'prose', EVIDENCE_REL)
+  const msg = message?.trim() || (wanted
+    ? `prose: accept ${draft.changes.map(c => c.main?.scene ?? c.file).join(', ')}`
+    : `prose: accept draft (${n} scene${n === 1 ? '' : 's'})`)
+  git('commit', '-m', msg, '--', ...paths, EVIDENCE_REL)
   // The draft is fully judged; the next one starts from wherever the book now
   // stands rather than from a boundary that has moved out from under it.
   for (const c of draft.changes) clearBaseline(c.file)
