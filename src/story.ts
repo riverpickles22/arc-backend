@@ -319,11 +319,13 @@ export function proseAccept(message?: string, files?: string[]): { hash: string;
   const paths = wanted ? [...wanted] : ['prose']
   git('add', '-A', '--', ...paths)
   git('add', '--', EVIDENCE_REL)
+  // The unlocks the author made, ratified with the edits they were made for.
+  const released = draft.changes.flatMap(c => withReleasedLocks(c.file))
   const n = draft.changes.length
   const msg = message?.trim() || (wanted
     ? `prose: accept ${draft.changes.map(c => c.main?.scene ?? c.file).join(', ')}`
     : `prose: accept draft (${n} scene${n === 1 ? '' : 's'})`)
-  git('commit', '-m', msg, '--', ...paths, EVIDENCE_REL)
+  commitRatifying(msg, [...paths, EVIDENCE_REL, ...released])
   // The draft is fully judged; the next one starts from wherever the book now
   // stands rather than from a boundary that has moved out from under it.
   for (const c of draft.changes) clearBaseline(c.file)
@@ -476,6 +478,77 @@ function withEvidence(file: string): string[] {
   }
 }
 
+/** Lock files the author has REMOVED in the working tree that settle this
+ *  scene — by naming it, or by naming its chapter. The commit gate reads the
+ *  staged lock set, and it says so in its own refusal: "committing the lock
+ *  file's removal alongside the edit is that unlock, ratified". The viewer's
+ *  unlock deletes the file but ratifies nothing, so until the next accept
+ *  carried the removal, every accept of that scene was refused at the gate
+ *  and reached the author as an internal error (A64-14). Proven: the file is
+ *  gone from the tree, and its copy at HEAD anchors this scene. */
+export function releasedLocksFor(file: string): string[] {
+  let scene: string | null = null
+  let chapter: string | null = null
+  try {
+    const abs = resolveWithin(path.join(STORY, 'prose'), file.slice('prose/'.length))
+    const now = parseScene(fs.readFileSync(abs, 'utf8'), file)
+    scene = now?.scene ?? null
+    chapter = now?.chapter ?? null
+  } catch { /* an added or deleted file: fall through to HEAD */ }
+  if (!scene) {
+    try {
+      const head = parseScene(git('show', `HEAD:${file}`), file)
+      scene = head?.scene ?? null
+      chapter = head?.chapter ?? null
+    } catch { return [] }
+  }
+  if (!scene) return []
+  const out: string[] = []
+  let status = ''
+  try { status = git('status', '--porcelain', '--', 'locks') } catch { return [] }
+  for (const line of status.split('\n')) {
+    // ' D' — deleted in the working tree, not staged; 'D ' — already staged.
+    if (!/^.D /.test(line) && !/^D  /.test(line)) continue
+    const rel = line.slice(3).trim()
+    type LockDoc = { anchor?: { scene?: string; chapter?: string } } | null
+    let doc: LockDoc = null
+    try { doc = yamlLoad(git('show', `HEAD:${rel}`)) as LockDoc } catch { continue }
+    const a = doc?.anchor
+    if (!a) continue
+    if (a.scene === scene || (chapter && a.chapter === chapter)) out.push(rel)
+  }
+  return out
+}
+
+/** Stage the released locks for a scene and return them, so the commit that
+ *  ratifies the edit ratifies the unlock with it. */
+function withReleasedLocks(file: string): string[] {
+  const locks = releasedLocksFor(file)
+  for (const l of locks) {
+    try { git('add', '-A', '--', l) } catch { /* the commit will say */ }
+  }
+  return locks
+}
+
+/** The commit that ratifies. A refusal from the story's own commit gate is
+ *  not an internal error: it is the gate doing its job, and the author
+ *  should read what it said — the lock, the scene, and the way out. */
+function commitRatifying(message: string, paths: string[]): void {
+  try {
+    git('commit', '-m', message, '--', ...paths)
+  } catch (e) {
+    const err = e as { stderr?: string | Buffer; message?: string }
+    const text = String(err.stderr ?? '') + '\n' + String(err.message ?? '')
+    if (/lock-gate: refusing/.test(text)) {
+      const lines = text.split('\n').filter(l => l.trim() && !/^\s*at /.test(l))
+      const gate = lines.slice(lines.findIndex(l => /lock-gate: refusing/.test(l)))
+        .filter(l => !/^(error|fatal):|Command failed/.test(l.trim()))
+      throw new HttpError(423, gate.join(' ').replace(/\s+/g, ' ').trim())
+    }
+    throw e
+  }
+}
+
 /** Find the aligned entry a target names, refusing anything that no longer
  *  resolves — a stale client index must be an error, never a guess. */
 function locate(aligned: AlignedParagraph[], t: ParagraphTarget): AlignedParagraph {
@@ -518,6 +591,16 @@ export function proseAcceptParagraph(file: string, t: ParagraphTarget, message?:
   else if (hit.kind === 'ins') merged.splice(mainInsertionPoint(aligned, hit.draftIndex!), 0, draftParas[hit.draftIndex!])
   else merged.splice(hit.mainIndex!, 1)
 
+  // ONE paragraph, proven, before anything is written or judged (A64-10).
+  // The author accepted one change; what goes into the book may differ from
+  // the book in exactly one place. By construction it does — but after the
+  // author asked, it is a fact the code checks rather than one it believes.
+  const touched = countParagraphEdits(mainParas, merged)
+  if (touched !== 1) {
+    throw new HttpError(409,
+      `accepting that paragraph would have changed ${touched} paragraphs of ${file} — nothing was written. Refresh and try again`)
+  }
+
   // Locks first, evidence second, commit third: a refused accept costs no
   // words (nothing has been written yet) and records no judgment (A40-3).
   if (scene) assertUnlocked(scene, mainParas.join('\n\n'), merged.join('\n\n'), 'this accept')
@@ -538,9 +621,9 @@ export function proseAcceptParagraph(file: string, t: ParagraphTarget, message?:
       judged(file, scene, 'paragraph', hit.mainIndex ?? hit.draftIndex, wrote && wrote !== kept ? 'accepted' : 'approved', wrote, kept)
     }
 
-    const paths = withEvidence(file)
+    const paths = [...withEvidence(file), ...withReleasedLocks(file)]
     git('add', '--', file)
-    git('commit', '-m', message?.trim() || `prose: accept one change in ${path.basename(file)}`, '--', ...paths)
+    commitRatifying(message?.trim() || `prose: accept one change in ${path.basename(file)}`, paths)
     return { hash: git('rev-parse', '--short', 'HEAD').trim(), file }
   } finally {
     restoreWorking(abs, working, committed)   // the author's unaccepted words, always
@@ -593,6 +676,16 @@ export function proseRejectParagraph(file: string, t: ParagraphTarget): { file: 
   else if (hit.kind === 'ins') next.splice(hit.draftIndex!, 1)
   else next.splice(draftInsertionPoint(aligned, hit.mainIndex!), 0, mainParas[hit.mainIndex!])
 
+  // ONE paragraph, proven, before anything is written (A64-8). The author
+  // refused one change; if what is about to land differs from the draft in
+  // more than one place, the alignment has pointed at the wrong thing, and
+  // the honest answer is to refuse the refusal rather than take the scene.
+  const touched = countParagraphEdits(draftParas, next)
+  if (touched !== 1) {
+    throw new HttpError(409,
+      `refusing that paragraph would have changed ${touched} paragraphs of ${file} — nothing was changed. Refresh and try again`)
+  }
+
   // The scene has to still BE a scene afterwards. Accept gets this for free —
   // it commits and then restores the author's tree in a finally, so a bad
   // write cannot survive the call. Reject's write IS the outcome, so it
@@ -613,6 +706,19 @@ export function proseRejectParagraph(file: string, t: ParagraphTarget): { file: 
     hit.kind === 'del' ? '' : draftParas[hit.draftIndex!],
     hit.mainIndex === null ? '' : mainParas[hit.mainIndex])
   return { file }
+}
+
+/** How many paragraphs differ between two versions of a scene body — the
+ *  minimal edit count over paragraphs, so a single swap, a single removal
+ *  and a single insertion each count as one. */
+export function countParagraphEdits(before: string[], after: string[]): number {
+  // Strip the common prefix and suffix; what is left is the edited span.
+  let i = 0
+  while (i < before.length && i < after.length && before[i] === after[i]) i++
+  let j = 0
+  while (j < before.length - i && j < after.length - i
+    && before[before.length - 1 - j] === after[after.length - 1 - j]) j++
+  return Math.max(before.length - i - j, after.length - i - j)
 }
 
 /** Where a main-side paragraph belongs in the DRAFT's array — the mirror of
@@ -739,9 +845,9 @@ export function proseAcceptSentence(file: string, t: SentenceTarget, message?: s
     fs.writeFileSync(abs, committed)
     // Taking arc's sentence, or agreeing with its cut: an approval either way.
     judged(file, scene, 'sentence', main, 'approved', arcWrote, arcWrote)
-    const paths = withEvidence(file)
+    const paths = [...withEvidence(file), ...withReleasedLocks(file)]
     git('add', '--', file)
-    git('commit', '-m', message?.trim() || `prose: accept one sentence in ${path.basename(file)}`, '--', ...paths)
+    commitRatifying(message?.trim() || `prose: accept one sentence in ${path.basename(file)}`, paths)
     return { hash: git('rev-parse', '--short', 'HEAD').trim(), file }
   } finally {
     restoreWorking(abs, working, committed)   // the author's unaccepted words, always

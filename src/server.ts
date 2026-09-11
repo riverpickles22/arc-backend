@@ -23,7 +23,16 @@ import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
 import { docsArticles, git, materialItems, updateMaterial, proseAccept, proseAcceptParagraph, proseRejectParagraph, proseAcceptSentence, proseRejectSentence, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig } from './story'
 import { handleChat } from './agent'
-import { annotations, createAnnotation, deleteAnnotation, updateAnnotation } from './annotations'
+import { annotations, closeAnsweredNotes, createAnnotation, deleteAnnotation, updateAnnotation } from './annotations'
+
+/** After a paragraph or sentence accept: if the scene has nothing pending
+ *  left, its change is wholly in the book and the notes it answered close
+ *  (A63-4). While anything is still pending, the note stays open — the
+ *  author has not finished deciding. */
+function notesClosedIfSettled(file: string): string[] {
+  if (proseDraft().changes.some(c => c.file === file)) return []
+  return closeAnsweredNotes([file])
+}
 import { attention } from './attention'
 import { briefing } from './briefing'
 import { runCapture } from './capture'
@@ -597,6 +606,10 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         const scene = adopted.get(f)
         if (scene) clearAlternatives(scene)
       }
+      // The notes this change answered close with it (A63-4): the ledger
+      // says which, so nothing is judged — the thought goes because the
+      // prose written from it is now the book.
+      const notesResolved = closeAnsweredNotes(result.files)
       let capture
       if (body.capture === true && (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN)) {
         try {
@@ -620,7 +633,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         console.error('[error] style learning pass failed (the accept itself succeeded):', e)
       }
 
-      json(res, 200, { ...result, ...(capture ? { capture } : {}), ...(learned ?? {}) } satisfies ProseAcceptResponse)
+      json(res, 200, { ...result, ...(capture ? { capture } : {}), ...(learned ?? {}), notesResolved } satisfies ProseAcceptResponse)
     },
   },
 
@@ -642,7 +655,8 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   '/api/prose/accept-paragraph': {
     POST: async (req, res) => {
       const t = paragraphTarget(await parsedBody(req))
-      json(res, 200, proseAcceptParagraph(t.file, t, t.message))
+      const out = proseAcceptParagraph(t.file, t, t.message)
+      json(res, 200, { ...out, notesResolved: notesClosedIfSettled(t.file) })
     },
   },
 
@@ -661,7 +675,8 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   '/api/prose/accept-sentence': {
     POST: async (req, res) => {
       const t = sentenceTarget(await parsedBody(req))
-      json(res, 200, proseAcceptSentence(t.file, t, t.message))
+      const out = proseAcceptSentence(t.file, t, t.message)
+      json(res, 200, { ...out, notesResolved: notesClosedIfSettled(t.file) })
     },
   },
 

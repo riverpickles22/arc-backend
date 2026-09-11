@@ -13,6 +13,7 @@ import { orphanedAnnotations, paragraphsOf, resolveAnnotations } from 'arc-canon
 import { STORY } from './config'
 import { HttpError } from './http'
 import { proseScenes } from './story'
+import { generatedFor } from './ledger'
 
 const DIR = () => path.join(STORY, 'annotations')
 
@@ -165,4 +166,46 @@ export function updateAnnotation(
 export function openNotesOn(scene: string): ResolvedAnnotation[] {
   return annotations().filter(n =>
     n.anchor.scene === scene && (!n.status || n.status === 'open') && (n.kind ?? 'note') === 'note')
+}
+
+/** Close the notes a change answered, once that change is in the book.
+ *
+ *  The generation ledger records which notes each pass was handed (A63-1),
+ *  so this needs no reading and no judgement: a note is closed because the
+ *  prose written from it has been ratified, not because anyone decided the
+ *  note was met. Two rules shape it (A63-4):
+ *
+ *  RESOLVED, NEVER DELETED. A resolved note leaves the rail exactly as a
+ *  deleted one would, and it is what the style learner mines afterwards to
+ *  see what the author kept and what they changed. Erasing it would cut
+ *  that loop silently.
+ *
+ *  AT THE ACCEPT, NEVER AT THE WRITE. A revision is a proposal until the
+ *  author takes it. Closing the note when the pass wrote would leave the
+ *  author with the thought gone and the change discarded.
+ *
+ *  Returns the ids it closed. Never throws: losing a status is a smaller
+ *  harm than failing an accept that has already committed.
+ */
+export function closeAnsweredNotes(files: string[]): string[] {
+  const closed: string[] = []
+  for (const file of files) {
+    let ids: string[] = []
+    try { ids = generatedFor(file)?.entry.notes ?? [] } catch { continue }
+    for (const id of ids) {
+      try {
+        const note = annotations().find(n => n.id === id)
+        // Only an open note closes. One the author already resolved or
+        // dropped is theirs and stays as they left it; a keypoint is a
+        // marker, never a request, and is never touched.
+        if (!note || (note.kind ?? 'note') !== 'note') continue
+        if (note.status && note.status !== 'open' && note.status !== 'working') continue
+        updateAnnotation(id, { status: 'resolved' })
+        closed.push(id)
+      } catch (e) {
+        console.error(`[warn] could not close ${id} after the accept (the prose is in):`, e)
+      }
+    }
+  }
+  return closed
 }
