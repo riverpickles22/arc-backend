@@ -75,7 +75,7 @@ test('reformatting a file with no semantic change is not a write at all', () => 
 
 // ---- the gate -----------------------------------------------------------
 
-test('UNRESTRICTED passes everything — today\'s chat agent is unchanged', () => {
+test('UNRESTRICTED passes everything — an unclaimed pass is unchanged', () => {
   assert.ok(checkRecordWrite(UNRESTRICTED, delta(null, CARLOS)).ok)
   assert.ok(checkRecordWrite(UNRESTRICTED, delta(RELS, RELS.replace('ally', 'enemy'))).ok)
   assert.ok(checkPathWrite(UNRESTRICTED, 'docs/vision.md').ok)

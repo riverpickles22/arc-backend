@@ -78,7 +78,7 @@ test('the frozen UNRESTRICTED singleton survives a mint', async () => {
   assert.match(out, /OK — minted place\.trinidad/)
 })
 
-test('default capability is unrestricted — the author\'s chat is unchanged', async () => {
+test('default capability is unrestricted — an unclaimed pass is unchanged', async () => {
   const tools = makeStoryTools([])
   const out = await tool(tools, 'write_canon_file').run({
     path: 'canon/entities/places/havana.yaml',

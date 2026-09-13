@@ -6,7 +6,6 @@ import { makeStory, writeScene } from './fixture.ts'
 
 const story = makeStory()
 process.env.ARC_STORY_PATH = story
-process.env.ANTHROPIC_API_KEY = 'test-key-never-used'   // lets chat reach the body guard
 const { createArcServer } = await import('../src/server.ts')
 
 const server = createArcServer()
@@ -84,11 +83,13 @@ test('malformed JSON body → 400', async () => {
   assert.match((await res.json()).error, /not valid JSON/)
 })
 
-test('chat body guard → 400 before any SDK call', async () => {
-  for (const bad of [{}, { messages: [] }, { messages: [{ role: 'system', content: 'x' }] }, { messages: [{ role: 'user' }] }]) {
-    const res = await post('/api/chat', bad)
-    assert.equal(res.status, 400, JSON.stringify(bad))
-  }
+// A54: the embedded chat agent is gone — Claude Code with the arc-canon
+// skill is the chat. The route is not deprecated, it is absent.
+test('/api/chat is gone → 404 on both verbs', async () => {
+  const posted = await post('/api/chat', { messages: [{ role: 'user', content: 'hi' }] })
+  assert.equal(posted.status, 404)
+  const got = await fetch(`${base}/api/chat`)
+  assert.equal(got.status, 404)
 })
 
 test('oversize body → 413', async () => {

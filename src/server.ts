@@ -1,4 +1,4 @@
-// arc-backend: the canon API and the embedded world-shaping agent.
+// arc-backend: the canon API, the writing passes, and the draft layer.
 //
 // Routing is a plain table — path → method → handler — dispatched by one
 // function that also owns the error mapping: HttpError becomes its status
@@ -11,7 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type {
   LocksResponse,
-  AnalyzeResponse, ApiErrorResponse, AttentionResponse, ChatMessage, ChatRequest, DocsResponse, DraftSceneResponse,
+  AnalyzeResponse, ApiErrorResponse, AttentionResponse, DocsResponse, DraftSceneResponse,
   AnnotationsResponse, HealthResponse, MaterialResponse, NoteResponse, NotesResponse,
   AgentsResponse, HookResponse, LensesResponse, OkResponse, ReviseResponse, RunDecisionResponse, RunDetailResponse, RunResponse, RunsResponse,
   UpdateMaterialResponse, WorkDecisionResponse, WorkResponse,
@@ -22,7 +22,6 @@ import { STORY } from './config'
 import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
 import { docsArticles, git, materialItems, updateMaterial, proseAccept, proseAcceptParagraph, proseRejectParagraph, proseAcceptSentence, proseRejectSentence, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig } from './story'
-import { handleChat } from './agent'
 import { annotations, closeAnsweredNotes, createAnnotation, deleteAnnotation, updateAnnotation } from './annotations'
 
 /** After a paragraph or sentence accept: if the scene has nothing pending
@@ -110,20 +109,6 @@ async function parsedBody(req: http.IncomingMessage): Promise<unknown> {
   } catch {
     throw new HttpError(400, 'request body is not valid JSON')
   }
-}
-
-/** Validate the chat request shape before it goes anywhere near the SDK. */
-function chatRequest(body: unknown): ChatRequest {
-  const b = body as { messages?: unknown }
-  if (!b || !Array.isArray(b.messages) || b.messages.length === 0 || b.messages.length > 200) {
-    throw new HttpError(400, 'messages must be a non-empty array of at most 200 items')
-  }
-  for (const m of b.messages as { role?: unknown; content?: unknown }[]) {
-    if ((m?.role !== 'user' && m?.role !== 'assistant') || typeof m?.content !== 'string') {
-      throw new HttpError(400, 'each message needs role "user"|"assistant" and string content')
-    }
-  }
-  return { messages: b.messages as ChatMessage[] }
 }
 
 /** Validate a sentence decision's shape. The sentence is named by identity —
@@ -827,15 +812,6 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       if (typeof body.file !== 'string') throw new HttpError(400, 'file required')
       proseDiscard(body.file)
       json(res, 200, { ok: true } satisfies OkResponse)
-    },
-  },
-
-  '/api/chat': {
-    POST: async (req, res) => {
-      if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
-        throw new HttpError(503, 'No Anthropic credentials. Set ANTHROPIC_API_KEY in the environment and restart the backend.')
-      }
-      json(res, 200, await handleChat(chatRequest(await parsedBody(req))))
     },
   },
 
