@@ -29,25 +29,38 @@ export interface PassSpec {
 /** Every generating pass that reaches the CLI engine. Adding a pass means
  *  adding a row and choosing a posture in review — not remembering a flag.
  *
- *  KNOWN DISCREPANCY, reported not repaired (2026-08-30, A55-2): the harness
- *  design names lenses and bootstrap withholding-by-value (their worth is
- *  reading the record cold), but their CLI children have always run with
- *  tools available (lenses.ts, bootstrap-style.ts pass no noTools) — so a
- *  lens child COULD read beyond its handed slice. Pinning them here would
- *  change behavior; that is the author's call, carded on the harness card.
- *  Until then they are registered as they actually run. */
+ *  THE DISCREPANCY A55-2 REPORTED IS CLOSED (2026-09-11, A55-4, the author's
+ *  decision). The reading passes are pinned withholding, so `--tools ''` is
+ *  what the registry hands them and "read-only by construction" is true on
+ *  the engine that actually runs, not only on the SDK path and not only by
+ *  asking the prompt nicely:
+ *
+ *    - the five lenses and the style bootstrap, because their worth is
+ *      reading the record COLD — a child that can open the working tree can
+ *      answer from the book instead of from the slice arc handed it;
+ *    - analyze, judge, suggest and intent, which read and return a judgement
+ *      and have nothing to write.
+ *
+ *  The prose-writing passes (draft, redraft, revise) and the record workers
+ *  (material, learn-style) are deliberately NOT pinned here: their envelope
+ *  is slice 2's and slice 4's business, and draft and revise are the
+ *  iterative verbs a scene session would serve (`idea-scene-session`) — a
+ *  session and a withheld set cannot coexist, by the rule below. */
 export const PASS_REGISTRY = {
   draft: { rung: 1, withholding: false, sessionAllowed: true },
   redraft: { rung: 1, withholding: false, sessionAllowed: true },
   revise: { rung: 1, withholding: false, sessionAllowed: true },
-  suggest: { rung: 1, withholding: false, sessionAllowed: true },
-  analyze: { rung: 1, withholding: false, sessionAllowed: false },
-  judge: { rung: 1, withholding: false, sessionAllowed: false },
-  intent: { rung: 1, withholding: false, sessionAllowed: false },
+  // Pinned 2026-09-11: rephrase reads a selection and offers wordings. It
+  // loses its session with the pin, because a withholding pass may never
+  // reuse one; an iterative rephrase gets one back when slice 2 rows it.
+  suggest: { rung: 1, withholding: true, sessionAllowed: false },
+  analyze: { rung: 1, withholding: true, sessionAllowed: false },
+  judge: { rung: 1, withholding: true, sessionAllowed: false },
+  intent: { rung: 1, withholding: true, sessionAllowed: false },
   material: { rung: 1, withholding: false, sessionAllowed: false },
   'learn-style': { rung: 1, withholding: false, sessionAllowed: false },
-  lenses: { rung: 1, withholding: false, sessionAllowed: false },
-  bootstrap: { rung: 1, withholding: false, sessionAllowed: false },
+  lenses: { rung: 1, withholding: true, sessionAllowed: false },
+  bootstrap: { rung: 1, withholding: true, sessionAllowed: false },
   reroute: { rung: 1, withholding: true, sessionAllowed: false },
   'reroute-revise': { rung: 1, withholding: true, sessionAllowed: false },
   capture: { rung: 1, withholding: true, sessionAllowed: false },
@@ -55,10 +68,13 @@ export const PASS_REGISTRY = {
 
 export type PassName = keyof typeof PASS_REGISTRY
 
-/** Options the builder understands. `pass` keys the registry; calls that
- *  predate the registry omit it and keep their exact legacy behavior. */
+/** Options the builder understands. `pass` keys the registry and is
+ *  REQUIRED (A55-4): the call site's silence used to decide a child's
+ *  tools, which meant the posture of a pass lived in whichever caller
+ *  happened to remember a flag. A new pass now fails to compile until it
+ *  has a row, and the row is the only place a posture is written. */
 export interface InvocationOpts {
-  pass?: PassName
+  pass: PassName
   noTools?: boolean
   resume?: string | null
   /** Pre-assign the session UUID so a receipt can name the session before it
@@ -87,12 +103,15 @@ export function assertSessionAllowed(pass: PassName): void {
 /** Assemble the `claude` argv for one headless call. The only place flags
  *  are put together; engine.ts consumes this verbatim. */
 export function buildCliArgs(opts: InvocationOpts): string[] {
-  const spec: PassSpec | null = opts.pass ? PASS_REGISTRY[opts.pass] ?? null : null
-  if (opts.pass && !spec) throw new Error(`unregistered pass "${String(opts.pass)}" — add a PASS_REGISTRY row and choose its posture in review`)
+  // `pass` is required by the type, so this catches the one case the type
+  // cannot: a caller reaching in from JavaScript, or a name whose row was
+  // deleted without its call site.
+  const spec: PassSpec | undefined = PASS_REGISTRY[opts.pass]
+  if (!spec) throw new Error(`unregistered pass "${String(opts.pass)}" — add a PASS_REGISTRY row and choose its posture in review`)
 
   // Withholding is decided by the registry, not the caller. A caller may add
   // noTools to a non-withholding pass; it may never remove it from one.
-  const toolsOff = (spec?.withholding ?? false) || opts.noTools === true
+  const toolsOff = spec.withholding || opts.noTools === true
 
   let settingsJson: string | undefined
   if (opts.settings !== undefined) {

@@ -489,7 +489,7 @@ export async function runLearnStyle(files: string[]): Promise<LearnResult> {
 
   let text: string
   if (engine === 'claude-cli') {
-    text = (await runCliPrompt(prompt, { cwd: STORY })).text
+    text = (await runCliPrompt(prompt, { pass: 'learn-style', cwd: STORY })).text
   } else {
     const message = await getClient().beta.messages.create({
       model: MODEL,

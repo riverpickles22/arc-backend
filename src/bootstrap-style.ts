@@ -105,7 +105,7 @@ export async function runBootstrapStyle(): Promise<BootstrapResult> {
 
   let text: string
   if (engine === 'claude-cli') {
-    text = (await runCliPrompt(prompt, { cwd: STORY })).text
+    text = (await runCliPrompt(prompt, { pass: 'bootstrap', cwd: STORY })).text
   } else {
     const message = await getClient().beta.messages.create({
       model: MODEL,

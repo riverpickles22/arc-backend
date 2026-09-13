@@ -80,7 +80,7 @@ test('the engine really is claude-cli here — otherwise this file proves nothin
 
 test('one CLI turn does NOT block the event loop', async () => {
   const stop = watchEventLoop()
-  const { text, sessionId } = await runCliPrompt('hello', { cwd: STORY })
+  const { text, sessionId } = await runCliPrompt('hello', { pass: 'draft', cwd: STORY })
   const { ticks, elapsed } = stop()
 
   assert.match(text, /a stub claim/, 'the production parse path ran')
@@ -94,7 +94,7 @@ test('one CLI turn does NOT block the event loop', async () => {
 test('four concurrent turns cost about one, not four', async () => {
   const t0 = Date.now()
   const out = await Promise.all(Array.from({ length: 4 }, (_, i) =>
-    runCliPrompt(`turn ${i}`, { cwd: STORY })))
+    runCliPrompt(`turn ${i}`, { pass: 'draft', cwd: STORY })))
   const wall = Date.now() - t0
 
   assert.equal(out.length, 4)
@@ -105,7 +105,7 @@ test('four concurrent turns cost about one, not four', async () => {
 test('a failing CLI still reports its exit code and stderr', async () => {
   process.env.STUB_FAIL = '1'
   try {
-    await assert.rejects(runCliPrompt('x', { cwd: STORY }), /claude CLI exited 3: stub refused/)
+    await assert.rejects(runCliPrompt('x', { pass: 'draft', cwd: STORY }), /claude CLI exited 3: stub refused/)
   } finally {
     delete process.env.STUB_FAIL
   }

@@ -15,5 +15,11 @@ repo shares. This file is only what is particular to the backend.
   are read from the style contract, never hard-coded.
 - **The engine seam is `src/engine.ts`.** SDK with a key, or `claude -p` on
   the author's login; a CLI child gets `--tools ""` and its own timeout.
+- **Every launch names its pass** (A55-4). `pass` is required on
+  `InvocationOpts`, so a new pass fails to compile until it has a
+  `PASS_REGISTRY` row, and the row — never the call site — decides whether
+  the child gets tools. `test/pass-registry.test.ts` enumerates the launch
+  sites and reads a real child's argv, so a row that loses its posture, or a
+  call that stops naming one, fails there.
 - Checks before you say done: `npm test` · `npm run typecheck` · `npm run lint`.
   Commit with `-s` (DCO).
