@@ -107,8 +107,18 @@ test('the watcher sees a real write and calls it external when no run claimed it
   startWatcher()
 
   fs.mkdirSync(path.join(STORY, 'notes'), { recursive: true })
-  fs.writeFileSync(path.join(STORY, 'notes', 'watched-note.md'), 'a change made outside any run\n')
-  await new Promise(r => setTimeout(r, 700))
+  // A recursive fs.watch on macOS arms asynchronously and drops writes made
+  // in its first moments, and a busy machine delivers late. So: write, wait
+  // for the event, and write again if it has not come — up to three seconds.
+  // The fast path returns as soon as the first event lands.
+  const note = path.join(STORY, 'notes', 'watched-note.md')
+  const noticed = () => seen.some(m => m.event === 'files.external')
+  const deadline = Date.now() + 3000
+  while (!noticed() && Date.now() < deadline) {
+    fs.writeFileSync(note, `a change made outside any run ${Date.now()}\n`)
+    const next = Math.min(Date.now() + 500, deadline)
+    while (!noticed() && Date.now() < next) await new Promise(r => setTimeout(r, 50))
+  }
 
   stopWatcher()
   stop()
