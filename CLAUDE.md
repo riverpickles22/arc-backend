@@ -21,5 +21,5 @@ repo shares. This file is only what is particular to the backend.
   the child gets tools. `test/pass-registry.test.ts` enumerates the launch
   sites and reads a real child's argv, so a row that loses its posture, or a
   call that stops naming one, fails there.
-- Checks before you say done: `npm test` · `npm run typecheck` · `npm run lint`.
-  Commit with `-s` (DCO).
+- Checks before you say done: `npm run check` (typecheck, lint, tests — one
+  exit code). Commit with `-s` (DCO).
