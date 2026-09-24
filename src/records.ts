@@ -13,6 +13,7 @@ import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { load as yamlLoad } from 'js-yaml'
 import { STORY } from './config'
 import { type CanonRecord, recordsIn } from './capability'
@@ -70,6 +71,11 @@ export function idsInFile(abs: string, rel: string): string[] {
 
 export const fingerprint = (body: string): string => createHash('sha256').update(body).digest('hex').slice(0, 12)
 
+/** The wider fingerprint arc uses wherever a hash names a thing on disk or
+ *  on a receipt — a brief, a job, a route body, a ledger entry: sixteen hex
+ *  characters of sha256. One helper, so the width is one decision. */
+export const sha16 = (text: string): string => createHash('sha256').update(text).digest('hex').slice(0, 16)
+
 /** id → content fingerprint, for every record in the story. A work node
  *  records these for what it actually read; comparing them afterwards is the
  *  whole of staleness detection. */
@@ -80,6 +86,21 @@ export function fingerprints(): Map<string, string> {
 /** What the run began against. Git is arc's transaction time, so the SHA is
  *  the honest answer to "which version of the story was this?" — null when
  *  the story is not a repository, which is a supported state. */
+/** The arc that produced a run: the backend's own HEAD. Null outside a
+ *  checkout (an installed copy), which is a supported state — the receipt
+ *  then names the job fingerprint alone. */
+let arcRev: string | null | undefined
+export function arcRevision(): string | null {
+  if (arcRev === undefined) {
+    try {
+      arcRev = execFileSync('git', ['-C', path.dirname(fileURLToPath(import.meta.url)), 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 5000 }).trim()
+    } catch {
+      arcRev = null
+    }
+  }
+  return arcRev
+}
+
 export function storyRevision(): string | null {
   try {
     return execFileSync('git', ['-C', STORY, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 5000 }).trim()

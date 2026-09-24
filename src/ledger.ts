@@ -9,10 +9,10 @@
 // So the drafting pass records its own output here, content-addressed, the
 // moment it writes. Never committed (.arc/ is gitignored), never read by
 // anything but arc, and safe to delete — it is working state, not record.
-import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { STORY } from './config'
+import { sha16 } from './records'
 
 const DIR = () => path.join(STORY, '.arc', 'generated')
 const INDEX = () => path.join(STORY, '.arc', 'drafts.jsonl')
@@ -32,14 +32,21 @@ export interface LedgerEntry {
    *  viewer shows as "answered in the draft" and the receipt names. Absent
    *  when the pass ran with no notes, or predates this field. */
   notes?: string[]
+  /** The run that produced it (A67-4), so the accept that commits this file
+   *  can stamp the commit onto the run's receipt. */
+  run?: string
+  /** The route this came from, when a route was adopted (A67-10), so the
+   *  accept that clears the scene's field knows which one it already has a
+   *  disposition for and does not record it superseded by its own adoption. */
+  route?: string
 }
 
 /** Record what the drafting pass just wrote. Never throws: a ledger failure
  *  must never fail a draft — losing the learning signal is a smaller harm
  *  than losing the scene. */
-export function recordGenerated(file: string, content: string, meta: { engine?: string; scene?: string; origin?: string; notes?: string[] } = {}): void {
+export function recordGenerated(file: string, content: string, meta: { engine?: string; scene?: string; origin?: string; notes?: string[]; run?: string; route?: string } = {}): void {
   try {
-    const sha = createHash('sha256').update(content).digest('hex').slice(0, 16)
+    const sha = sha16(content)
     fs.mkdirSync(DIR(), { recursive: true })
     fs.writeFileSync(path.join(DIR(), `${sha}.md`), content)
     const entry: LedgerEntry = { at: new Date().toISOString(), file, sha, ...meta }

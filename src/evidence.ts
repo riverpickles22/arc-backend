@@ -85,6 +85,66 @@ export function addMinedNotes(ids: string[]): void {
 export type Verdict = 'accepted' | 'rejected' | 'approved' | 'discarded'
 export type Granularity = 'scene' | 'paragraph' | 'sentence'
 
+// ---- a route's disposition (A67-10) --------------------------------------
+//
+// A route leaves disk in exactly three ways, and every one of them is a
+// record (§4, "The evidence log"): ADOPTED, the author took it into the
+// book; CANCELLED, the author let it go; SUPERSEDED, the accept of a scene
+// that carried an adopted route cleared the field, or the prune past the
+// cap did. Only the first two are judgements — a supersede is arc tidying
+// after a decision the author already made — and all three carry the
+// route's own author notes, because those are the author's words and
+// deleting them with the file would lose something they wrote.
+//
+// Before this, cancelling was `fs.rmSync` and nothing else.
+
+export type Disposition = 'adopted' | 'cancelled' | 'superseded'
+
+export interface RouteDisposition {
+  at: string
+  /** `route` distinguishes these from the prose judgments above, which the
+   *  learning pass mines; a disposition is decision history, not a pair. */
+  kind: 'route'
+  scene: string
+  route: string
+  disposition: Disposition
+  /** The author's own notes on the route, copied in before the file goes. */
+  notes: { body: string; paragraph: number | null; at: string }[]
+  /** Why it went, in arc's words — the accept that cleared it, the prune. */
+  because: string
+  /** The run that made it, when it had one; a route written by an older arc
+   *  has none. */
+  run?: string
+}
+
+/** Append one route disposition. Never throws, like every write here — but
+ *  it SAYS whether the line landed, because a route only leaves disk behind
+ *  its disposition (A67-10): a caller that removes the file on a failed
+ *  append would take the author's notes with it and leave nothing on record.
+ *  Returns true when the entry is on disk. */
+export function recordDisposition(d: Omit<RouteDisposition, 'at' | 'kind'> & { at?: string }): boolean {
+  try {
+    const entry: RouteDisposition = { at: d.at ?? new Date().toISOString(), kind: 'route', ...d }
+    fs.mkdirSync(path.dirname(evidencePath()), { recursive: true })
+    fs.appendFileSync(evidencePath(), JSON.stringify(entry) + '\n')
+    return true
+  } catch (e) {
+    console.error('[warn] evidence log write failed, so the route stays on disk:', e)
+    return false
+  }
+}
+
+/** Every route disposition on record, newest last. */
+export function readDispositions(): RouteDisposition[] {
+  try {
+    return fs.readFileSync(evidencePath(), 'utf8').split('\n').filter(Boolean)
+      .map(l => JSON.parse(l) as RouteDisposition)
+      .filter(e => e.kind === 'route')
+  } catch {
+    return []
+  }
+}
+
 export interface Judgment {
   at: string
   file: string
@@ -119,6 +179,9 @@ export function readJudgments(): Judgment[] {
   try {
     return fs.readFileSync(evidencePath(), 'utf8').split('\n').filter(Boolean)
       .map(l => JSON.parse(l) as Judgment)
+      // Route dispositions share the log and are not pairs: the learning
+      // pass must never read one as an edit.
+      .filter(e => (e as unknown as { kind?: string }).kind !== 'route')
   } catch {
     return []
   }

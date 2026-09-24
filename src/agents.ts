@@ -19,8 +19,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { Agent, HookRequest, HookResponse } from 'arc-canon-graph'
 import { STORY } from './config'
+import { scratchParent } from './engine'
 import { publishStream } from './run'
-import { openRun, observe } from './runs'
+import { finishObserved, openRun, observe } from './runs'
 
 const agents = new Map<string, Agent>()
 const MAX_ACTIONS = 50
@@ -32,16 +33,28 @@ export const listAgents = (): Agent[] => [...agents.values()]
  *  A session in some other repo must be IGNORED rather than mis-attributed:
  *  arc serves one story, and a prompt typed in a different project is not a
  *  fact about this one. Resolved through realpath so a symlinked checkout is
- *  recognised rather than rejected. */
+ *  recognised rather than rejected.
+ *
+ *  Two directories serve this story (A67-2): the story itself, where the
+ *  author's own sessions run, and this story's scratch parent, where arc's
+ *  own children run since the seam stopped launching them in the story
+ *  tree. A child of arc's is still a session about this story — ignoring it
+ *  would drop the hook events of the runs arc starts itself, which is
+ *  exactly where the run id has to be joined rather than duplicated. */
 export function servesThisStory(cwd: string): boolean {
   if (!cwd) return false
-  try {
-    const here = fs.realpathSync(STORY)
-    const there = fs.realpathSync(cwd)
+  const within = (root: string, there: string): boolean => {
+    let here: string
+    try { here = fs.realpathSync(root) } catch { here = path.resolve(root) }
     return there === here || there.startsWith(here + path.sep)
-  } catch {
-    return false
   }
+  // A directory that no longer exists still answers the question: arc's own
+  // children run in per-launch scratch directories the seam removes when
+  // the child exits, so the Stop and SessionEnd hooks arrive after the
+  // directory is gone. Resolve what we can, and fall back to the path.
+  let there: string
+  try { there = fs.realpathSync(cwd) } catch { there = path.resolve(cwd) }
+  return within(STORY, there) || within(scratchParent(), there)
 }
 
 function announce(agent: Agent, event: string, detail?: unknown): void {
@@ -107,6 +120,9 @@ export function hook(input: HookRequest): HookResponse {
       const agent = agents.get(input.session)
       if (!agent) return { ok: true, ignored: true }
       agent.state = 'idle'
+      // The session stopped answering, so the run arc was OBSERVING is over
+      // — it never had an ending, because arc never executed it.
+      if (agent.run) finishObserved(agent.run)
       announce(agent, 'agent.idle')
       agent.run = null
       return { ok: true }

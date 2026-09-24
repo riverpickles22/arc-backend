@@ -11,13 +11,15 @@
 /** Engagement rungs (harness.md §4). Only rung 1 exists in code today; the
  *  registry carries the rung so later rungs (sessions, roams, governed hands)
  *  attach to the same rows instead of a second table. */
+import { rowKey, type Row } from './registry'
+
 export type Rung = 0 | 1 | 2 | 3 | 4
 
 export interface PassSpec {
   rung: Rung
-  /** The pass is DEFINED by not seeing something — reroute withholds the
-   *  current prose; capture must not read beyond the accepted scenes it is
-   *  handed. The builder forces `--tools ''` for these no matter what the
+  /** The pass is DEFINED by not seeing something — capture must not read
+   *  beyond the accepted scenes it is handed; the lenses read the record
+   *  cold. The builder forces `--tools ''` for these no matter what the
    *  caller says: withholding is mechanical, never a caller's memory. */
   withholding: boolean
   /** May a stored session ever be reused across calls for this pass?
@@ -61,22 +63,31 @@ export const PASS_REGISTRY = {
   'learn-style': { rung: 1, withholding: false, sessionAllowed: false },
   lenses: { rung: 1, withholding: true, sessionAllowed: false },
   bootstrap: { rung: 1, withholding: true, sessionAllowed: false },
-  reroute: { rung: 1, withholding: true, sessionAllowed: false },
-  'reroute-revise': { rung: 1, withholding: true, sessionAllowed: false },
+  // reroute and reroute-revise are gone from here (A67-1): their one
+  // definition is the row in registry.ts, and the launch takes the row.
   capture: { rung: 1, withholding: true, sessionAllowed: false },
 } as const satisfies Record<string, PassSpec>
 
 export type PassName = keyof typeof PASS_REGISTRY
 
-/** Options the builder understands. `pass` keys the registry and is
- *  REQUIRED (A55-4): the call site's silence used to decide a child's
- *  tools, which meant the posture of a pass lived in whichever caller
- *  happened to remember a flag. A new pass now fails to compile until it
- *  has a row, and the row is the only place a posture is written. */
-export interface InvocationOpts {
-  pass: PassName
+/** Options the builder understands. A launch names its pass or carries its
+ *  ROW, and nothing else decides a child's tools (A55-4, A67-1): the call
+ *  site's silence used to decide them, which meant the posture of a pass
+ *  lived in whichever caller happened to remember a flag. A pass on the
+ *  governed path hands over its registry row and the toolbelt derives from
+ *  the row's envelope; a pass not yet migrated names its PASS_REGISTRY row.
+ *  Either way a launch with neither fails to compile. */
+export type InvocationOpts = ({ pass: PassName; row?: undefined } | { row: Row; pass?: undefined }) & {
+  /** A caller may narrow the envelope — add "no tools" — and never widen it. */
   noTools?: boolean
   resume?: string | null
+  /** The gate runner's ONE bounded repair (invariant 5): resume the
+   *  transcript this job's first attempt opened, so the refusal and the
+   *  previous answer are the only new input. Distinct from `resume` on
+   *  purpose — `resume` wires a SESSION, which a sealed row may never have,
+   *  and this is arc's own second turn inside one job, on a transcript that
+   *  never held anything the row withholds. */
+  repairResume?: string
   /** Pre-assign the session UUID so a receipt can name the session before it
    *  runs (harness.md §3 fact 2). */
   sessionId?: string
@@ -100,18 +111,37 @@ export function assertSessionAllowed(pass: PassName): void {
   }
 }
 
-/** Assemble the `claude` argv for one headless call. The only place flags
- *  are put together; engine.ts consumes this verbatim. */
-export function buildCliArgs(opts: InvocationOpts): string[] {
+/** Whether the row a launch carries — the registry row, or the pass's
+ *  PASS_REGISTRY entry — takes the toolbelt away. A sealed row's envelope
+ *  says tools none by type; a row with a toolbelt has no CLI launch yet
+ *  (slice 7+), and says so rather than launching with the default tools. */
+function rowToolsOff(opts: InvocationOpts): boolean {
+  if (opts.row) {
+    // Sealed means session none, by type — and by launch: a row whose
+    // envelope has no session field cannot resume a transcript, whatever
+    // the caller hands over. The pre-assigned id is not a resume; it names
+    // the transcript before the run (A67-2).
+    if (!('session' in opts.row.envelope) && opts.resume) {
+      throw new Error(`row ${rowKey(opts.row)} is sealed and cannot resume a session — a transcript that read the withheld material cannot unsee it`)
+    }
+    if (opts.row.envelope.tools === 'none') return true
+    throw new Error(`row ${rowKey(opts.row)} declares a toolbelt, and the CLI seam cannot prove one yet — no launch`)
+  }
   // `pass` is required by the type, so this catches the one case the type
   // cannot: a caller reaching in from JavaScript, or a name whose row was
   // deleted without its call site.
   const spec: PassSpec | undefined = PASS_REGISTRY[opts.pass]
   if (!spec) throw new Error(`unregistered pass "${String(opts.pass)}" — add a PASS_REGISTRY row and choose its posture in review`)
+  return spec.withholding
+}
 
-  // Withholding is decided by the registry, not the caller. A caller may add
-  // noTools to a non-withholding pass; it may never remove it from one.
-  const toolsOff = spec.withholding || opts.noTools === true
+/** Assemble the `claude` argv for one headless call. The only place flags
+ *  are put together; engine.ts consumes this verbatim. */
+export function buildCliArgs(opts: InvocationOpts): string[] {
+  // Withholding is decided by the row, not the caller. A caller may add
+  // noTools to a row that has tools; it may never remove it from one that
+  // has none.
+  const toolsOff = rowToolsOff(opts) || opts.noTools === true
 
   let settingsJson: string | undefined
   if (opts.settings !== undefined) {
@@ -128,10 +158,14 @@ export function buildCliArgs(opts: InvocationOpts): string[] {
     }
   }
 
+  // Streamed output, always (A67-2): the `system/init` event is the
+  // envelope the runtime says it loaded, and `--verbose` is what print mode
+  // needs to emit it.
   return [
-    '-p', '--output-format', 'json',
+    '-p', '--output-format', 'stream-json', '--verbose',
     ...(toolsOff ? ['--tools', ''] : []),
     ...(opts.resume ? ['--resume', opts.resume] : []),
+    ...(opts.repairResume ? ['--resume', opts.repairResume] : []),
     ...(opts.sessionId ? ['--session-id', opts.sessionId] : []),
     ...(opts.jsonSchema ? ['--json-schema', JSON.stringify(opts.jsonSchema)] : []),
     ...(settingsJson !== undefined ? ['--settings', settingsJson] : []),

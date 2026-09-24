@@ -14,7 +14,7 @@
 // Everything produced here is ARGUED (conventions §11) and binds nothing: the
 // queue lives in docs/style.proposed.md, which no drafting pass ever reads.
 import type Anthropic from '@anthropic-ai/sdk'
-import { MODEL, STORY } from './config'
+import { MODEL } from './config'
 import { getClient } from './agent'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { generatedFor, clearGenerated } from './ledger'
@@ -489,7 +489,7 @@ export async function runLearnStyle(files: string[]): Promise<LearnResult> {
 
   let text: string
   if (engine === 'claude-cli') {
-    text = (await runCliPrompt(prompt, { pass: 'learn-style', cwd: STORY })).text
+    text = (await runCliPrompt(prompt, { pass: 'learn-style' })).text
   } else {
     const message = await getClient().beta.messages.create({
       model: MODEL,

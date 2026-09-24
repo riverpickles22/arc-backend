@@ -134,7 +134,7 @@ export async function runAnalysis(files?: string[]): Promise<AnalyzeResponse> {
   })
 
   if (engine === 'claude-cli') {
-    const { text } = await runCliPrompt(prompt, { pass: 'analyze', cwd: STORY })
+    const { text } = await runCliPrompt(prompt, { pass: 'analyze' })
     return { briefing: text, register: 'argued', engine, files: draft.changes.map(c => c.file) }
   }
 

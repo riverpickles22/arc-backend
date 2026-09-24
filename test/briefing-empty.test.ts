@@ -23,5 +23,5 @@ test('no commits, no prose: an empty briefing with a 200', async () => {
   const res = await fetch(base + '/api/briefing')
   assert.equal(res.status, 200)
   const b = await res.json()
-  assert.deepEqual(b, { git: true, lastAccepted: null, draft: [], notes: [], routes: {}, unplaced: 0, due: [], lastSession: [] })
+  assert.deepEqual(b, { git: true, lastAccepted: null, draft: [], notes: [], routes: {}, unplaced: 0, due: [], lastSession: [], unfinished: [] })
 })

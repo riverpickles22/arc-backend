@@ -13,6 +13,7 @@
     "work": "tsx src/work-cli.ts",
     "redraft": "tsx src/redraft-cli.ts",
     "notes": "tsx src/notes-cli.ts",
+    "fixtures:rekey": "tsx test/rekey-fixtures.ts",
     "check": "npm run typecheck && npm run lint && npm test"
   },
   "dependencies": {

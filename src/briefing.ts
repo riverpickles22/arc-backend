@@ -14,6 +14,8 @@ import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
 import { annotations } from './annotations'
 import { canonJson } from './canon'
 import { routeCounts } from './reroute'
+import { unfinishedRuns } from './run'
+import { liveIds } from './runs'
 import { git, materialItems, parseScene, proseDraft, proseScenes } from './story'
 
 /** Two accepts further apart than this belong to different sessions. */
@@ -151,9 +153,10 @@ export function briefing(): BriefingResponse {
     lastAccepted: accepted,
     draft: changes,
     notes,
-    routes: routeCounts(),
+    routes: Object.fromEntries(Object.entries(routeCounts()).map(([scene, c]) => [scene, c.waiting])),
     unplaced,
     due,
     lastSession: draft.git ? lastSessionOf(proseLog()) : [],
+    unfinished: unfinishedRuns(liveIds()),
   }
 }

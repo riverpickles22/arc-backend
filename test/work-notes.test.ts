@@ -7,34 +7,12 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { git, makeExampleStory } from './fixture.ts'
+import { git, installStubCli, makeExampleStory } from './fixture.ts'
 
 const LOG = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-work-notes-log-'))
 
 /** A claude on PATH that logs every prompt and answers by what it was asked:
  *  an empty JSON array to the conflict check, revised prose to anything else. */
-function installStubCli(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-stub-work-notes-'))
-  const bin = path.join(dir, 'claude')
-  fs.writeFileSync(bin, `#!/usr/bin/env node
-if (process.argv.includes('--version')) { process.stdout.write('stub 1.0\\n'); process.exit(0) }
-const fs = require('node:fs'); const path = require('node:path')
-const chunks = []
-process.stdin.on('data', c => chunks.push(c))
-process.stdin.on('end', () => {
-  const prompt = chunks.join('')
-  const n = fs.readdirSync(process.env.STUB_LOG).length
-  fs.writeFileSync(path.join(process.env.STUB_LOG, String(n).padStart(3, '0') + '.txt'), prompt)
-  const result = prompt.includes('Answer with the JSON array')
-    ? '[]'
-    : (prompt.includes('REDRAFT pass') ? 'A rebuilt first paragraph.\\n\\nA rebuilt second paragraph.\\n\\n=== BRIEFING ===\\nchecklist held' : 'A revised first paragraph.\\n\\nA revised second paragraph.')
-  process.stdout.write(JSON.stringify({ subtype: 'success', is_error: false, session_id: 'stub', result }))
-})
-`)
-  fs.chmodSync(bin, 0o755)
-  return dir
-}
-
 // The worked example: a canon that exports, which the clean pass needs.
 // Its one scene (sc.02-1) takes the notes; two more scenes in the same
 // chapter hold a note that must never reach it, and no note at all.
@@ -49,7 +27,11 @@ git(STORY, 'add', '-A'); git(STORY, 'commit', '-qm', 'prose: work-notes fixture'
 process.env.ARC_STORY_PATH = STORY
 process.env.ARC_DRAFT_ENGINE = 'claude-cli'
 process.env.STUB_LOG = LOG
-process.env.PATH = `${installStubCli()}${path.delimiter}${process.env.PATH}`
+process.env.PATH = `${installStubCli({
+  name: 'work-notes',
+  before: "const n = require('node:fs').readdirSync(process.env.STUB_LOG).length; require('node:fs').writeFileSync(require('node:path').join(process.env.STUB_LOG, String(n).padStart(3, '0') + '.txt'), prompt)",
+  answer: "prompt.includes('Answer with the JSON array') ? '[]' : (prompt.includes('REDRAFT pass') ? 'A rebuilt first paragraph.\\n\\nA rebuilt second paragraph.\\n\\n=== BRIEFING ===\\nchecklist held' : 'A revised first paragraph.\\n\\nA revised second paragraph.')",
+})}${path.delimiter}${process.env.PATH}`
 
 const { runWorkNotes, describeOutcome, nothingToWork } = await import('../src/work-notes.ts')
 const { createAnnotation, openNotesOn } = await import('../src/annotations.ts')

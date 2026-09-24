@@ -4,6 +4,8 @@ import { describeConfig, PORT } from './config'
 import { describeStyle, migrateAuthorStyle } from './style'
 import { currentEngine } from './engine'
 import { createArcServer } from './server'
+import { registryStatus } from './registry'
+import { unfinishedRuns } from './run'
 import { startWatcher } from './watch'
 
 // Probe for the claude CLI here, before anyone is listening. The probe itself
@@ -17,7 +19,13 @@ const engine = currentEngine()
 const migrated = migrateAuthorStyle()
 if (migrated) console.log(`  style  author layer now versioned at ${migrated}`)
 
-console.log('arc-backend\n' + describeConfig() + `\n  style  ${describeStyle()}` + `\n  engine ${engine ?? 'none'}`)
+// The rows' status is derived here, at startup, never typed (A67-1).
+const rows = registryStatus().map(r => `${r.key} ${r.status}`).join(' · ')
+// Runs a killed backend left behind are found here, at startup, and named by
+// the briefing as *did not finish* (A67-3).
+const unfinished = unfinishedRuns()   // nothing is live yet: this is startup
+console.log('arc-backend\n' + describeConfig() + `\n  style  ${describeStyle()}` + `\n  engine ${engine ?? 'none'}` + `\n  rows   ${rows}`
+  + (unfinished.length ? `\n  runs   ${unfinished.length} did not finish: ${unfinished.map(r => r.id).join(', ')}` : ''))
 createArcServer().listen(PORT, () => {
   console.log(`  listening on http://localhost:${PORT}`)
   // Only once the server is up: the watcher's whole output is stream events,

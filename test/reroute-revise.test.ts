@@ -7,9 +7,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import { git, makeExampleStory } from './fixture.ts'
+import { git, installStubCli, makeExampleStory } from './fixture.ts'
 
 const ANSWER = [
   'Ines was already on the stairs when the sea changed its mind about the morning.',
@@ -28,26 +27,6 @@ const ANSWER = [
   '```',
 ].join('\n')
 
-function installStubCli(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-stub-revise-'))
-  const bin = path.join(dir, 'claude')
-  fs.writeFileSync(bin, `#!/usr/bin/env node
-if (process.argv.includes('--version')) { process.stdout.write('stub 1.0\\n'); process.exit(0) }
-const chunks = []
-process.stdin.on('data', c => chunks.push(c))
-process.stdin.on('end', () => {
-  const prompt = chunks.join('')
-  process.stdout.write(JSON.stringify({
-    subtype: 'success', is_error: false, session_id: 'stub-session',
-    result: ${JSON.stringify(ANSWER)},
-    saw: prompt.includes('The light held') ? 'PROSE-LEAKED' : 'clean',
-  }))
-})
-`)
-  fs.chmodSync(bin, 0o755)
-  return dir
-}
-
 const STORY = makeExampleStory()
 // The example scene gains a contract — a rewrite needs a destination too.
 const sceneFile = path.join(STORY, 'prose', 'ch-02', 'scene-01.md')
@@ -57,21 +36,25 @@ fs.writeFileSync(sceneFile, fs.readFileSync(sceneFile, 'utf8').replace(
 git(STORY, 'add', '-A'); git(STORY, 'commit', '-qm', 'scene contract')
 process.env.ARC_STORY_PATH = STORY
 process.env.ARC_DRAFT_ENGINE = 'claude-cli'
-process.env.PATH = `${installStubCli()}${path.delimiter}${process.env.PATH}`
+process.env.PATH = `${installStubCli({ name: 'revise', answer: JSON.stringify(ANSWER) })}${path.delimiter}${process.env.PATH}`
 
 const {
-  runReroute, runRevise, listAlternatives, pruneKeepIds, gateAnswer, buildRevisePrompt, flattenPrompt,
+  runReroute, runRevise, listAlternatives, pruneKeepIds, gateCtx, buildRevisePrompt, flattenPrompt,
   reviseBrief, addRouteNote, deleteRouteNote, clearAlternatives, listRoutes,
 } = await import('../src/reroute.ts')
 const reroute = await import('../src/reroute.ts')
 const { literalWithholds } = await import('../src/redraft.ts')
-const { buildCliArgs, assertSessionAllowed } = await import('../src/invocation.ts')
+const { runRowGates } = await import('../src/gates.ts')
+const { buildCliArgs } = await import('../src/invocation.ts')
+const { ROW_EXPLORE_ROUTE } = await import('../src/registry.ts')
 
-test('the registry pins the rewrite withholding: tools forced off, no session ever', () => {
-  const args = buildCliArgs({ pass: 'reroute-revise', noTools: false })
+test('the rewrite\'s row is sealed and withholding: tools forced off, no session by type', () => {
+  const args = buildCliArgs({ row: ROW_EXPLORE_ROUTE, noTools: false })
   const at = args.indexOf('--tools')
   assert.ok(at >= 0 && args[at + 1] === '', 'the builder must force --tools "" for the rewrite no matter what the caller says')
-  assert.throws(() => assertSessionAllowed('reroute-revise'))
+  assert.equal(ROW_EXPLORE_ROUTE.pattern, 'sealed')
+  assert.equal(ROW_EXPLORE_ROUTE.withholding, true)
+  assert.ok(!('session' in ROW_EXPLORE_ROUTE.envelope), 'a sealed envelope has no session field to set')
 })
 
 test('the revise prompt carries the route and every note — and provably never the manuscript prose', () => {
@@ -108,25 +91,36 @@ test('the brief: notes carry their paragraph, a lone typed line stands alone, no
   assert.match(reviseBrief([{ id: 'n', paragraph: null, body: 'colder', created_at: '' }], 'and shorter'), /^\(the route as a whole\) — colder\n\(said now\) — and shorter$/)
 })
 
-test('the shared gate refuses on the rewrite exactly as on the reroute: leak, cap, and manuscript reuse', () => {
+test('the runner walks the row\'s gates for the rewrite exactly as for the reroute: withholds, cap, and manuscript reuse', () => {
   const sceneBody = [
     'The zinc counter sweated under his palms while Manuel talked at length about the weather outside.',
     'A photograph lay between the glasses, face down, and neither of them touched it before the light moved.',
     'When the lie finally came it came easily, the way a coin comes out of a pocket in the dark.',
   ].join('\n\n')
-  const ctx = {
+  const ctx = gateCtx({
     sceneName: 'sc.x', sceneBody, sceneLocks: [], lockedTexts: [],
     literals: literalWithholds(['"Trinidad"']), andCap: 3, wordCap: 55, destination: ['A thing lands.'],
-  }
-  const wrap = (body: string) => `${body}\n\n=== BRIEFING ===\nnotes.`
-  const leak = gateAnswer(ctx, wrap('He said Trinidad twice before the door closed on the noise of the street outside.'))
+  })
+  // The tail is what the coverage gate reads; without it the write is
+  // refused, so every case here carries one.
+  const wrap = (body: string) => `${body}\n\n=== BRIEFING ===\nnotes.\n\n\`\`\`json\n{"coverage": [{"item": "A thing lands.", "paragraph": 1}]}\n\`\`\``
+  const run = (body: string) => runRowGates(ROW_EXPLORE_ROUTE, ctx, wrap(body))
+  const leak = run('He said Trinidad twice before the door closed on the noise of the street outside.')
   assert.ok(!leak.ok && /withholds/.test(leak.reason))
-  const chains = gateAnswer(ctx, wrap('He ran and fell and rose and ran and fell again before the wall.'))
+  assert.equal(leak.gates.find(g => g.gate === 'withhold-literals')?.verdict, 'refused')
+  const chains = run('He ran and fell and rose and ran and fell again before the wall.')
   assert.ok(!chains.ok && /"and"s/.test(chains.reason))
-  const reuse = gateAnswer(ctx, wrap(sceneBody))
+  const reuse = run(sceneBody)
   assert.ok(!reuse.ok && /reused/.test(reuse.reason))
-  const clean = gateAnswer(ctx, wrap('A different route entirely, told in sentences that borrow nothing from the scene at all.\n\nIt lands the thing, and stops.\n\nNothing else moves in the patch tonight.'))
-  assert.ok(clean.ok)
+  const clean = run('A different route entirely, told in sentences that borrow nothing from the scene at all.\n\nIt lands the thing, and stops.\n\nNothing else moves in the patch tonight.')
+  assert.ok(clean.ok, clean.ok ? '' : clean.reason)
+  assert.deepEqual(clean.gates.filter(g => g.verdict === 'refused'), [])
+
+  // A gate that cannot run refuses the write rather than letting the answer
+  // land unchecked: no coverage tail, no landing.
+  const noTail = runRowGates(ROW_EXPLORE_ROUTE, ctx, 'A route with no tail at all.\n\n=== BRIEFING ===\nnotes.')
+  assert.ok(!noTail.ok && /no coverage tail/.test(noTail.reason))
+  assert.equal(noTail.gates.find(g => g.gate === 'coverage-tail')?.verdict, 'refused')
 })
 
 test('pruning keeps whole chains: the newest heads count, their ancestors survive, orphans read as heads', () => {
@@ -318,20 +312,28 @@ test('route counts: one read for the whole story, counting routes not versions',
   const base = { scene: 'sc.02-1', seed: 'late-entry', based_on: 'b', briefing: '', coverage: null, overlap: 0 }
   writeAlternative({ ...base, id: 'alt-cccc1111', created_at: '2026-09-02T00:00:00Z', body: 'One.' } as never)
   writeAlternative({ ...base, id: 'alt-dddd2222', created_at: '2026-09-02T01:00:00Z', body: 'Two.' } as never)
-  assert.equal(routeCounts()['sc.02-1'], 2)
+  // Two questions, two counts: what waits on the author, and how many of
+  // the four places are taken. These routes name no run, so they are ones
+  // an older arc wrote — they wait, and hold no place (A67-10).
+  assert.deepEqual(routeCounts()['sc.02-1'], { waiting: 2, governed: 0 })
   // a rewrite is a new VERSION of a route, not a second route waiting
   writeAlternative({ ...base, id: 'alt-eeee3333', created_at: '2026-09-02T02:00:00Z', body: 'Two, again.', revises: 'alt-dddd2222' } as never)
-  assert.equal(routeCounts()['sc.02-1'], 2, 'three files, still two routes')
+  assert.equal(routeCounts()['sc.02-1'].waiting, 2, 'three files, still two routes')
   clearAlternatives('sc.02-1')
   assert.equal(routeCounts()['sc.02-1'], undefined)
 })
 
 test('a scene holds four ways through, and the author clears the field', async () => {
   const { MAX_ROUTES, routesWaiting, writeAlternative } = reroute
+  const { sha16 } = await import('../src/records.ts')
+  const { proseScenes } = await import('../src/story.ts')
   clearAlternatives('sc.02-1')
-  const base = { scene: 'sc.02-1', seed: 'late-entry', based_on: 'b', briefing: '', coverage: null, overlap: 0 }
+  // A governed route names its run and what it read; a route that names
+  // neither is one an older arc wrote, and does not hold a place (A67-10).
+  const current = () => [{ id: 'sc.02-1', version: sha16(proseScenes().find(s => s.scene === 'sc.02-1')!.body) }]
+  const base = { scene: 'sc.02-1', seed: 'late-entry', based_on: 'b', briefing: '', coverage: null, overlap: 0, run: 'run.0001' }
   const put = (id: string, at: string, revises?: string) =>
-    writeAlternative({ ...base, id, created_at: at, body: `Body ${id}.`, ...(revises ? { revises } : {}) } as never)
+    writeAlternative({ ...base, id, created_at: at, body: `Body ${id}.`, reads: current(), ...(revises ? { revises } : {}) } as never)
   for (let i = 0; i < MAX_ROUTES; i++) put(`alt-ffff000${i}`, `2026-09-0${i + 1}T00:00:00Z`)
   assert.equal(routesWaiting('sc.02-1'), MAX_ROUTES)
   // at the cap the pass is refused before a token is spent
@@ -349,5 +351,22 @@ test('a scene holds four ways through, and the author clears the field', async (
   const res = await runReroute({ scene: 'sc.02-1', count: 2 })
   assert.ok(res.alternatives.length + res.refused.length <= MAX_ROUTES - 1)
   assert.ok(routesWaiting('sc.02-1') <= MAX_ROUTES, 'a run never takes a scene past the cap')
+
+  // A route an older arc wrote is shown with a re-run and holds no place.
+  clearAlternatives('sc.02-1')
+  writeAlternative({ scene: 'sc.02-1', seed: 'late-entry', based_on: 'b', briefing: '', coverage: null, overlap: 0, id: 'alt-0ldddddd', created_at: '2026-08-01T00:00:00Z', body: 'An older arc wrote this.' } as never)
+  assert.equal(routesWaiting('sc.02-1'), 0, 'it does not hold a place against the cap')
+  const listed = reroute.listRoutes('sc.02-1').alternatives
+  assert.equal(listed[0].stale?.why, 'written by an older arc')
+  assert.deepEqual(listed[0].stale?.changed, [])
+
+  // ...and a governed route whose scene has since moved is stale too, with
+  // what changed named.
+  clearAlternatives('sc.02-1')
+  writeAlternative({ ...base, id: 'alt-51a1e000', created_at: '2026-09-10T00:00:00Z', body: 'Written against an older scene.', reads: [{ id: 'sc.02-1', version: 'aaaaaaaaaaaaaaaa' }] } as never)
+  const moved = reroute.listRoutes('sc.02-1').alternatives[0]
+  assert.equal(moved.stale?.why, 'the record moved')
+  assert.deepEqual(moved.stale?.changed, ['sc.02-1'])
+  assert.equal(routesWaiting('sc.02-1'), 0)
   clearAlternatives('sc.02-1')
 })

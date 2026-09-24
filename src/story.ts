@@ -530,6 +530,25 @@ function withReleasedLocks(file: string): string[] {
   return locks
 }
 
+/** Commit what the author's decision produced, beside the artefact the
+ *  decision was about — a SECOND commit after the accept, because a receipt
+ *  names the commit that carries the prose and no file can hold the hash of
+ *  the commit that contains it (A67-4). Returns the hash, or null when
+ *  there was nothing to commit. Never throws: an uncommitted receipt is a
+ *  finding for `arc doctor`, not a reason to fail an accept that already
+ *  landed. */
+export function commitRecords(message: string, paths: string[]): string | null {
+  if (!paths.length) return null
+  try {
+    git('add', '--', ...paths)
+    if (!git('diff', '--cached', '--name-only', '--', ...paths).trim()) return null
+    git('commit', '-m', message, '--', ...paths)
+    return git('rev-parse', '--short', 'HEAD').trim()
+  } catch {
+    return null
+  }
+}
+
 /** The commit that ratifies. A refusal from the story's own commit gate is
  *  not an internal error: it is the gate doing its job, and the author
  *  should read what it said — the lock, the scene, and the way out. */

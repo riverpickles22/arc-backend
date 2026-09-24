@@ -226,7 +226,7 @@ async function runDraftCli(a: {
   ].filter(Boolean).join('\n\n')
 
   const actions: ChatAction[] = []
-  const first = await runCliPrompt(prompt, { pass: 'draft', cwd: STORY })
+  const first = await runCliPrompt(prompt, { pass: 'draft' })
   let content = stripFences(first.text)
   let check = writeScene(a.file, content, 'claude-cli', a.sceneId)
   actions.push({ tool: 'write_scene_file', path: a.file, ok: check.ok, detail: check.ok ? undefined : 'validation failed, reverted' })
@@ -234,7 +234,7 @@ async function runDraftCli(a: {
   if (!check.ok && first.sessionId) {
     const repair = await runCliPrompt(
       `VALIDATION FAILED — the scene was reverted. Fix these and reply with ONLY the corrected complete file content:\n${check.output}`,
-      { pass: 'draft', cwd: STORY, resume: first.sessionId })
+      { pass: 'draft', resume: first.sessionId })
     content = stripFences(repair.text)
     check = writeScene(a.file, content, 'claude-cli', a.sceneId)
     actions.push({ tool: 'write_scene_file', path: a.file, ok: check.ok, detail: check.ok ? 'repaired after validator errors' : 'validation failed again, reverted' })

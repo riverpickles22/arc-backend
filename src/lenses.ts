@@ -17,7 +17,7 @@
 // citations, for a human to judge, never presented as proven. This is the
 // scoped successor to the whole-canon analysis pass in analyze.ts.
 import type Anthropic from '@anthropic-ai/sdk'
-import { MODEL, STORY } from './config'
+import { MODEL } from './config'
 import { getClient } from './agent'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { readOnly, type Capability } from './capability'
@@ -218,7 +218,7 @@ interface LensResult {
 }
 
 async function askModel(prompt: string): Promise<string> {
-  if (currentEngine() === 'claude-cli') return (await runCliPrompt(prompt, { pass: 'lenses', cwd: STORY })).text
+  if (currentEngine() === 'claude-cli') return (await runCliPrompt(prompt, { pass: 'lenses' })).text
   const message = await getClient().beta.messages.create({
     model: MODEL,
     max_tokens: 4000,

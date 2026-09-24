@@ -14,7 +14,7 @@
 // opens a file for writing.
 import type Anthropic from '@anthropic-ai/sdk'
 import type { Register } from 'arc-canon-graph'
-import { MODEL, STORY } from './config'
+import { MODEL } from './config'
 import { getClient } from './agent'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
 import { HttpError } from './http'
@@ -124,7 +124,7 @@ export async function runJudge(brief: JudgeBrief): Promise<Judgment> {
   if (!engine) throw new HttpError(503, 'No generation engine available.')
   const prompt = buildJudgePrompt(brief)
 
-  if (engine === 'claude-cli') return parseJudgment((await runCliPrompt(prompt, { pass: 'judge', cwd: STORY })).text)
+  if (engine === 'claude-cli') return parseJudgment((await runCliPrompt(prompt, { pass: 'judge' })).text)
 
   const message = await getClient().beta.messages.create({
     model: MODEL,

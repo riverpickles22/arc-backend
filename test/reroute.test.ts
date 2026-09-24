@@ -13,7 +13,7 @@ process.env.ARC_STORY_PATH = story
 process.env.ARC_DRAFT_ENGINE = 'none'
 const {
   authority, sceneKeypoints, buildDestination, buildKnownRoute, inferredRoute, buildReroutePrompt, flattenPrompt,
-  parseCoverageTail, lexicalOverlap, lockOrderViolation, wordSurvival, stripSceneTouchstones, mergeCoverage, andCapFromContract, andChainViolations, wordCapFromContract, longSentenceViolations, runReroute, SEEDS,
+  parseCoverageTail, lexicalOverlap, lockOrderViolation, wordSurvival, stripSceneTouchstones, resolveCoverage, andCapFromContract, andChainViolations, wordCapFromContract, longSentenceViolations, runReroute, SEEDS,
 } = await import('../src/reroute.ts')
 const { HttpError } = await import('../src/http.ts')
 
@@ -160,20 +160,39 @@ test('the coverage tail is parsed from the fence and stripped from the briefing;
   const r = parseCoverageTail(tail)
   assert.equal(r.briefing, 'Beat one lands in ¶2.')
   assert.deepEqual(r.coverage, [{ item: 'Carlos realizes Manuel lied.', paragraph: 2 }, { item: 'The photograph changes hands.', paragraph: null }])
-  assert.deepEqual(parseCoverageTail('No tail at all.'), { briefing: 'No tail at all.', coverage: null })
+  assert.equal(r.unparseable, 2, 'a row with no item and a row that is not an object are counted, never silently dropped')
+  assert.deepEqual(parseCoverageTail('No tail at all.'), { briefing: 'No tail at all.', coverage: null, unparseable: 0 })
   assert.equal(parseCoverageTail('Prose then ```json\nnot json\n```').coverage, null)
   assert.deepEqual(parseCoverageTail('Bare {"coverage":[{"item":"x","paragraph":0}]}').coverage, [{ item: 'x', paragraph: null }])
 })
 
-test('every required beat gets a coverage row; a paraphrased row still matches; an unnamed beat is not reported', () => {
+test('every required beat gets a coverage row; a paraphrase still matches; a claim the destination never held is DROPPED and counted', () => {
   const destination = ['The seed falls from the boot tread unnoticed and germinates among countless native seeds.', 'The vine stops spreading. It has taken what it will take.', 'By May 1957 the patch is dead and still.']
+  const known = ['Carlos hears the vine before he sees it']   // arc's own key point: context, never the destination
   const rows = [
     { item: 'The seed falls from the boot tread unnoticed and germinates among the native seeds', paragraph: 3 },   // paraphrase
     { item: 'A beat the pass volunteered on its own', paragraph: 8 },
+    { item: 'Carlos hears the vine before he sees it', paragraph: 5 },
   ]
-  const m = mergeCoverage(destination, rows)!
-  assert.deepEqual(m.map(r => [r.item.slice(0, 12), r.paragraph]), [['The seed fal', 3], ['The vine sto', null], ['By May 1957 ', null], ['A beat the p', 8]])
-  assert.equal(mergeCoverage(destination, null), null)
+  const out = resolveCoverage(destination, rows, known)
+  // Every required beat has a row; nothing else does.
+  assert.deepEqual(out.coverage!.map(r => [r.item.slice(0, 12), r.paragraph]), [['The seed fal', 3], ['The vine sto', null], ['By May 1957 ', null]])
+  // And what did not resolve is counted by reason.
+  assert.deepEqual(out.dropped.sort((a, b) => a.reason.localeCompare(b.reason)),
+    [{ reason: 'outside the slice', count: 1 }, { reason: 'unresolvable', count: 1 }])
+  assert.equal(out.returned, 1, 'one claim the pass made resolved — never the destination\'s length')
+  assert.deepEqual(resolveCoverage(destination, null, known), { coverage: null, dropped: [], returned: 0 })
+  assert.deepEqual(resolveCoverage(destination, rows.slice(0, 1), known).dropped, [], 'a claim that resolves is not dropped')
+
+  // A beat stated twice is a RESTATEMENT, not a drop: its evidence resolved,
+  // and the row it belongs to is already in the coverage.
+  const twice = resolveCoverage(destination, [
+    { item: 'The vine stops spreading. It has taken what it will take.', paragraph: 2 },
+    { item: 'The vine stops spreading — it has taken what it will take.', paragraph: 5 },
+  ], known)
+  assert.deepEqual(twice.dropped, [], 'nothing was dropped')
+  assert.equal(twice.returned, 2, 'and both claims are counted as returned')
+  assert.equal(twice.coverage!.find(c => c.item.startsWith('The vine'))!.paragraph, 2, 'the first statement holds the row')
 })
 
 // ---- the gates: proven, and honest about what they prove -------------------

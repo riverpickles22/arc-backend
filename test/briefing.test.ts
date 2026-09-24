@@ -5,29 +5,17 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { AddressInfo } from 'node:net'
-import { git, makeExampleStory } from './fixture.ts'
+import { git, installStubCli, makeExampleStory } from './fixture.ts'
 
 // A claude on PATH that records every invocation. The CLI engine is the one
 // that runs on the author's machine, so "no engine call" is proven by the
 // marker never appearing — not by inspecting imports.
 const MARKER = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'arc-briefing-engine-')), 'invoked')
-function installRecordingCli(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-stub-briefing-'))
-  const bin = path.join(dir, 'claude')
-  fs.writeFileSync(bin, `#!/usr/bin/env node
-if (process.argv.includes('--version')) { process.stdout.write('stub 1.0\\n'); process.exit(0) }   // the availability probe, not a prompt
-require('node:fs').writeFileSync(${JSON.stringify(MARKER)}, process.argv.join(' '))
-process.stdout.write(JSON.stringify({ subtype: 'success', is_error: false, session_id: 's', result: 'never' }))
-`)
-  fs.chmodSync(bin, 0o755)
-  return dir
-}
-
 const STORY = makeExampleStory()
 process.env.ARC_STORY_PATH = STORY
 delete process.env.ANTHROPIC_API_KEY
 process.env.ARC_DRAFT_ENGINE = 'claude-cli'
-process.env.PATH = `${installRecordingCli()}${path.delimiter}${process.env.PATH}`
+process.env.PATH = `${installStubCli({ name: 'briefing', before: `require('node:fs').writeFileSync(${JSON.stringify(MARKER)}, process.argv.join(' '))`, answer: "'never'" })}${path.delimiter}${process.env.PATH}`
 
 // The example commits one scene in ch.02. A second accept lands a scene in
 // ch.01 AND rewrites the ch.02 scene: the briefing must name the ch.02 one

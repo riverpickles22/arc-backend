@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { PASS_REGISTRY, assertSessionAllowed, buildCliArgs } from '../src/invocation.ts'
+import { ROW_EXPLORE_ROUTE, ROW_EXPLORE_SCENE } from '../src/registry.ts'
 
 test('a call that names no pass is refused — the registry decides a posture, never the call site', () => {
   // `pass` is required by the type since A55-4, so a caller in TypeScript
@@ -12,14 +13,16 @@ test('a call that names no pass is refused — the registry decides a posture, n
   assert.throws(() => buildCliArgs({} as never), /unregistered pass/)
 })
 
+const BASE = ['-p', '--output-format', 'stream-json', '--verbose']   // streamed, always (A67-2)
+
 test('a non-withholding pass builds exactly the argv engine.ts always built', () => {
-  assert.deepEqual(buildCliArgs({ pass: 'draft' }), ['-p', '--output-format', 'json'])
-  assert.deepEqual(buildCliArgs({ pass: 'draft', noTools: true }), ['-p', '--output-format', 'json', '--tools', ''])
-  assert.deepEqual(buildCliArgs({ pass: 'draft', resume: 'abc' }), ['-p', '--output-format', 'json', '--resume', 'abc'])
+  assert.deepEqual(buildCliArgs({ pass: 'draft' }), BASE)
+  assert.deepEqual(buildCliArgs({ pass: 'draft', noTools: true }), [...BASE, '--tools', ''])
+  assert.deepEqual(buildCliArgs({ pass: 'draft', resume: 'abc' }), [...BASE, '--resume', 'abc'])
   // Both together, in the historical order — the exact sequence the old
   // inline construction emitted (tools before resume).
   assert.deepEqual(buildCliArgs({ pass: 'draft', noTools: true, resume: 'abc' }),
-    ['-p', '--output-format', 'json', '--tools', '', '--resume', 'abc'])
+    [...BASE, '--tools', '', '--resume', 'abc'])
 })
 
 test('a circular settings object gets the curated refusal, not a raw TypeError', () => {
@@ -29,9 +32,9 @@ test('a circular settings object gets the curated refusal, not a raw TypeError',
 })
 
 test('a withholding pass gets --tools "" even when the caller says otherwise', () => {
-  const args = buildCliArgs({ pass: 'reroute', noTools: false })
+  const args = buildCliArgs({ pass: 'analyze', noTools: false })
   const i = args.indexOf('--tools')
-  assert.notEqual(i, -1, 'reroute must always run tools-off')
+  assert.notEqual(i, -1, 'analyze must always run tools-off')
   assert.equal(args[i + 1], '')
   // capture is registered withholding ahead of its CLI path existing
   assert.ok(buildCliArgs({ pass: 'capture' }).includes('--tools'))
@@ -47,7 +50,6 @@ test('an unregistered pass throws instead of launching with an undeclared postur
 })
 
 test('sessions are refused for withholding passes, in code', () => {
-  assert.throws(() => assertSessionAllowed('reroute'), /cannot unsee/)
   assert.throws(() => assertSessionAllowed('capture'), /cannot unsee/)
   assert.throws(() => assertSessionAllowed('analyze'), /cannot unsee/)
   // material is the non-withholding row whose own answer is still no
@@ -68,6 +70,23 @@ test('invalid settings JSON throws before any spawn — print mode would ignore 
   assert.equal(args[args.indexOf('--settings') + 1], '{"hooks":{}}')
   const passthrough = buildCliArgs({ pass: 'draft', settings: '{"a":1}' })
   assert.equal(passthrough[passthrough.indexOf('--settings') + 1], '{"a":1}')
+})
+
+test('a launch that carries a sealed row runs tools-off from the row, and the caller cannot widen it (A67-1)', () => {
+  const args = buildCliArgs({ row: ROW_EXPLORE_SCENE, noTools: false })
+  const i = args.indexOf('--tools')
+  assert.notEqual(i, -1, 'a sealed row launches with --tools')
+  assert.equal(args[i + 1], '', 'and an empty toolbelt, whatever the caller said')
+  assert.deepEqual(buildCliArgs({ row: ROW_EXPLORE_ROUTE }), [...BASE, '--tools', ''])
+})
+
+test('a sealed row\'s launch cannot resume a session, whatever the caller hands over', () => {
+  assert.throws(() => buildCliArgs({ row: ROW_EXPLORE_SCENE, resume: 'abc' }), /sealed and cannot resume/)
+  assert.throws(() => buildCliArgs({ row: ROW_EXPLORE_ROUTE, resume: 'abc', sessionId: 'f2f2f2f2-0000-4000-8000-000000000000' }), /cannot resume/)
+  // the pre-assigned id names the transcript before the run; it is not a resume
+  const args = buildCliArgs({ row: ROW_EXPLORE_SCENE, sessionId: 'f2f2f2f2-0000-4000-8000-000000000000' })
+  assert.equal(args[args.indexOf('--session-id') + 1], 'f2f2f2f2-0000-4000-8000-000000000000')
+  assert.ok(!args.includes('--resume'))
 })
 
 test('--json-schema and --session-id become first-class flags', () => {

@@ -18,7 +18,7 @@
 // the model read the diffs — but rules still cite edit numbers only, so the
 // trust property holds: every quote in the queue comes from arc's own table.
 import type Anthropic from '@anthropic-ai/sdk'
-import { MODEL, STORY } from './config'
+import { MODEL } from './config'
 import { getClient } from './agent'
 import { currentEngine, runCliPrompt } from './engine'
 import { annotations } from './annotations'
@@ -105,7 +105,7 @@ export async function runBootstrapStyle(): Promise<BootstrapResult> {
 
   let text: string
   if (engine === 'claude-cli') {
-    text = (await runCliPrompt(prompt, { pass: 'bootstrap', cwd: STORY })).text
+    text = (await runCliPrompt(prompt, { pass: 'bootstrap' })).text
   } else {
     const message = await getClient().beta.messages.create({
       model: MODEL,

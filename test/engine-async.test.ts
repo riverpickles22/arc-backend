@@ -10,49 +10,30 @@
 //
 // A STUB `claude` on PATH, not the real one: the point is the async property
 // of the seam, not what a model says. The stub takes the same arguments, reads
-// the same stdin, and answers in the same `--output-format json` shape, so the
-// code under test is the production path in full.
+// the same stdin, and answers in the same streamed shape, so the code under
+// test is the production path in full.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import type { AddressInfo } from 'node:net'
-import { makeExampleStory } from './fixture.ts'
+import { installStubCli, makeExampleStory } from './fixture.ts'
 
 /** How long the stub pretends to think. Long enough that a serialised
  *  fan-out is unmistakable, short enough to keep the suite quick. */
 const DELAY_MS = 400
 
-function installStubCli(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-stub-cli-'))
-  const bin = path.join(dir, 'claude')
-  fs.writeFileSync(bin, `#!/usr/bin/env node
-// Stands in for \`claude -p --output-format json\`. Blocks its OWN process for
-// DELAY_MS with Atomics.wait — real occupancy, so a caller that blocks with it
-// is indistinguishable from a caller waiting on a slow model.
-if (process.argv.includes('--version')) { process.stdout.write('stub 1.0\\n'); process.exit(0) }
-const chunks = []
-process.stdin.on('data', c => chunks.push(c))
-process.stdin.on('end', () => {
-  const prompt = chunks.join('')
-  if (process.env.STUB_FAIL === '1') { process.stderr.write('stub refused'); process.exit(3) }
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${DELAY_MS})
-  process.stdout.write(JSON.stringify({
-    subtype: 'success', is_error: false, session_id: 'stub-session',
-    result: JSON.stringify([{ about: 'stub', claim: 'a stub claim', evidence: 'stub evidence' }]),
-    saw_prompt_bytes: prompt.length,
-  }))
-})
-`)
-  fs.chmodSync(bin, 0o755)
-  return dir
-}
-
 const STORY = makeExampleStory()
 process.env.ARC_STORY_PATH = STORY
 process.env.ARC_DRAFT_ENGINE = 'claude-cli'
-process.env.PATH = `${installStubCli()}${path.delimiter}${process.env.PATH}`
+// Blocks its OWN process for DELAY_MS with Atomics.wait — real occupancy, so
+// a caller that blocks with it is indistinguishable from a caller waiting on
+// a slow model.
+process.env.PATH = `${installStubCli({
+  name: 'async',
+  delayMs: DELAY_MS,
+  before: "if (process.env.STUB_FAIL === '1') { process.stderr.write('stub refused'); process.exit(3) }",
+  answer: "JSON.stringify([{ about: 'stub', claim: 'a stub claim', evidence: 'stub evidence' }])",
+})}${path.delimiter}${process.env.PATH}`
 
 const { runCliPrompt, currentEngine } = await import('../src/engine.ts')
 const { runLensFanOut } = await import('../src/lenses.ts')
@@ -80,7 +61,7 @@ test('the engine really is claude-cli here — otherwise this file proves nothin
 
 test('one CLI turn does NOT block the event loop', async () => {
   const stop = watchEventLoop()
-  const { text, sessionId } = await runCliPrompt('hello', { pass: 'draft', cwd: STORY })
+  const { text, sessionId } = await runCliPrompt('hello', { pass: 'draft' })
   const { ticks, elapsed } = stop()
 
   assert.match(text, /a stub claim/, 'the production parse path ran')
@@ -94,7 +75,7 @@ test('one CLI turn does NOT block the event loop', async () => {
 test('four concurrent turns cost about one, not four', async () => {
   const t0 = Date.now()
   const out = await Promise.all(Array.from({ length: 4 }, (_, i) =>
-    runCliPrompt(`turn ${i}`, { pass: 'draft', cwd: STORY })))
+    runCliPrompt(`turn ${i}`, { pass: 'draft' })))
   const wall = Date.now() - t0
 
   assert.equal(out.length, 4)
@@ -105,7 +86,7 @@ test('four concurrent turns cost about one, not four', async () => {
 test('a failing CLI still reports its exit code and stderr', async () => {
   process.env.STUB_FAIL = '1'
   try {
-    await assert.rejects(runCliPrompt('x', { pass: 'draft', cwd: STORY }), /claude CLI exited 3: stub refused/)
+    await assert.rejects(runCliPrompt('x', { pass: 'draft' }), /claude CLI exited 3: stub refused/)
   } finally {
     delete process.env.STUB_FAIL
   }

@@ -6,9 +6,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-import { makeExampleStory } from './fixture.ts'
+import { installStubCli, makeExampleStory } from './fixture.ts'
 
 const ANSWER = [
   'Ines was already on the stairs when the sea changed its mind about the morning.',
@@ -27,27 +26,6 @@ const ANSWER = [
   '```',
 ].join('\n')
 
-function installStubCli(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-stub-reroute-'))
-  const bin = path.join(dir, 'claude')
-  fs.writeFileSync(bin, `#!/usr/bin/env node
-if (process.argv.includes('--version')) { process.stdout.write('stub 1.0\\n'); process.exit(0) }
-const chunks = []
-process.stdin.on('data', c => chunks.push(c))
-process.stdin.on('end', () => {
-  const prompt = chunks.join('')
-  if (process.env.STUB_FAIL === '1') { process.stderr.write('stub refused'); process.exit(3) }
-  process.stdout.write(JSON.stringify({
-    subtype: 'success', is_error: false, session_id: 'stub-session',
-    result: ${JSON.stringify(ANSWER)},
-    saw: prompt.includes('The light held') ? 'PROSE-LEAKED' : 'clean',
-  }))
-})
-`)
-  fs.chmodSync(bin, 0o755)
-  return dir
-}
-
 const STORY = makeExampleStory()
 // The example scene gains a contract — a reroute needs a destination.
 const sceneFile = path.join(STORY, 'prose', 'ch-02', 'scene-01.md')
@@ -57,7 +35,11 @@ fs.writeFileSync(sceneFile, fs.readFileSync(sceneFile, 'utf8').replace(
 { const { git } = await import('./fixture.ts'); git(STORY, 'add', '-A'); git(STORY, 'commit', '-qm', 'scene contract') }
 process.env.ARC_STORY_PATH = STORY
 process.env.ARC_DRAFT_ENGINE = 'claude-cli'
-process.env.PATH = `${installStubCli()}${path.delimiter}${process.env.PATH}`
+process.env.PATH = `${installStubCli({
+  name: 'reroute',
+  before: "if (process.env.STUB_FAIL === '1') { process.stderr.write('stub refused'); process.exit(3) }",
+  answer: JSON.stringify(ANSWER),
+})}${path.delimiter}${process.env.PATH}`
 
 const { runReroute, listRoutes, adoptAlternative, dropAlternative } = await import('../src/reroute.ts')
 const { generatedFor } = await import('../src/ledger.ts')
@@ -147,6 +129,7 @@ test('an engine failure is the seed\'s refusal, never the run\'s', async () => {
     const res = await runReroute({ scene: 'sc.02-1', count: 1 })
     assert.equal(res.alternatives.length, 0)
     assert.equal(res.refused.length, 1)
-    assert.match(res.refused[0].reason, /^engine: claude CLI exited 3/)
+    assert.equal(res.refused[0].reason, 'that pass ended before it answered, so nothing was written. Ask again.',
+    'the author reads a sentence — the engine\'s own words are on the receipt, not on the page')
   } finally { delete process.env.STUB_FAIL }
 })

@@ -15,6 +15,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { PASS_REGISTRY, type PassName } from '../src/invocation.ts'
 import { runCliPrompt } from '../src/engine.ts'
+import { installStubCli } from './fixture.ts'
 
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src')
 
@@ -33,25 +34,29 @@ function callText(source: string, openParen: number): string {
 
 /** Every place in src/ that launches a child through the seam.
  *
- *  `pass` is null when the call names none at all — the failure this story
- *  exists to make impossible. It is 'variable' when the call passes a typed
- *  one through rather than a literal: reroute's single launch serves both
- *  route passes and takes the name as an argument, which is still the
- *  registry deciding, with tsc proving the name is one of its rows. */
-function launchSites(): { file: string; pass: string | 'variable' | null }[] {
-  const out: { file: string; pass: string | 'variable' | null }[] = []
+ *  Two doors (A67-2). `askRow(row, brief, opts)` is the governed one: the
+ *  row is its first argument by type, so every call through it is `rowed`.
+ *  `runCliPrompt(prompt, { pass })` is the interim for the passes not yet
+ *  migrated: `pass` is null when the call names none at all — the failure
+ *  A55-4 exists to make impossible — and 'variable' when it passes a typed
+ *  name through rather than a literal. */
+function launchSites(): { file: string; pass: string | 'variable' | null; rowed: boolean }[] {
+  const out: { file: string; pass: string | 'variable' | null; rowed: boolean }[] = []
   for (const file of fs.readdirSync(SRC).filter(f => f.endsWith('.ts'))) {
     const source = fs.readFileSync(path.join(SRC, file), 'utf8')
-    const re = /runCliPrompt\s*\(/g
+    const re = /\b(runCliPrompt|askRow)\s*\(/g
     for (let m = re.exec(source); m; m = re.exec(source)) {
-      // The definition itself is not a launch.
+      // The definition itself is not a launch, and neither is a mention in
+      // a comment.
       const head = source.slice(Math.max(0, m.index - 40), m.index)
-      if (/function\s+$/.test(head) || /export\s+$/.test(head)) continue
+      const lineStart = source.lastIndexOf('\n', m.index) + 1
+      if (/function\s+$/.test(head) || /export\s+$/.test(head) || /^\s*(\/\/|\*)/.test(source.slice(lineStart, m.index))) continue
       const text = callText(source, m.index + m[0].length - 1)
+      if (m[1] === 'askRow') { out.push({ file, pass: null, rowed: true }); continue }
       const literal = /\bpass:\s*'([^']+)'/.exec(text)
-      // the shorthand property — `{ cwd, pass, noTools }`
+      // the shorthand property — `{ pass, noTools }`
       const shorthand = /[{,]\s*pass\s*[,}]/.test(text)
-      out.push({ file, pass: literal ? literal[1] : shorthand ? 'variable' : null })
+      out.push({ file, pass: literal ? literal[1] : shorthand ? 'variable' : null, rowed: false })
     }
   }
   return out
@@ -62,22 +67,40 @@ const ACCOUNTED: Record<string, string> = {
   // reaches the model through the SDK's tool runner, not this seam; it is
   // registered ahead of the CLI path it gets in slice 4 (§11)
   capture: 'off-seam, SDK tool runner',
-  // one launch site serves both, taking the name as a typed argument
-  reroute: 'named through a variable at reroute.ts',
-  'reroute-revise': 'named through a variable at reroute.ts',
 }
 
-test('every launch in src names a pass, and every pass it names has a row', () => {
+test('every launch in src names a pass or carries a row, and every pass it names has a row', () => {
   const sites = launchSites()
   assert.ok(sites.length >= 12, `expected the backend's launch sites, found ${sites.length}`)
 
-  const silent = sites.filter(s => s.pass === null)
+  const silent = sites.filter(s => s.pass === null && !s.rowed)
   assert.deepEqual(silent, [],
-    `these launch with no pass, so the registry cannot decide their tools: ${silent.map(s => s.file).join(', ')}`)
+    `these launch with no pass and no row, so nothing decides their tools: ${silent.map(s => s.file).join(', ')}`)
 
-  const unregistered = sites.filter(s => s.pass !== 'variable' && !(s.pass! in PASS_REGISTRY))
+  const unregistered = sites.filter(s => !s.rowed && s.pass !== 'variable' && !(s.pass! in PASS_REGISTRY))
   assert.deepEqual(unregistered, [],
     `these name a pass with no row: ${unregistered.map(s => `${s.file} (${s.pass})`).join(', ')}`)
+})
+
+/** THE RATCHET (A67-1; agent-workflows §11, "drift protection starts with
+ *  the first row"). Seam launches that carry no registry row — a pass named
+ *  by string, with the interim PASS_REGISTRY deciding its tools. Twelve
+ *  today, across eleven passes (draft launches twice); reroute's one site
+ *  took its row and was never among them. The count may only fall: a
+ *  migration lowers this number in the same change, and a new bare launch
+ *  fails here. */
+const BARE_SEAM_CALLS = 12
+
+test(`the ratchet: ${BARE_SEAM_CALLS} seam launches carry no row, and the count may only fall`, () => {
+  const bare = launchSites().filter(s => !s.rowed)
+  const where = bare.map(s => `${s.file} (${s.pass})`).join(', ')
+  assert.ok(bare.length <= BARE_SEAM_CALLS,
+    `${bare.length} launches carry no row, more than the ${BARE_SEAM_CALLS} recorded — a new launch must take a registry row, never a pass name: ${where}`)
+  assert.equal(bare.length, BARE_SEAM_CALLS,
+    `${bare.length} launches carry no row, fewer than the ${BARE_SEAM_CALLS} recorded — a pass migrated; lower BARE_SEAM_CALLS in the same change: ${where}`)
+  assert.equal(new Set(bare.map(s => s.file)).size, 11, 'across eleven passes')
+  const rowed = launchSites().filter(s => s.rowed)
+  assert.deepEqual(rowed.map(s => s.file), ['gates.ts'], 'the one rowed launch is the gate runner\'s, and it serves every rowed pass')
 })
 
 test('every row in the registry is reached by a launch, or is honestly accounted for', () => {
@@ -88,33 +111,14 @@ test('every row in the registry is reached by a launch, or is honestly accounted
     `these rows have no launch site — delete the row or name it at the call: ${orphans.join(', ')}`)
 })
 
-/** A `claude` that answers nothing and records the argv it was handed. */
-function installRecordingCli(): { dir: string; argvFile: string } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-argv-cli-'))
-  const argvFile = path.join(dir, 'argv.json')
-  const bin = path.join(dir, 'claude')
-  fs.writeFileSync(bin, `#!/usr/bin/env node
-// Records what the seam asked for, answers in the shape the seam parses.
-const fs = require('fs')
-if (process.argv.includes('--version')) { process.stdout.write('stub 1.0\\n'); process.exit(0) }
-const chunks = []
-process.stdin.on('data', c => chunks.push(c))
-process.stdin.on('end', () => {
-  fs.appendFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv.slice(2)) + '\\n')
-  process.stdout.write(JSON.stringify({
-    subtype: 'success', is_error: false, session_id: 'stub-session', result: 'ok',
-  }))
-})
-`)
-  fs.chmodSync(bin, 0o755)
-  return { dir, argvFile }
-}
-
-const recorder = installRecordingCli()
-process.env.PATH = `${recorder.dir}${path.delimiter}${process.env.PATH}`
+const argvFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'arc-argv-cli-')), 'argv.json')
+process.env.PATH = `${installStubCli({
+  name: 'argv',
+  before: `require('node:fs').appendFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv.slice(2)) + '\\n')`,
+})}${path.delimiter}${process.env.PATH}`
 
 const recorded = (): string[][] =>
-  fs.readFileSync(recorder.argvFile, 'utf8').trim().split('\n').map(l => JSON.parse(l) as string[])
+  fs.readFileSync(argvFile, 'utf8').trim().split('\n').map(l => JSON.parse(l) as string[])
 
 test('every reading pass really launches with an empty toolbelt, argv recorded from the spawn', async () => {
   // The six the author pinned on 2026-09-11. The point is the whole path —
@@ -122,8 +126,7 @@ test('every reading pass really launches with an empty toolbelt, argv recorded f
   // invocation.test.ts covers. Read from the child's own argv, so a change
   // anywhere along that path shows up here.
   for (const pass of ['analyze', 'judge', 'suggest', 'intent', 'lenses', 'bootstrap'] as const) {
-    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-argv-cwd-'))
-    await runCliPrompt('read this', { pass, cwd })
+    await runCliPrompt('read this', { pass })
     const argv = recorded().at(-1)!
     const i = argv.indexOf('--tools')
     assert.notEqual(i, -1, `${pass} must be spawned with --tools; got ${argv.join(' ')}`)
@@ -132,7 +135,6 @@ test('every reading pass really launches with an empty toolbelt, argv recorded f
 })
 
 test('a pass the author did not pin keeps its tools, so the pin is a decision and not a blanket', async () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-argv-cwd-'))
-  await runCliPrompt('write this', { pass: 'draft', cwd })
+  await runCliPrompt('write this', { pass: 'draft' })
   assert.ok(!recorded().at(-1)!.includes('--tools'))
 })

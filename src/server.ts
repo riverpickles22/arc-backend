@@ -13,7 +13,7 @@ import type {
   LocksResponse,
   AnalyzeResponse, ApiErrorResponse, AttentionResponse, DocsResponse, DraftSceneResponse,
   AnnotationsResponse, HealthResponse, MaterialResponse, NoteResponse, NotesResponse,
-  AgentsResponse, HookResponse, LensesResponse, OkResponse, ReviseResponse, RunDecisionResponse, RunDetailResponse, RunResponse, RunsResponse,
+  AgentsResponse, HookResponse, LensesResponse, OkResponse, ReviseResponse, RunDecisionResponse, StopRunResponse, DeleteTranscriptResponse, RunDetailResponse, RunResponse, RunsResponse,
   UpdateMaterialResponse, WorkDecisionResponse, WorkResponse,
   BriefingResponse, ProseAcceptResponse, ProseCheckHit, ProseChecksResponse, ProseParagraphRequest, ProseResponse, ProseSentenceRequest,
   RatifyRuleResponse, StyleResponse,
@@ -21,7 +21,7 @@ import type {
 import { STORY } from './config'
 import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
-import { docsArticles, git, materialItems, updateMaterial, proseAccept, proseAcceptParagraph, proseRejectParagraph, proseAcceptSentence, proseRejectSentence, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig } from './story'
+import { docsArticles, git, materialItems, updateMaterial, proseAccept, proseAcceptParagraph, proseRejectParagraph, proseAcceptSentence, proseRejectSentence, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig, commitRecords } from './story'
 import { annotations, closeAnsweredNotes, createAnnotation, deleteAnnotation, updateAnnotation } from './annotations'
 
 /** After a paragraph or sentence accept: if the scene has nothing pending
@@ -49,14 +49,16 @@ import { runBootstrapStyle } from './bootstrap-style'
 import { runRedraft } from './redraft'
 import { runWorkNotes } from './work-notes'
 import { addRouteNote, adoptAlternative, clearAlternatives, deleteRouteNote, dropAlternative, listRoutes, routeCounts, runReroute, runRevise } from './reroute'
+import { doctorRecords } from './doctor'
 import { generatedFor } from './ledger'
-import type { AdoptRouteResponse, RerouteResponse, RouteListResponse, WorkNotesMode, WorkNotesResponse } from 'arc-canon-graph/api-types.ts'
+import type { AdoptRouteResponse, DoctorRecordsResponse, RerouteResponse, RouteListResponse, WorkNotesMode, WorkNotesResponse } from 'arc-canon-graph/api-types.ts'
 import { createLock, locks, locksOn, removeLock } from './locks'
 import { addNote, deleteNote, listNotes, updateNote as reviseNote } from './notes'
 import { decideWork, workNote } from './work'
-import { closeRun, getRun, listRuns, observe, openRun, pendingOutcome, registerRun } from './runs'
+import { closeRun, deleteRunTranscripts, getRun, listRuns, observe, openRun, pendingOutcome, registerRun, stopRun } from './runs'
+import { resolveRequest } from './request'
 import { hook, listAgents } from './agents'
-import { Run, subscribeRuns } from './run'
+import { Run, subscribeRuns, stampReceiptCommit } from './run'
 import { runLensFanOut } from './lenses'
 import { runRevisionFanOut } from './revise'
 import { decide } from './orchestrate'
@@ -67,7 +69,7 @@ type ParamHandler = (req: http.IncomingMessage, res: http.ServerResponse, id: st
 /** Routes carrying one id in the path. The exact table stays the common case
  *  and is checked first; this is consulted only on a miss, so nothing about
  *  the existing dispatch changes shape. */
-const paramRoutes: { pattern: RegExp; methods: Partial<Record<'GET' | 'POST', ParamHandler>> }[] = []
+const paramRoutes: { pattern: RegExp; methods: Partial<Record<'GET' | 'POST' | 'DELETE', ParamHandler>> }[] = []
 
 function registerRunParamRoutes(): void {
   paramRoutes.push({
@@ -83,6 +85,18 @@ function registerRunParamRoutes(): void {
         json(res, 200, { ok: true } satisfies OkResponse)
       },
     },
+  })
+  // A stop reaches the child (A67-3): what landed stays, the run ends
+  // cancelled, and the request that started it returns with what there is.
+  paramRoutes.push({
+    pattern: /^\/api\/runs\/(run\.\d+)\/stop$/,
+    methods: { POST: (_req, res, id) => json(res, 200, { run: stopRun(id) } satisfies StopRunResponse) },
+  })
+  // The transcripts a run's launches named, removed by id — after a run
+  // that did not finish, or at the decision.
+  paramRoutes.push({
+    pattern: /^\/api\/runs\/(run\.\d+)\/transcript$/,
+    methods: { DELETE: (_req, res, id) => json(res, 200, deleteRunTranscripts(id) satisfies DeleteTranscriptResponse) },
   })
   paramRoutes.push({
     pattern: /^\/api\/runs\/(run\.\d+)\/decision$/,
@@ -579,17 +593,34 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       // actually ADOPTED into is settled by this accept, and the ledger
       // records exactly that (origin 'reroute', written at adopt).
       const adopted = new Map<string, string>()
+      // And WHICH run produced each adopted route, so the accept can stamp
+      // its commit onto that run's receipt (A67-4) — the artefact the
+      // receipt is committed beside.
+      const adoptedRun = new Map<string, string>()
+      // And WHICH route was adopted, so the clear below does not record the
+      // adopted route as superseded by its own adoption (A67-10).
+      const adoptedRoute = new Map<string, string>()
       for (const c of proseDraft().changes) {
         const gen = generatedFor(c.file)
         if (gen?.entry.origin === 'reroute' && gen.entry.scene) adopted.set(c.file, gen.entry.scene)
+        if (gen?.entry.origin === 'reroute' && gen.entry.run) adoptedRun.set(c.file, gen.entry.run)
+        if (gen?.entry.origin === 'reroute' && gen.entry.route) adoptedRoute.set(c.file, gen.entry.route)
       }
       const result = proseAccept(typeof body.message === 'string' ? body.message : undefined, files)
       // Kept here rather than inside proseAccept so story.ts and reroute.ts
       // stay acyclic, and never on a paragraph or sentence accept — those do
       // not settle the scene.
+      const stamped: string[] = []
       for (const f of result.files) {
         const scene = adopted.get(f)
-        if (scene) clearAlternatives(scene)
+        if (scene) clearAlternatives(scene, { adopted: adoptedRoute.get(f) })
+        const run = adoptedRun.get(f)
+        if (run && stampReceiptCommit(run, result.hash)) stamped.push(path.join('history', `${run}.yaml`))
+      }
+      // The receipts join the record in their own commit, right behind the
+      // accept whose hash they now name (A67-4).
+      if (stamped.length) {
+        commitRecords(`Record: ${stamped.length === 1 ? 'the receipt' : `${stamped.length} receipts`} for ${result.hash}`, stamped)
       }
       // The notes this change answered close with it (A63-4): the ledger
       // says which, so nothing is judged — the thought goes because the
@@ -731,23 +762,41 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       json(res, 200, listRoutes(scene) satisfies RouteListResponse)
     },
     POST: async (req, res) => {
-      if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
+      const b = (await parsedBody(req)) as { scene?: unknown; count?: unknown; guidance?: unknown; dry?: unknown; depth?: unknown }
+      // A dry run consults no engine, so it needs none (A67-2).
+      if (b.dry !== true && !(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
         throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
       }
-      const b = (await parsedBody(req)) as { scene?: unknown; count?: unknown; guidance?: unknown }
       if (typeof b.scene !== 'string' || !b.scene) throw new HttpError(400, 'scene required')
+      // THE REQUEST (A67-8): the gesture the author made, resolved by code
+      // to a cell and then to the row that admits it — refused here, in
+      // their words, if the rows do not list it.
+      const request = resolveRequest({
+        said: `another way through ${b.scene}`,
+        job: 'explore', scope: 'scene', mode: 'one-shot',
+        depth: typeof b.depth === 'string' ? b.depth : undefined,
+        subject: b.scene,
+      })
       if (b.count !== undefined && !(Number.isInteger(b.count) && (b.count as number) >= 1 && (b.count as number) <= 3)) {
         throw new HttpError(400, 'count must be 1–3')
       }
       json(res, 200, await runReroute({
         scene: b.scene,
+        request,
         count: b.count as number | undefined,
         guidance: typeof b.guidance === 'string' ? b.guidance : undefined,
+        dry: b.dry === true,
       }) satisfies RerouteResponse)
     },
   },
   // How many routes wait on each scene: one read, so the manuscript can mark
   // every scene without asking per scene.
+  // What is on disk after a killed run or a retired proposal (A67-12). The
+  // terminal asks; the counts are the backend's because the record is.
+  '/api/doctor/records': {
+    GET: (_req, res) => { json(res, 200, doctorRecords() satisfies DoctorRecordsResponse) },
+  },
+
   '/api/prose/reroute/counts': {
     GET: (_req, res) => { json(res, 200, { counts: routeCounts() }) },
   },
@@ -798,10 +847,16 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
         throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
       }
-      const b = (await parsedBody(req)) as { scene?: unknown; alt?: unknown; note?: unknown }
+      const b = (await parsedBody(req)) as { scene?: unknown; alt?: unknown; note?: unknown; depth?: unknown }
       if (typeof b.scene !== 'string' || !b.scene || typeof b.alt !== 'string' || !b.alt) throw new HttpError(400, 'scene and alt required')
       if (b.note !== undefined && typeof b.note !== 'string') throw new HttpError(400, 'note must be text')
-      json(res, 200, await runRevise({ scene: b.scene, alt: b.alt, note: typeof b.note === 'string' ? b.note.trim() : undefined }) satisfies RerouteResponse)
+      const request = resolveRequest({
+        said: `rewrite this route from my notes on it`,
+        job: 'explore', scope: 'route', mode: 'one-shot',
+        depth: typeof b.depth === 'string' ? b.depth : undefined,
+        subject: b.alt,
+      })
+      json(res, 200, await runRevise({ scene: b.scene, alt: b.alt, request, note: typeof b.note === 'string' ? b.note.trim() : undefined }) satisfies RerouteResponse)
     },
   },
 
@@ -919,6 +974,10 @@ export function createArcServer(): http.Server {
     const origin = corsOrigin(req)
     if (origin) res.setHeader('access-control-allow-origin', origin)
     res.setHeader('access-control-allow-headers', 'content-type')
+    // DELETE is not a safelisted method, so the viewer's preflight must be
+    // answered with the methods or the browser blocks the request before it
+    // is made (A67-3, the transcript route).
+    res.setHeader('access-control-allow-methods', 'GET, POST, DELETE, OPTIONS')
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204)
@@ -940,7 +999,7 @@ export function createArcServer(): http.Server {
             .map(r => ({ r, m: r.pattern.exec(url.pathname) }))
             .find(x => x.m)
           if (!hit) throw new HttpError(404, `no route for ${url.pathname}`)
-          const handler = hit.r.methods[req.method as 'GET' | 'POST']
+          const handler = hit.r.methods[req.method as 'GET' | 'POST' | 'DELETE']
           if (!handler) throw new HttpError(405, `${Object.keys(hit.r.methods).join('/')} only`)
           await handler(req, res, decodeURIComponent(hit.m![1]))
         }

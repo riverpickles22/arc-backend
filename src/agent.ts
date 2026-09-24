@@ -12,6 +12,7 @@ import { betaTool } from '@anthropic-ai/sdk/helpers/beta/json-schema'
 import { dump as yamlDump, load as yamlLoad } from 'js-yaml'
 import type { ChatAction } from 'arc-canon-graph'
 import { STORY } from './config'
+import { currentEngine } from './engine'
 import { invalidateCanon, validateStory } from './canon'
 import { resolveWithin } from './safe-path'
 import { idsInFile, takenIds } from './records'
@@ -34,8 +35,20 @@ export type { ChatAction as Action }
 // Constructed lazily: the SDK throws without credentials, and every pass
 // that reaches for it checks for a key first — the CLI engine is the local
 // default (see engine.ts).
+//
+// Under the FIXTURE engine nothing may reach a model (A67-9). Only the rowed
+// passes dispatch on the fixture themselves; every other pass falls through
+// to this client, so the refusal lives here, where all of them arrive — a
+// pass that has no fixture refuses with a sentence, never spends a token and
+// never dies with the SDK's key error. The seam takes over the dispatch in
+// A67-2, and this guard goes with the last SDK branch.
 let client: Anthropic | undefined
-export const getClient = () => (client ??= new Anthropic())
+export const getClient = (): Anthropic => {
+  if (currentEngine() === 'fixture') {
+    throw new Error('the fixture engine is selected, and this pass has no fixture: only a rowed pass (another way through, and its rewrite) answers from the recorded briefs — unset ARC_DRAFT_ENGINE to use a model')
+  }
+  return (client ??= new Anthropic())
+}
 
 /** Canonical YAML for agent writes (multi-author early lock 3): whatever
  *  shape the model emits, the file lands deterministically formatted —

@@ -15,7 +15,6 @@ import { MODEL } from './config'
 import { canonJson } from './canon'
 import { getClient } from './agent'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
-import { STORY } from './config'
 import { HttpError } from './http'
 
 type Operation = 'capture' | 'query' | 'research' | 'explore' | 'mutate' | 'review'
@@ -160,7 +159,7 @@ export async function runIntake(input: string, runId?: string): Promise<IntentEn
   if (!engine) throw new HttpError(503, 'No generation engine available.')
   const prompt = buildIntakePrompt(canonJson(), input)
 
-  if (engine === 'claude-cli') return parseEnvelope((await runCliPrompt(prompt, { pass: 'intent', cwd: STORY, runId })).text)
+  if (engine === 'claude-cli') return parseEnvelope((await runCliPrompt(prompt, { pass: 'intent', runId })).text)
 
   const message = await getClient().beta.messages.create({
     model: MODEL,

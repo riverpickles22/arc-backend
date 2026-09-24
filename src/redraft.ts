@@ -175,7 +175,7 @@ export function buildRedraftPrompt(a: {
 }
 
 async function ask(prompt: string): Promise<string> {
-  if (currentEngine() === 'claude-cli') return (await runCliPrompt(prompt, { pass: 'redraft', cwd: STORY })).text
+  if (currentEngine() === 'claude-cli') return (await runCliPrompt(prompt, { pass: 'redraft' })).text
   const message = await getClient().beta.messages.create({
     model: MODEL,
     max_tokens: 16000,

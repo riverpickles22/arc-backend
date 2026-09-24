@@ -39,68 +39,33 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import type Anthropic from '@anthropic-ai/sdk'
 import { dump as yamlDump, load as yamlLoad } from 'js-yaml'
 import type { CanonDoc, ProseScene, ResolvedAnnotation, ResolvedLock, SceneContract } from 'arc-canon-graph'
-import type { AdoptRouteResponse, RerouteRefusal, RerouteResponse, RouteAlternative, RouteCoverage, RouteListResponse, RouteLockNotice, RouteNote } from 'arc-canon-graph/api-types.ts'
+import type { AdoptRouteResponse, DroppedClaim, RerouteRefusal, RerouteResponse, RouteAlternative, RouteCoverage, RouteListResponse, RouteLockNotice, RouteNote, RouteReceipt } from 'arc-canon-graph/api-types.ts'
 import { dateOf, splitSentences } from 'arc-canon-graph'
 import { buildContextPack } from 'arc-canon-graph/context-pack-lib.ts'
-import { lockViolations, paragraphsOf } from 'arc-canon-graph/annotations.ts'
-import { MODEL, STORY } from './config'
-import { getClient } from './agent'
+import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
+import { STORY } from './config'
 import { annotations, openNotesOn } from './annotations'
 import { canonJson } from './canon'
-import { currentEngine, runCliPrompt, stripFences } from './engine'
+import { currentEngine, renderBrief, type Brief, type EngineErrorKind } from './engine'
+import { runGates, stripQuotedSpans, type ProseGateCtx, type WithheldSet } from './gates'
+import { ROUTE_WITHHELD, ROW_EXPLORE_ROUTE, ROW_EXPLORE_SCENE, jobFingerprint, type SealedRow } from './registry'
+import type { ResolvedRequest } from './request'
+import { Run, emptyReceipt, gateName, outcomeSentence, readWorkingReceipt, writeReceipt, writeWorkingReceipt, type GateRecord, type Receipt } from './run'
+import { endRun, registerRun, stateOf } from './runs'
+import type { RunEnding } from 'arc-canon-graph'
 import { HttpError } from './http'
+import { recordDisposition, type Disposition } from './evidence'
 import { recordGenerated } from './ledger'
-import { describeViolation, locksOn } from './locks'
+import { locksOn } from './locks'
 import { contractBlock, literalWithholds, splitBriefing, withholdViolations } from './redraft'
+import { arcRevision, sha16, storyRevision } from './records'
 import { proseScenes, proseWrite } from './story'
 import { styleContract } from './style'
 
-export const REROUTE_RULES = `You are arc's REROUTE pass. The author asked for ANOTHER WAY THROUGH a scene
-of their own novel: the same destination, reached by a different route. You
-are deliberately not shown the current prose. You are shown where it must
-arrive, and the route it already takes, which you must not take again.
-
-THE DESTINATION binds. Every item under "must be accomplished" happens in
-your scene, by whatever realization you choose. A required beat is not
-something to avoid — it is something to reach another way.
-
-THE KNOWN ROUTE is fenced. Do not reproduce its ordering, its staging, what
-it opens on or what it closes on. Find a different realization: enter
-elsewhere, stage it differently, let a different thing carry the movement.
-
-ARC'S OWN READING, where it appears, is context and binds nothing.
-
-WHAT MUST SURVIVE, exactly:
-1. The scene's meaning. Every event and fact the frontmatter binds still
-   happens here, in canon's order; character state at this moment in the
-   story is unchanged. Bound events are fact, not route.
-2. The scene contract — purpose, must_establish, must_withhold, motifs,
-   constraints. Withholding is deliberate: do not "fix" it.
-3. The style contract. It is the author's voice; run its pre-draft
-   checklist before answering.
-4. POV, tense, and the anachronism boundary.
-5. Locked paragraphs, VERBATIM, word for word, in the relative order given.
-6. Canon is truth. Never invent a fact the record would have to carry — a
-   new person, date, or place is a proposal for the author, not yours to
-   make. If the destination cannot be reached without one, say so in the
-   briefing: that is a story-state question, and only the author answers it.
-
-ANSWER IN TWO PARTS, separated by a line that is exactly:
-=== BRIEFING ===
-Part one: the rerouted prose alone — no frontmatter, no commentary, no
-fences. Part two, the briefing, in the ARGUED register (claims for the
-author to judge, not verdicts): where each required beat lands, by paragraph
-number; how your ordering and staging differ from the known route; how each
-locked paragraph now sits and what changed around it; the style checklist
-item by item; and any fact you needed that canon does not hold.
-End the briefing with ONE fenced json block of exactly this shape, and
-nothing else inside the fence:
-\`\`\`json
-{"coverage": [{"item": "<a required beat, verbatim>", "paragraph": <1-based paragraph number, or null>}]}
-\`\`\``
+// The rules are the row's (registry.ts, ROW_EXPLORE_SCENE.rules): one
+// address per job, and this module reads them from there.
 
 /** Seeds for difference — implementation detail, not product concepts. They
  *  exist so two alternatives differ from each other, not to teach craft. A
@@ -127,11 +92,109 @@ export const KEEP_ALTERNATIVES = 6
  *  three times is one way through. */
 export const MAX_ROUTES = 4
 
-/** The routes waiting on a scene: chain heads, so versions do not count. */
-export function routesWaiting(scene: string): number {
-  const alts = listAlternatives(scene)
+/** The chain heads on a scene: versions do not count, a route rewritten
+ *  three times is one way through. `governed` counts only the ones that
+ *  still hold — a stale route, or one written by an older arc, is shown
+ *  with a re-run and does not hold a place against the cap of four
+ *  (A67-10, Q13) — while `all` is everything still waiting on the author,
+ *  which is what the briefing counts. */
+export function routeHeads(scene: string): { all: number; governed: number } {
+  const now = fingerprintsNow(scene)
+  const alts = listAlternatives(scene).map(a => withStaleness(a, now))
   const revised = new Set(alts.map(a => a.revises).filter((r): r is string => typeof r === 'string'))
-  return alts.filter(a => !revised.has(a.id)).length
+  const heads = alts.filter(a => !revised.has(a.id))
+  return { all: heads.length, governed: heads.filter(a => !a.stale).length }
+}
+
+/** How many of the four places on this scene are taken. */
+export const routesWaiting = (scene: string): number => routeHeads(scene).governed
+
+/** Has the ground moved under this route since it was written?
+ *
+ *  Invariant 1: every proposal names the fingerprints of everything it read,
+ *  and a changed fingerprint makes it stale — shown as stale with a one-click
+ *  re-run, never written over newer work and never logged as a decision. A
+ *  route with no reads at all predates the governed path and is stale for a
+ *  different reason, which the author reads differently. */
+export function withStaleness(alt: RouteAlternative, now = fingerprintsNow(alt.scene)): RouteAlternative {
+  if (!alt.reads?.length || !alt.run) {
+    return { ...alt, stale: { changed: [], why: 'written by an older arc' } }
+  }
+  const changed = alt.reads.filter(r => {
+    const cur = now.at.get(r.id)
+    // Gone counts as changed: an open note the pass read and the author has
+    // since answered or deleted is not the record the route was written
+    // from. Absence only means "not measured" for the ids this map does not
+    // carry — and the write path's map carries every one of them.
+    if (cur === undefined) return now.full ? r.id !== 'route' : recomputableAtRest(r.id)
+    return cur !== r.version
+  }).map(r => r.id)
+  return changed.length ? { ...alt, stale: { changed, why: 'the record moved' } } : alt
+}
+
+/** The ids `fingerprintsNow` enumerates completely, so that an id missing
+ *  from it means the thing itself is gone rather than unmeasured: the scene,
+ *  the style contract, every note and every lock. The canon pack and the
+ *  sibling scenes cost a canon read and a chapter walk, so they are measured
+ *  at the write path (`fingerprintsAtWrite`) and not on every listing; the
+ *  parent body of a rewrite never changes under it. */
+const recomputableAtRest = (id: string): boolean =>
+  !id.startsWith('pack:') && !id.startsWith('siblings:') && id !== 'route'
+
+/** What the ids a route read fingerprint to now. `full` says whether every
+ *  id class the manifest can name was measured — the write path's map says
+ *  yes, and then a read id this map has no entry for names something that
+ *  has been deleted since. */
+export interface Fingerprints { at: Map<string, string>; full: boolean }
+
+/** The cheap map, for listing routes: the scene, the style contract, every
+ *  annotation and every lock the scene carries. No canon read. */
+export function fingerprintsNow(scene: string): Fingerprints {
+  const at = new Map<string, string>()
+  const s = proseScenes().find(x => x.scene === scene)
+  if (s) at.set(scene, sha16(s.body))
+  try { at.set('style', sha16(styleForPass({ scene, file: s?.file ?? '', body: s?.body ?? '' }))) } catch { /* absent is not changed */ }
+  // Every note on the scene, not only the open ones: a note that closed is a
+  // note the pass would no longer be handed, and the route read it open.
+  try { for (const n of annotations().filter(n => n.anchor.scene === scene)) at.set(n.id, sha16(n.body)) } catch { /* absent is gone */ }
+  try { for (const l of locksOn(scene, s?.body ?? '')) at.set(l.id, sha16(String(l.anchor.quote ?? ''))) } catch { /* absent is gone */ }
+  return { at, full: false }
+}
+
+/** The whole map, for the write path (invariant 1: a changed fingerprint
+ *  makes a route stale AT THE WRITE PATH). Adds the two ids the listing map
+ *  leaves out, each of which costs a canon read. */
+export function fingerprintsAtWrite(scene: string): Fingerprints {
+  const { at } = fingerprintsNow(scene)
+  const s = proseScenes().find(x => x.scene === scene)
+  if (s) {
+    const { pack, siblings } = packAndSiblings(s)
+    at.set(`pack:${scene}`, sha16(pack))
+    at.set(`siblings:${scene}`, sha16(siblings))
+  }
+  return { at, full: true }
+}
+
+/** The canon pack and the sibling scenes for one scene, built exactly once
+ *  here so the reroute's brief and the staleness check can never drift into
+ *  fingerprinting two different things. */
+function packAndSiblings(s: ProseScene): { pack: string; siblings: string } {
+  const canon = JSON.parse(canonJson()) as CanonDoc
+  const chapter = (canon.chapters ?? []).find(c => c.id === s.chapter)
+  const at = dateOf(chapter?.span?.end) ?? dateOf(chapter?.span?.start)
+  const pack = at
+    ? buildContextPack(canon, { at, events: s.events, pov: s.pov ?? chapter?.pov })
+    : buildContextPack(canon, { chapter: s.chapter })
+  // The siblings go in stripped of THIS scene's prose for the same reason the
+  // contract does: two scenes of one chapter that share a sentence — a refrain,
+  // a line that comes back — would otherwise hand the pass the very scene it is
+  // meant to work without, through the neighbour rather than through itself.
+  const siblings = withoutSubjectProse(
+    proseScenes().filter(x => x.chapter === s.chapter && x.scene !== s.scene)
+      .map(x => `=== ${x.file} ===\n${x.body.trim()}`).join('\n\n'),
+    { scene: s.scene, body: s.body },
+  )
+  return { pack, siblings }
 }
 
 const words = (s: string): number => s.split(/\s+/).filter(Boolean).length
@@ -226,7 +289,7 @@ export function buildReroutePrompt(a: ReroutePromptInput): ReroutePrompt {
     ? `=== LOCKED PARAGRAPHS (reproduce VERBATIM, in this order) ===\n${a.locked.map(l => `[¶${l.paragraph + 1} in the current scene]\n${l.text}`).join('\n\n')}`
     : ''
   return {
-    stable: [REROUTE_RULES, `=== THE STYLE CONTRACT (binding) ===\n${a.style}`].join('\n\n'),
+    stable: [ROW_EXPLORE_SCENE.rules, `=== THE STYLE CONTRACT (binding) ===\n${a.style}`].join('\n\n'),
     volatile: [
       `=== THE SCENE CONTRACT (${a.scene.scene}) ===\n${contractBlock(a.scene.contract)}`,
       `=== CONTEXT PACK (canon truth; every item carries its inclusion reason) ===\n${a.pack}`,
@@ -247,12 +310,82 @@ export function buildReroutePrompt(a: ReroutePromptInput): ReroutePrompt {
 
 export const flattenPrompt = (p: ReroutePrompt): string => [p.stable, p.volatile, p.user].join('\n\n')
 
+/** The prompt as the seam's brief: three blocks, the first two cacheable.
+ *  Rendered, it is flattenPrompt — the text the fixtures fingerprint. */
+export const toBrief = (p: ReroutePrompt): Brief => ({
+  blocks: [
+    { id: 'stable', text: p.stable, cached: true },
+    { id: 'volatile', text: p.volatile, cached: true },
+    { id: 'user', text: p.user, cached: false },
+  ],
+})
+
 /** The one way the current prose reaches a reroute prompt is the style
  *  contract's own touchstones: §6 quotes passages of the manuscript, and a
  *  passage of the scene being rerouted is the current route in the model's
  *  hands — the first live run treated it as exactly that. Strip every
  *  touchstone drawn from the target scene (by its label's file, or its
  *  anchor's scene) and say so in place, so the section stays honest. */
+/** THE STYLE CONTRACT AS A WITHHOLDING PASS MAY SEE IT (A67-14).
+ *
+ *  Two strips, in order, and one place that does both — because the brief and
+ *  the fingerprint of what the brief read must be the same string, and two
+ *  call sites composing them separately is how they stop being.
+ *
+ *  First the touchstone blocks drawn from this scene, which go whole: a
+ *  touchstone is an example and an example of the current route teaches the
+ *  pass the thing it is meant to find another way to. Then any remaining run
+ *  of this scene's own prose, wherever it sits — a Rhythm rule quoting the
+ *  paragraph it is about is the same leak in a different shape, and the leak
+ *  gate counts it the same way. */
+export function styleForPass(target: { scene: string; file: string; body: string }): string {
+  const contract = styleContract()
+  const key = `${target.scene}\n${sha16(contract)}\n${sha16(target.body)}`
+  const had = STYLE_FOR_PASS.get(key)
+  if (had !== undefined) return had
+  const out = withoutSubjectProse(stripSceneTouchstones(contract, target), target)
+  // One manuscript render asks this once per scene through `routeCounts`, and
+  // the answer only changes when the contract or the scene body does — which
+  // is exactly what the key is.
+  if (STYLE_FOR_PASS.size > 256) STYLE_FOR_PASS.clear()
+  STYLE_FOR_PASS.set(key, out)
+  return out
+}
+const STYLE_FOR_PASS = new Map<string, string>()
+
+/** Cut any run of the subject scene's own prose out of a layer of the brief,
+ *  by the leak gate's rule and minus what the row allows through.
+ *
+ *  It is not only the style contract. ANY layer can carry the scene: a rule
+ *  that quotes the paragraph it is about, and a sibling scene that shares a
+ *  sentence with this one — two scenes of a chapter that repeat a line are a
+ *  thing authors do on purpose, and the pass is handed its siblings in full.
+ *  Whatever the layer, the fix is the same and it is applied in one place. */
+export function withoutSubjectProse(layer: string, target: { scene: string; body: string }): string {
+  return stripQuotedSpans(
+    layer,
+    target.body,
+    ROUTE_WITHHELD.spanWords,
+    `**(a quotation from ${target.scene} is withheld from this pass — it is the current route)**`,
+    allowedThrough(target),
+  ).text
+}
+
+/** What the row lets through even though it is the scene: the locked
+ *  paragraphs, which the brief hands over verbatim by design, and the
+ *  contract's own quoted withholds. Computed here rather than passed in, so
+ *  the brief and the fingerprint of what the brief read can never be built
+ *  from two different allowances. */
+function allowedThrough(target: { scene: string; body: string }): string[] {
+  const s = proseScenes().find(x => x.scene === target.scene)
+  if (!s) return []
+  const paras = paragraphsOf(target.body)
+  const locked = locksOn(target.scene, target.body)
+    .filter(l => l.scope === 'paragraph' && l.resolution.paragraph !== null)
+    .map(l => paras[l.resolution.paragraph as number] ?? '')
+  return [...locked, ...literalWithholds(s.contract?.must_withhold)].filter(Boolean)
+}
+
 export function stripSceneTouchstones(style: string, target: { scene: string; file: string }): string {
   const lines = style.split('\n')
   const start = lines.findIndex(l => /^##\s+(?:\d+[.)]\s*)?touchstones\s*$/i.test(l))
@@ -298,7 +431,7 @@ export function stripSceneTouchstones(style: string, target: { scene: string; fi
 /** The coverage tail: the one machine-readable thing the pass returns. Parsed
  *  tolerantly; absent or unreadable means null — shown as "not reported",
  *  never guessed. */
-export function parseCoverageTail(briefing: string): { briefing: string; coverage: RouteCoverage[] | null } {
+export function parseCoverageTail(briefing: string): { briefing: string; coverage: RouteCoverage[] | null; unparseable: number } {
   const fence = /```(?:json)?\s*([\s\S]*?)```\s*$/
   const m = briefing.match(fence)
   let raw: string | null = null
@@ -308,19 +441,23 @@ export function parseCoverageTail(briefing: string): { briefing: string; coverag
     const bare = briefing.match(/(\{[\s\S]*"coverage"[\s\S]*\})\s*$/)
     if (bare) { raw = bare[1]; rest = briefing.slice(0, bare.index).trimEnd() }
   }
-  if (raw === null) return { briefing: briefing.trim(), coverage: null }
+  if (raw === null) return { briefing: briefing.trim(), coverage: null, unparseable: 0 }
   try {
     const first = raw.indexOf('{'); const last = raw.lastIndexOf('}')
     const parsed = JSON.parse(first >= 0 && last > first ? raw.slice(first, last + 1) : raw) as unknown
     const rows = Array.isArray(parsed) ? parsed : (parsed as { coverage?: unknown })?.coverage
-    if (!Array.isArray(rows)) return { briefing: rest, coverage: null }
-    const coverage = rows
+    if (!Array.isArray(rows)) return { briefing: rest, coverage: null, unparseable: 0 }
+    const usable = rows
       .filter((r): r is { item: unknown; paragraph: unknown } => !!r && typeof r === 'object')
       .filter(r => typeof r.item === 'string' && r.item.trim())
+    const coverage = usable
       .map(r => ({ item: String(r.item).trim(), paragraph: Number.isInteger(r.paragraph) && (r.paragraph as number) > 0 ? r.paragraph as number : null }))
-    return { briefing: rest, coverage }
+    // A row that is not a claim at all — no item, or not an object — is
+    // counted rather than silently dropped (§4: every drop is counted by
+    // reason).
+    return { briefing: rest, coverage, unparseable: rows.length - usable.length }
   } catch {
-    return { briefing: rest, coverage: null }
+    return { briefing: rest, coverage: null, unparseable: 0 }
   }
 }
 
@@ -348,33 +485,64 @@ export function wordSurvival(passage: string, other: string): number {
  *  the same 60% bar touchstones use to call a passage a descendant. */
 export const SURVIVAL_BAR = 0.6
 
-/** Every required beat gets a row, whether or not the pass mentioned it:
- *  the tail's rows are matched to the destination (exact, or by ≥60% of the
- *  item's words surviving in order — the model paraphrases), and a beat the
- *  tail never named shows as not reported. Rows naming nothing required are
- *  kept after them, so an honest extra claim is not thrown away. */
-export function mergeCoverage(destination: string[], rows: RouteCoverage[] | null): RouteCoverage[] | null {
-  if (rows === null) return null
+/** EVIDENCE RESOLUTION, minimal (A67-8; §4, "Evidence resolution").
+ *
+ *  Every argued claim names its evidence by id from the slice it was given.
+ *  A route's coverage claims name beats; each is resolved against the
+ *  DESTINATION the pass was handed, and a claim naming a beat the
+ *  destination did not hold is DROPPED and counted by reason — never shown
+ *  beside the required ones as though it were evidence of anything.
+ *
+ *  Every required beat still gets a row whether or not the pass mentioned
+ *  it (matched exactly, or by ≥60% of the item's words surviving in order,
+ *  because the model paraphrases); a beat the tail never named shows as not
+ *  reported.
+ *
+ *  `known` is what the record holds but did not bind — arc's own key
+ *  points, which are context and never the destination. A claim that
+ *  matches one of those is *outside the slice*; a claim that matches
+ *  nothing is *unresolvable*. */
+export function resolveCoverage(
+  destination: string[],
+  rows: RouteCoverage[] | null,
+  known: string[] = [],
+): { coverage: RouteCoverage[] | null; dropped: DroppedClaim[]; returned: number } {
+  if (rows === null) return { coverage: null, dropped: [], returned: 0 }
   const used = new Set<number>()
+  const matches = (item: string, other: string): number => {
+    const a = norm(item).toLowerCase(); const b = norm(other).toLowerCase()
+    return a === b ? 1 : Math.max(wordSurvival(item, other), wordSurvival(other, item))
+  }
   const find = (item: string): RouteCoverage | undefined => {
-    const n = norm(item).toLowerCase()
     let best = -1; let bestScore = 0
     rows.forEach((r, i) => {
       if (used.has(i)) return
-      const rn = norm(r.item).toLowerCase()
-      const score = rn === n ? 1 : Math.max(wordSurvival(item, r.item), wordSurvival(r.item, item))
+      const score = matches(item, r.item)
       if (score > bestScore) { bestScore = score; best = i }
     })
     if (best < 0 || bestScore < SURVIVAL_BAR) return undefined
     used.add(best)
     return rows[best]
   }
-  const merged: RouteCoverage[] = destination.map(item => {
+  const coverage: RouteCoverage[] = destination.map(item => {
     const hit = find(item)
     return { item, paragraph: hit ? hit.paragraph : null }
   })
-  rows.forEach((r, i) => { if (!used.has(i)) merged.push(r) })
-  return merged
+  const counts = new Map<DroppedClaim['reason'], number>()
+  let returned = used.size
+  rows.forEach((r, i) => {
+    if (used.has(i)) return
+    // A beat stated twice is a RESTATEMENT, not a drop: its evidence
+    // resolved, and the row it belongs to is already in the coverage above.
+    // Only a claim that resolves to nothing the pass was asked to reach is
+    // dropped, and then it is counted by reason.
+    if (destination.some(item => matches(item, r.item) >= SURVIVAL_BAR)) { returned++; return }
+    const reason: DroppedClaim['reason'] = known.some(k => matches(k, r.item) >= SURVIVAL_BAR)
+      ? 'outside the slice'
+      : 'unresolvable'
+    counts.set(reason, (counts.get(reason) ?? 0) + 1)
+  })
+  return { coverage, dropped: [...counts].map(([reason, count]) => ({ reason, count })), returned }
 }
 
 /** PROVEN: how much of the current wording the answer reused. Not a proof of
@@ -478,8 +646,11 @@ function parseAlternative(text: string): RouteAlternative | null {
   return {
     id: head.id, scene: head.scene, seed: String(head.seed ?? ''), guidance: head.guidance ?? undefined,
     based_on: String(head.based_on ?? ''), created_at: String(head.created_at ?? ''),
+    ...(typeof head.run === 'string' ? { run: head.run } : {}),
+    ...(Array.isArray(head.reads) ? { reads: head.reads as { id: string; version: string }[] } : {}),
     body, briefing,
     coverage: Array.isArray(head.coverage) ? head.coverage as RouteCoverage[] : null,
+    ...(Array.isArray(head.dropped) ? { dropped: head.dropped as DroppedClaim[] } : {}),
     overlap: typeof head.overlap === 'number' ? head.overlap : null,
     ...(typeof head.retried === 'string' ? { retried: head.retried } : {}),
     ...(typeof head.revises === 'string' ? { revises: head.revises } : {}),
@@ -498,6 +669,42 @@ export function listAlternatives(scene: string): RouteAlternative[] {
     .sort((x, y) => y.created_at.localeCompare(x.created_at))
 }
 
+/** THE ONE WAY A ROUTE LEAVES DISK (A67-10). Its disposition is recorded
+ *  first — with the author's own notes copied in — and only then is the file
+ *  removed. No route leaves without one: not a cancel, not the accept that
+ *  clears a scene's field, not the prune past the cap.
+ *
+ *  `fs.rmSync` on a route file appears nowhere else. */
+function removeAlternative(alt: RouteAlternative, disposition: Disposition, because: string): boolean {
+  const recorded = recordDisposition({
+    scene: alt.scene,
+    route: alt.id,
+    disposition,
+    notes: (alt.notes ?? []).map(n => ({ body: n.body, paragraph: n.paragraph, at: n.created_at })),
+    because,
+    ...(alt.run ? { run: alt.run } : {}),
+  })
+  // THE ORDER IS THE INVARIANT. If the evidence log could not be written the
+  // route KEEPS ITS FILE: a removal here would take the author's own notes
+  // with it and leave nothing on record, which is the one thing this
+  // function exists to prevent.
+  if (!recorded) return false
+  return dropFile(alt)
+}
+
+/** Remove a route's file once its disposition is on record. Separate because
+ *  the accept also removes the route it adopted, whose disposition was
+ *  written at the adopt — one entry, not two. */
+function dropFile(alt: RouteAlternative): boolean {
+  try {
+    fs.rmSync(path.join(DIR(alt.scene), `${alt.id}.md`), { force: true })
+    return true
+  } catch (e) {
+    console.error('[warn] route file could not be removed:', e)
+    return false
+  }
+}
+
 export function writeAlternative(alt: RouteAlternative): void {
   const dir = DIR(alt.scene)
   fs.mkdirSync(dir, { recursive: true })
@@ -505,15 +712,17 @@ export function writeAlternative(alt: RouteAlternative): void {
   // Generated alternatives are disposable: keep the newest few ROUTES (chain
   // heads), drop the rest — but a kept route keeps every version it came
   // through, because "save the difference in versions" is the rewrite's
-  // contract with the author.
+  // contract with the author. PRUNING IS NEVER SILENT: each route the prune
+  // removes writes its `superseded` entry, with any notes copied in, before
+  // the file goes.
   const alts = listAlternatives(alt.scene)
   const keep = pruneKeepIds(alts, KEEP_ALTERNATIVES)
   for (const old of alts) {
-    if (!keep.has(old.id)) fs.rmSync(path.join(dir, `${old.id}.md`), { force: true })
+    if (!keep.has(old.id)) removeAlternative(old, 'superseded', `pruned: this scene keeps its newest ${KEEP_ALTERNATIVES} routes`)
   }
 }
 
-const bodyHash = (body: string): string => createHash('sha256').update(body.trim()).digest('hex').slice(0, 16)
+const bodyHash = (body: string): string => sha16(body.trim())
 
 /** The locks that would constrain a reroute of this scene — named before the
  *  run so the author knows the surrounding context of a settled paragraph
@@ -527,9 +736,109 @@ export function constrainingLocks(scene: string): RouteLockNotice[] {
     .map(l => ({ id: l.id, scope: l.scope as 'paragraph' | 'scene' | 'chapter', paragraph: l.resolution.paragraph }))
 }
 
+/** THE RECEIPT THE AUTHOR READS (A67-11). A projection of the run's working
+ *  receipt, not the thing itself: the fingerprints, the session ids, the
+ *  transcript paths and the git revision stay on disk, because none of them
+ *  belongs on a page beside the prose. What crosses: what the pass was given,
+ *  the three separate readings of what it was not, the gates, the ending, and
+ *  the request in the author's own words.
+ *
+ *  ONE RUN, SEVERAL ROUTES. A run answers every seed it was asked for, and
+ *  they share one receipt — so the projection keeps only the launches that
+ *  made THIS route. Showing a route the gate records of its siblings puts two
+ *  answers' checks under one heading and lets a sentence blame this route for
+ *  what another one did; `launch` exists on the record precisely so the two
+ *  never blur.
+ *
+ *  AND A ROUTE ON DISK LANDED. It is on disk because it passed its gates; a
+ *  stop that killed a later seed, or a sibling that was refused, is the run's
+ *  ending and not this route's. So the route's own ending is `landed` and it
+ *  says nothing about why it did not — because it did.
+ *
+ *  A route written by an older arc has no run, so it has no receipt — which
+ *  is the difference the reader shows rather than hides (criterion 6). A route
+ *  whose run exists but whose receipt cannot be read is NOT that, and the
+ *  difference is `alt.run`, which the reader reads for itself. */
+export function routeReceipt(alt: RouteAlternative): RouteReceipt | null {
+  if (!alt.run) return null
+  const r = readWorkingReceipt(alt.run)
+  if (!r) return null
+  const mine = (r.gates ?? []).filter(g => !g.launch || !alt.seed || g.launch.startsWith(`${alt.seed}-`))
+  return {
+    run: r.run_id,
+    ...(r.request ? { request: { gesture: r.request.gesture, cell: r.request.cell, ...(r.request.subject ? { subject: subjectWords(r.request.subject) } : {}) } } : {}),
+    given: r.slice?.included ?? [],
+    withheld_by_design: r.slice?.withheld_by_design ?? [],
+    dropped_for_budget: r.slice?.dropped_for_budget ?? [],
+    runtime_added: (r.slice?.runtime_added ?? []).map(addedWords),
+    gates: mine.map(g => ({
+      gate: g.gate, says: gateName(g.gate), verdict: g.verdict, attempt: g.attempt,
+      bar: figure(g.bar), measured: figure(g.measured),
+    })),
+    ending: 'landed',
+    outcome: null,
+    ...(r.engine ? { engine: r.engine } : {}),
+    ...(typeof r.wall_clock_ms === 'number' ? { wall_clock_ms: r.wall_clock_ms } : {}),
+    started_at: r.started_at,
+    decided_at: r.decided_at,
+  }
+}
+
+/** A figure the author reads: a share like 0.3333333333333333 is the same
+ *  number as 0.33 and one of them is unreadable. Integers and strings pass
+ *  through as they are. */
+const figure = (v: number | string | null | undefined): number | string | null =>
+  typeof v === 'number' && !Number.isInteger(v) ? Math.round(v * 100) / 100 : v ?? null
+
+/** The subject of the request, in the author's terms. A scene id is what the
+ *  viewer labels its scenes with and the author reads it every day; a route id
+ *  is a hash, and no author has ever wanted one. */
+const subjectWords = (subject: string): string =>
+  /^alt-/.test(subject) ? 'this route' : subject
+
+/** What the runtime added, said rather than named. `recordedEnvelope` reports
+ *  fields the way the record keeps them — `user_level_skills`, and where each
+ *  was observed. The record keeps that; the page says it in words (rule 9). */
+const ADDED_WORDS: Record<string, string> = {
+  user_level_skills: 'skills installed for your user account',
+  subagents_available: 'the helper sessions the runtime had loaded (none reachable — this pass has no tools)',
+  memory: 'the memory files the runtime loads',
+  user_level_instructions: 'your own standing instructions (~/CLAUDE.md)',
+  project_instructions_above_the_launch_directory: 'project instructions above the folder it ran in',
+  runtime: 'the runtime and its version',
+}
+const addedWords = (entry: string): string => {
+  // `field — where it was observed`. The record keeps the where; the page
+  // says what it is. An entry that is already a sentence is left alone, and a
+  // field arc has no words for is said with spaces rather than underscores
+  // rather than being dropped — an unnamed thing the runtime added is still
+  // something the author should be told about.
+  const [head, ...rest] = entry.split(' — ')
+  const field = head.trim()
+  if (ADDED_WORDS[field]) return ADDED_WORDS[field]
+  if (!/^[a-z][a-z0-9_]*$/.test(field)) return entry
+  const said = field.replace(/_/g, ' ')
+  return rest.length ? `${said} — ${rest.join(' — ')}` : said
+}
+
+/** Every route as the reader takes it: its staleness, and its receipt.
+ *
+ *  `reads` does not cross. It is the fingerprint of everything the pass was
+ *  given — the style contract, the scene body, the canon pack, every note and
+ *  every lock — and staleness is already decided here, on the server, and sent
+ *  as `stale`. Shipping the hashes as well would hand a page beside the prose
+ *  the content fingerprints of the record, which is exactly what the receipt
+ *  projection exists to keep off it. */
+const asRead = (a: RouteAlternative, now: Fingerprints): RouteAlternative => {
+  const read = withStaleness(a, now)
+  delete read.reads
+  return { ...read, receipt: routeReceipt(a) }
+}
+
 export function listRoutes(scene: string): RouteListResponse {
   if (!proseScenes().some(s => s.scene === scene)) throw new HttpError(400, `no scene ${scene}`)
-  return { scene, alternatives: listAlternatives(scene), locks: constrainingLocks(scene) }
+  const now = fingerprintsNow(scene)
+  return { scene, alternatives: listAlternatives(scene).map(a => asRead(a, now)), locks: constrainingLocks(scene) }
 }
 
 /** Adopt: the alternative's body enters the working tree through the same
@@ -541,56 +850,289 @@ export function adoptAlternative(scene: string, id: string): AdoptRouteResponse 
   if (!s) throw new HttpError(400, `no scene ${scene}`)
   const alt = listAlternatives(scene).find(a => a.id === id)
   if (!alt) throw new HttpError(404, `no alternative ${id} for ${scene}`)
+  // A stale route is never written over newer work (invariant 1): the
+  // ground moved under it, and the author re-runs it or cancels it.
+  const staleness = withStaleness(alt, fingerprintsAtWrite(scene)).stale
+  if (staleness && staleness.why === 'the record moved') {
+    throw new HttpError(409, `${staleness.changed.includes(scene) ? 'this scene has changed' : 'what that route was written from has changed'} since that route was written, so arc did not put it into the book — run it again from where the scene stands now, or cancel it.`)
+  }
   const written = proseWrite(s.file, alt.body.trim() + '\n', s.body)
   const full = fs.readFileSync(path.join(STORY, s.file), 'utf8')
-  recordGenerated(s.file, full, { engine: currentEngine() ?? 'sdk', scene, origin: 'reroute' })
+  recordGenerated(s.file, full, { engine: currentEngine() ?? 'sdk', scene, origin: 'reroute', run: alt.run, route: alt.id })
+  // The author decided about this route, so its receipt joins the record —
+  // ids, hashes and links only. The commit follows at the accept
+  // (`stampReceiptCommit`), which is the artefact this receipt is committed
+  // beside. A route written by an older arc carries no run and no receipt.
+  // The author decided about this route: adopted (§4, the evidence log).
+  recordDisposition({
+    scene, route: alt.id, disposition: 'adopted',
+    notes: (alt.notes ?? []).map(n => ({ body: n.body, paragraph: n.paragraph, at: n.created_at })),
+    because: `taken into ${s.file}`,
+    ...(alt.run ? { run: alt.run } : {}),
+  })
+  if (alt.run) {
+    const working = readWorkingReceipt(alt.run)
+    if (working) {
+      const decidedAt = new Date()
+      // The route landed when the run ended; everything after that was the
+      // author reading it. Never budget (§4, the engine seam).
+      const landedAt = Date.parse(working.decided_at || working.started_at)
+      writeReceipt({
+        ...working,
+        decided_at: decidedAt.toISOString(),
+        story_revision_at_decision: storyRevision(),
+        ...(Number.isFinite(landedAt) ? { waiting_on_author_ms: Math.max(0, decidedAt.getTime() - landedAt) } : {}),
+        author_decision: { decision: 'accepted', note: `adopted ${alt.id} into ${s.file}` },
+        result: { records: [s.file], commit: null },
+      })
+    }
+  }
   return { scene: written, file: s.file }
 }
 
+/** Cancel: the author is done with this route. A judgement, so it is
+ *  recorded as one — with their notes on it — before the file goes. */
 export function dropAlternative(scene: string, id: string): void {
   const file = path.join(DIR(scene), `${id}.md`)
   if (!/^alt-[0-9a-f]+$/.test(id) || !fs.existsSync(file)) throw new HttpError(404, `no alternative ${id} for ${scene}`)
-  fs.rmSync(file)
+  const alt = listAlternatives(scene).find(a => a.id === id)
+  if (!alt) throw new HttpError(404, `no alternative ${id} for ${scene}`)
+  if (!removeAlternative(alt, 'cancelled', 'the author cancelled it')) {
+    throw new HttpError(500, 'arc could not write the decision to the evidence log, so it left the route where it is — nothing was lost. Check that the story folder is writable and cancel it again.')
+  }
 }
 
 // ---- the run --------------------------------------------------------------
 
-export interface RerouteTarget { scene: string; count?: number; guidance?: string }
-
-async function askSdk(p: ReroutePrompt): Promise<string> {
-  const system: Anthropic.Beta.BetaTextBlockParam[] = [
-    { type: 'text', text: p.stable, cache_control: { type: 'ephemeral' } },
-    { type: 'text', text: p.volatile, cache_control: { type: 'ephemeral' } },
-  ]
-  const message = await getClient().beta.messages.create({
-    model: MODEL,
-    max_tokens: 16000,
-    system,
-    messages: [{ role: 'user', content: p.user }],
-  })
-  return message.content
-    .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text')
-    .map(b => b.text)
-    .join('\n')
+export interface RerouteTarget {
+  scene: string
+  count?: number
+  guidance?: string
+  dry?: boolean
+  /** the gesture the author made, resolved by code at the door (A67-8).
+   *  Absent only for a caller inside arc — the CLI, a test — which gets the
+   *  default cell for this pass. */
+  request?: ResolvedRequest
 }
 
-/** The CLI child runs with NO tools: the prose is withheld from the prompt,
- *  and a child that could read prose/ would make that a courtesy. The note
- *  tells the model so, and that its first line is the prose's first line. */
-/** A whole scene in two parts is a long answer; the engine's default ten
- *  minutes was hit on a 2,300-word scene. Twenty, per call, for this pass. */
-export const CLI_REROUTE_TIMEOUT_MS = 20 * 60 * 1000
+/** The run was stopped while this launch was in flight. */
+const wasStopped = (run: Run, kind?: EngineErrorKind): boolean => stateOf(run.id) === 'cancelled' || kind === 'cancelled'
 
-export const CLI_ENGINE_NOTE = 'ENGINE NOTE: you have no tools and no files — everything you may know is in this prompt. Do not narrate, plan, or report what you checked; the first line of your answer is the first sentence of the prose.'
+/** How a run that produced nothing ended.
+ *
+ *  A stop wins over everything: the author ended it. Then a GATE refusal,
+ *  because that is what stopped the run — a repair that could not run
+ *  afterwards is in the gate records and in the sentence, and does not
+ *  relabel the refusal. Otherwise the kind the seam reported. */
+function endingOf(refused: { kind?: EngineErrorKind; gateRefused?: boolean; unreadable?: boolean }[], stopped: boolean): RunEnding {
+  if (stopped || refused.some(r => r.kind === 'cancelled')) return 'cancelled'
+  const first = refused[0]
+  if (!first) return 'refused'
+  // An answer that parsed to nothing is unreadable, never an empty route.
+  if (first.unreadable) return 'unreadable'
+  if (first.gateRefused || !first.kind) return 'refused'
+  if (first.kind === 'timed out') return 'timed out'
+  // unreachable · rate-limited · died · envelope: the pass never wore its
+  // label, which is what `could not run` says.
+  return 'could not run'
+}
 
-const ask = async (p: ReroutePrompt, pass: 'reroute' | 'reroute-revise' = 'reroute'): Promise<string> =>
-  currentEngine() === 'claude-cli'
-    ? (await runCliPrompt(`${flattenPrompt(p)}\n\n${CLI_ENGINE_NOTE}`, { cwd: STORY, pass, noTools: true, timeoutMs: CLI_REROUTE_TIMEOUT_MS })).text
-    : askSdk(p)
+/** The run and the receipt it is writing — one object, so every step of a
+ *  pass adds to the same record. */
+export interface RunCtx { run: Run; receipt: Receipt }
 
-type GateResult = { ok: true; alt: RouteAlternative } | { ok: false; reason: string }
+/** The route run: minted before the first token, registered so the hook
+ *  joins it and a stop can reach it, its receipt open from the launch, and
+ *  ended on every way out with its ending on both. What landed before a
+ *  stop stays. */
+async function underRun(
+  request: ResolvedRequest,
+  row: SealedRow,
+  slice: SliceSpecUsed,
+  work: (ctx: RunCtx, kinds: { kind?: EngineErrorKind; gateRefused?: boolean; unreadable?: boolean }[]) => Promise<RerouteResponse>,
+): Promise<RerouteResponse> {
+  // Why each seed failed, in arc's words rather than the author's — the
+  // ending is read from these, never from the sentence the author sees.
+  const kinds: { kind?: EngineErrorKind; gateRefused?: boolean; unreadable?: boolean }[] = []
+  const run = new Run('ui', request.gesture, { subject: request.subject })
+  registerRun(run)
+  const receipt = emptyReceipt(run)
+  // The request as the author made it, and the cell it resolved to.
+  receipt.request = { gesture: request.gesture, cell: request.cell, subject: request.subject }
+  receipt.cell = { job: row.job, scope: row.scope, mode: row.mode, depth: row.depth, stage: row.stage }
+  receipt.produced_by = { arc_commit: arcRevision(), job_fingerprint: jobFingerprint(row) }
+  receipt.slice = { included: slice.included, withheld_by_design: slice.withheld, dropped_for_budget: slice.dropped, runtime_added: [] }
+  receipt.context_manifest = slice.read
+  receipt.gates = []
+  receipt.evidence = { returned: 0, dropped: [] }
+  writeWorkingReceipt(receipt)
+  const ctx: RunCtx = { run, receipt }
+  const close = (ending: RunEnding): void => {
+    receipt.ending = ending
+    receipt.decided_at = new Date().toISOString()
+    writeWorkingReceipt(receipt)
+  }
+  try {
+    const out = await work(ctx, kinds)
+    const stopped = stateOf(run.id) === 'cancelled'
+    const ending = out.alternatives.length ? (stopped ? 'cancelled' : 'landed') : endingOf(kinds, stopped)
+    close(ending)
+    endRun(run.id, ending, { landed: out.alternatives.map(a => a.id), refused: out.refused.length })
+    // What the author reads about a seed that did not land, rendered HERE by
+    // code from that seed's own ending and the gate records — never from the
+    // answer's words, which a model wrote (A67-11, criterion 4). `kinds` is
+    // pushed in step with `refused`, so seed i is judged on its own failure
+    // and not on the run's.
+    const refused = out.refused.map((r, i) => ({
+      ...r,
+      run: run.id,
+      outcome: outcomeSentence({
+        ending: endingOf(kinds[i] ? [kinds[i]] : kinds, stopped),
+        // This seed's own gate records, never the run's: one receipt holds
+        // every seed's, and a sentence built from all of them can name the
+        // gate that refused a DIFFERENT answer. `launch` is what tells them
+        // apart (`late-entry-1`, `pressure-first-2`).
+        gates: (receipt.gates ?? []).filter(g => g.launch?.startsWith(`${r.seed}-`)),
+      }) ?? undefined,
+    }))
+    // The receipt is on disk before the answer leaves, so every route the
+    // author is handed can already show how it came to be.
+    // Keyed off the route's OWN scene: a rewrite's subject is the route, not
+    // the scene, and a fingerprint map built from the wrong id would call
+    // every route stale.
+    return { ...out, refused, alternatives: out.alternatives.map(a => asRead(a, fingerprintsNow(a.scene))), run: run.id }
+  } catch (e) {
+    const ending: RunEnding = stateOf(run.id) === 'cancelled' ? 'cancelled' : 'could not run'
+    close(ending)
+    endRun(run.id, ending, { error: (e as Error).message })
+    // A STOP IS AN ANSWER, NOT AN ERROR (A67-11, criterion 3). The author
+    // pressed stop; throwing here makes the request fail, and a failed
+    // request whose error carries no message says nothing at all — the run
+    // ends, the page goes quiet, and the author is left guessing whether the
+    // press did anything. So a stopped run returns like any other run that
+    // did not land: one refusal, with the sentence code renders for it.
+    if (ending === 'cancelled') {
+      return {
+        alternatives: [],
+        refused: [{
+          seed: 'stopped',
+          reason: 'stopped before it landed',
+          outcome: outcomeSentence({ ending, gates: receipt.gates }) ?? undefined,
+          run: run.id,
+        }],
+        run: run.id,
+      }
+    }
+    throw e
+  }
+}
+
+/** What the slice actually held for one run: the layers that went in, what
+ *  was withheld by design, what was dropped for room, and the fingerprints
+ *  of everything read. */
+export interface SliceSpecUsed {
+  included: string[]
+  withheld: string[]
+  dropped: string[]
+  read: { id: string; version: string }[]
+}
+
+/** The row's withheld set, realised (A67-7): the scene as it stands, the
+ *  author's open note quotes and the style contract's touchstones — less
+ *  the locked paragraphs the pass sends on purpose and the contract's
+ *  quoted literals. The ROW says what the set is made of; this turns that
+ *  into the texts the runner proves the brief against. */
+export function withheldSet(row: SealedRow, a: {
+  sceneBody: string
+  locked: string[]
+  literals: string[]
+  /** the route the rewrite is working ON. Its text is the pass's SUBJECT,
+   *  sent on purpose: a span of the scene that survived into a landed route
+   *  passed the overlap gate already, and refusing every rewrite of it would
+   *  strand the author in front of a message about a note they cannot find. */
+  subject?: string
+}): WithheldSet | undefined {
+  if (!row.withheld) return undefined
+  // The set is the SCENE, and only the scene. The row's `plus` names where
+  // a leak comes from — a note that quotes the prose, a touchstone drawn
+  // from it — and both of those are quotes OF the scene, so a span of the
+  // scene in the brief is exactly what catches them. Putting the notes or
+  // the style contract into the set instead would fire on the author's own
+  // words about the scene, which are theirs to send.
+  return {
+    text: [a.sceneBody],
+    allowed: [
+      ...(row.withheld.less.includes('locked paragraphs') ? a.locked : []),
+      ...(row.withheld.less.includes('quoted contract literals') ? a.literals : []),
+      ...(a.subject ? [a.subject] : []),
+    ],
+    spanWords: row.withheld.spanWords,
+  }
+}
+
+/** The fingerprints of everything a route pass read — taken from the text
+ *  it actually assembled, not from a map of canon records, because what a
+ *  brief read is the style contract as composed, the pack as built and the
+ *  scene as it stands. Invariant 1 compares these at the write path. */
+export function readManifest(a: {
+  style: string
+  scene: string
+  sceneBody: string
+  pack: string
+  notes: { id: string; body: string }[]
+  locks: { id: string; quote: string }[]
+  siblings: string
+  route?: string
+}): { id: string; version: string }[] {
+  return [
+    { id: 'style', version: sha16(a.style) },
+    { id: a.scene, version: sha16(a.sceneBody) },
+    { id: `pack:${a.scene}`, version: sha16(a.pack) },
+    // Named even when empty: a chapter that GAINS a sibling scene has moved
+    // under a route that was written when it had none, and an id the route
+    // never recorded can never be compared.
+    { id: `siblings:${a.scene}`, version: sha16(a.siblings) },
+    ...(a.route ? [{ id: 'route', version: sha16(a.route) }] : []),
+    ...a.notes.map(n => ({ id: n.id, version: sha16(n.body) })),
+    ...a.locks.map(l => ({ id: l.id, version: sha16(l.quote) })),
+  ]
+}
+
+/** A refusal before anything is spent still leaves a receipt, with the
+ *  stage it refused at (invariant 9: EVERY run ends with one). */
+export function refuseWithReceipt(request: ResolvedRequest, row: SealedRow, gate: GateRecord, message: string, status: number): never {
+  const run = new Run('ui', request.gesture, { subject: request.subject })
+  registerRun(run)
+  const receipt = emptyReceipt(run)
+  receipt.request = { gesture: request.gesture, cell: request.cell, subject: request.subject }
+  receipt.cell = { job: row.job, scope: row.scope, mode: row.mode, depth: row.depth, stage: row.stage }
+  receipt.produced_by = { arc_commit: arcRevision(), job_fingerprint: jobFingerprint(row) }
+  receipt.gates = [gate]
+  receipt.ending = gate.stage === 'launch' ? 'could not run' : 'refused'
+  receipt.decided_at = new Date().toISOString()
+  // The WORKING receipt only: history/ is written at the author's decision
+  // (§4), and a refusal that produced nothing never reaches one. `arc
+  // doctor` counts run records with no receipt, which this is not.
+  writeWorkingReceipt(receipt)
+  endRun(run.id, receipt.ending, { refused: message })
+  throw new HttpError(status, message)
+}
+
+/** A seed's outcome. A refusal carries the sentence the author reads, and
+ *  — when the engine was what failed — the KIND, because a transport
+ *  failure earns no repair (invariant 5). The kind is a field rather than a
+ *  prefix on the sentence: the sentence is what the author sees. */
+type GateResult =
+  | { ok: true; alt: RouteAlternative }
+  | { ok: false; reason: string; gates: GateRecord[]; kind?: EngineErrorKind; gateRefused?: boolean; unreadable?: boolean }
+
+/** The cell this pass is, for a caller inside arc that made no gesture. */
+const defaultRequest = (row: SealedRow, said: string, subject: string): ResolvedRequest => ({
+  gesture: said, cell: `${row.job} · ${row.scope} · ${row.mode}`, row, subject,
+})
 
 export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
+  const request = t.request ?? defaultRequest(ROW_EXPLORE_SCENE, `another way through ${t.scene}`, t.scene)
   const scene = proseScenes().find(s => s.scene === t.scene)
   if (!scene) throw new HttpError(400, `no scene ${t.scene}`)
   // At the cap the author decides what goes. Checked before any token is
@@ -598,7 +1140,9 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
   // the viewer knows is not a limit.
   const waiting = routesWaiting(t.scene)
   if (waiting >= MAX_ROUTES) {
-    throw new HttpError(409, `this scene already holds ${MAX_ROUTES} other ways through — cancel one you are done with to make room for another`)
+    refuseWithReceipt(request, ROW_EXPLORE_SCENE,
+      { gate: 'route-cap', verdict: 'refused', attempt: 1, stage: 'intake', measured: waiting, bar: MAX_ROUTES, bar_from: `MAX_ROUTES, arc-backend ${MAX_ROUTES}` },
+      `this scene already holds ${MAX_ROUTES} other ways through — cancel one you are done with to make room for another`, 409)
   }
   // Never take a scene past the cap: a request for two with room for one
   // returns one rather than being refused outright.
@@ -609,17 +1153,24 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
   const kps = sceneKeypoints(t.scene, annotations())
   const destination = buildDestination(scene.contract, kps.author)
   if (!destination.length) {
-    throw new HttpError(400, `${t.scene} declares no contract and carries no author-marked key points — there is no destination to reroute to; write one first`)
+    refuseWithReceipt(request, ROW_EXPLORE_SCENE,
+      { gate: 'destination', verdict: 'refused', attempt: 1, stage: 'slice', measured: 0, bar: 1, bar_from: "the scene's contract and its author-marked key points" },
+      `${t.scene} declares no contract and carries no author-marked key points — there is no destination to reroute to; write one first`, 400)
   }
   const live = locksOn(t.scene, scene.body)
     .filter(l => l.resolution.state === 'resolved' || l.resolution.state === 'drifted')
   const whole = live.find(l => l.scope === 'scene' || l.scope === 'chapter')
   if (whole) {
-    throw new HttpError(423,
-      `${whole.scope === 'chapter' ? 'this chapter' : 'this section'} is locked (${whole.id}) — the author settled it whole; a reroute would unsettle it. Unlock it to take another way through.`)
+    refuseWithReceipt(request, ROW_EXPLORE_SCENE,
+      { gate: 'locks', verdict: 'refused', attempt: 1, stage: 'intake', bar: 0, bar_from: 'locks/', measured_against: [whole.id] },
+      `${whole.scope === 'chapter' ? 'this chapter' : 'this section'} is locked (${whole.id}) — the author settled it whole; a reroute would unsettle it. Unlock it to take another way through.`, 423)
   }
-  if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
-    throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+  // A dry run consults no engine, so it needs none; a live one refuses here,
+  // before the slice is assembled.
+  if (!t.dry && !(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
+    refuseWithReceipt(request, ROW_EXPLORE_SCENE,
+      { gate: 'engine', verdict: 'could not judge', attempt: 1, stage: 'launch', bar_from: 'an engine the seam can reach' },
+      'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI', 400)
   }
 
   const paras = paragraphsOf(scene.body)
@@ -630,18 +1181,11 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
 
   // The canon pack, scoped exactly as redraft scopes it: the scene's own
   // bindings at the chapter's moment. Facts, in canon's order — never route.
-  const canon = JSON.parse(canonJson()) as CanonDoc
-  const chapter = (canon.chapters ?? []).find(c => c.id === scene.chapter)
-  const at = dateOf(chapter?.span?.end) ?? dateOf(chapter?.span?.start)
-  const pack = at
-    ? buildContextPack(canon, { at, events: scene.events, pov: scene.pov ?? chapter?.pov })
-    : buildContextPack(canon, { chapter: scene.chapter })
-  const siblings = proseScenes().filter(s => s.chapter === scene.chapter && s.scene !== t.scene)
-    .map(s => `=== ${s.file} ===\n${s.body.trim()}`).join('\n\n')
+  const { pack, siblings } = packAndSiblings(scene)
   const openNotes = openNotesOn(t.scene)
 
   const base = {
-    scene, pack, style: stripSceneTouchstones(styleContract(), { scene: t.scene, file: scene.file }), siblings, notes: openNotes,
+    scene, pack, style: styleForPass({ scene: t.scene, file: scene.file, body: scene.body }), siblings, notes: openNotes,
     destination, knownRoute: buildKnownRoute(kps.author, locked), inferred: inferredRoute(kps.agent),
     locked, guidance: t.guidance,
   }
@@ -649,105 +1193,142 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
   const andCap = andCapFromContract(base.style)
   const wordCap = wordCapFromContract(base.style)
   const basedOn = bodyHash(scene.body)
+  const seeds = SEEDS.slice(0, count)
 
-  const gate = (seed: { id: string; text: string }, text: string): GateResult => {
-    const checked = gateAnswer({ sceneName: t.scene, sceneBody: scene.body, sceneLocks, lockedTexts, literals, andCap, wordCap, destination }, text)
-    if (!checked.ok) return checked
-    const created_at = new Date().toISOString()
-    const id = 'alt-' + createHash('sha256').update(`${seed.id}\n${created_at}\n${checked.body}`).digest('hex').slice(0, 8)
-    return {
-      ok: true,
-      alt: { id, scene: t.scene, seed: seed.id, guidance: t.guidance?.trim() || undefined, based_on: basedOn, created_at, body: checked.body, briefing: checked.briefing, coverage: checked.coverage, overlap: checked.overlap },
-    }
+  // A dry run: the slice and the brief, rendered, and no engine consulted —
+  // so it needs none.
+  if (t.dry) return { alternatives: [], refused: [], briefs: seeds.map(seed => flattenPrompt(buildReroutePrompt({ ...base, seed }))) }
+
+  // What the slice held, what it withheld by design, and the fingerprints
+  // of everything read — the receipt's three headings (§4).
+  const used: SliceSpecUsed = {
+    included: [
+      'style', 'contract', 'pack', 'destination', 'known-route',
+      ...(base.inferred ? ['inferred'] : []), ...(locked.length ? ['locked'] : []),
+      ...(siblings ? ['siblings'] : []), ...(openNotes.length ? ['notes'] : []),
+    ],
+    withheld: [
+      `the current prose of ${t.scene} (${paras.length} paragraphs), less its locked paragraphs`,
+      ...(literals.length ? [`the contract's quoted withholds (${literals.length})`] : []),
+    ],
+    dropped: [],
+    read: readManifest({ style: base.style, scene: t.scene, sceneBody: scene.body, pack, notes: openNotes, locks: sceneLocks.map(l => ({ id: l.id, quote: String(l.anchor.quote ?? '') })), siblings }),
   }
+
+  // The run exists before the first token, in the author's words, and its
+  // record is on disk before the seam is called.
+  return underRun(request, ROW_EXPLORE_SCENE, used, async (ctx, kinds) => {
+  const { run, receipt } = ctx
+
+  // Every seed is one job for the gate runner: it owns the child, walks
+  // the row's gate ids, keeps the refused text, and offers the one repair
+  // (A67-6). This pass supplies the brief, the repair's extra line, and
+  // what its gates measure against — nothing else.
+  const ctxGates = gateCtx({
+    sceneName: t.scene, sceneBody: scene.body, sceneLocks, lockedTexts, literals, andCap, wordCap, destination,
+    // arc's own key points are in the brief as context and bind nothing; a
+    // claim that names one is outside the slice, not unresolvable.
+    known: kps.agent.map(b => b.body),
+  })
 
   const one = async (seed: { id: string; text: string }): Promise<GateResult> => {
     const prompt = buildReroutePrompt({ ...base, seed })
-    // An engine failure — a timeout, a refused spawn — is this seed's refusal,
-    // never the run's: the other seed's answer still lands.
-    const attempt = async (p: ReroutePrompt): Promise<GateResult> => {
-      try { return gate(seed, await ask(p)) } catch (e) { return { ok: false, reason: `engine: ${(e as Error).message}` } }
-    }
-    const first = await attempt(prompt)
-    if (first.ok) return first
-    if (first.reason.startsWith('engine:')) return first
-    // One retry, with the refusal named and the route restated — then report.
-    const again = await attempt({
-      ...prompt,
-      user: `${prompt.user}\n\nYOUR PREVIOUS ANSWER WAS REFUSED: ${first.reason}. Take the route again from the destination. The known route above is fenced; the locked paragraphs are verbatim and in order; reuse none of the current wording; no sentence joins more "and"s or runs more words than the style contract allows — break it into sentences.`,
+    const out = await runGates({
+      row: ROW_EXPLORE_SCENE, run, receipt,
+      brief: toBrief(prompt),
+      // The one repair. Where the engine resumes, the brief is already in
+      // the transcript and the refusal is the only new input; where it does
+      // not, the SAME brief goes again with the refusal on the end — never a
+      // fresh slice either way (invariant 5).
+      repair: (refusal, resumed) => {
+        const line = `YOUR PREVIOUS ANSWER WAS REFUSED: ${refusal} Take the route again from the destination you were given. The known route stays fenced; the locked paragraphs are verbatim and in order; reuse none of the current wording; no sentence joins more "and"s or runs more words than the style contract allows — break it into sentences. Answer in the two parts.`
+        return resumed
+          ? { blocks: [{ id: 'repair', cached: false, text: line }] }
+          : toBrief({ ...prompt, user: `${prompt.user}\n\n${line}` })
+      },
+      attempt: n => `${seed.id}-${n}`,
+      gateCtx: ctxGates,
+      withheld: withheldSet(ROW_EXPLORE_SCENE, { sceneBody: scene.body, locked: lockedTexts, literals }),
+      render: renderBrief,
     })
-    if (again.ok) return { ok: true, alt: { ...again.alt, retried: first.reason } }
-    return { ok: false, reason: `${first.reason}; retried once: ${again.reason}` }
+    if (!out.ok) return { ok: false, reason: out.reason, gates: out.gates, kind: out.kind, gateRefused: out.gateRefused, unreadable: out.unreadable }
+    const created_at = new Date().toISOString()
+    const id = 'alt-' + createHash('sha256').update(`${seed.id}\n${created_at}\n${out.checked.body}`).digest('hex').slice(0, 8)
+    const alt: RouteAlternative = {
+      id, scene: t.scene, seed: seed.id, guidance: t.guidance?.trim() || undefined, based_on: basedOn, created_at,
+      body: out.checked.body, briefing: out.checked.briefing, coverage: out.checked.coverage, overlap: out.checked.overlap,
+      ...(out.checked.dropped.length ? { dropped: out.checked.dropped } : {}),
+      // What it read, so the write path can tell when the ground moved
+      // under it (invariant 1).
+      reads: used.read,
+      run: run.id, ...(out.retried ? { retried: out.retried } : {}),
+    }
+    writeAlternative(alt)   // on disk as soon as it passed its gates, so a stop keeps it
+    return { ok: true, alt }
   }
 
-  const seeds = SEEDS.slice(0, count)
   // The SDK fans out: every call shares the two cached system blocks and only
   // the user turn differs. The CLI runs one prompt at a time.
+  // A stop ends the run between seeds too — and a seed that was never
+  // launched says so rather than vanishing from the answer.
   const results = currentEngine() === 'claude-cli'
-    ? await seeds.reduce(async (acc, seed) => [...(await acc), await one(seed)], Promise.resolve([] as GateResult[]))
+    ? await seeds.reduce(async (acc, seed) => {
+      const done = await acc
+      if (stateOf(run.id) === 'cancelled') return [...done, { ok: false as const, reason: 'stopped before it started', gates: [], kind: 'cancelled' as const }]
+      return [...done, await one(seed)]
+    }, Promise.resolve([] as GateResult[]))
     : await Promise.all(seeds.map(one))
 
   const alternatives: RouteAlternative[] = []
   const refused: RerouteRefusal[] = []
   results.forEach((r, i) => {
-    if (r.ok) { writeAlternative(r.alt); alternatives.push(r.alt) }
-    else refused.push({ seed: seeds[i].id, reason: r.reason })
+    if (r.ok) { alternatives.push(r.alt); receipt.result.records = [...receipt.result.records, `.arc/alternatives/${t.scene}/${r.alt.id}.md`] }
+    else {
+      kinds.push({ kind: r.kind, gateRefused: r.gateRefused, unreadable: r.unreadable })
+      refused.push({ seed: seeds[i].id, reason: r.reason === 'stopped before it started' ? r.reason : (wasStopped(run, r.kind) ? 'stopped before it landed' : r.reason) })
+    }
   })
   // Deliberately NO recordGenerated here — see the header: the ledger learns
   // of a route only when it is adopted.
   return { alternatives, refused }
+  })
 }
 
 // ---- the rewrite: a route revised under the same fence (A57) --------------
 
-export interface GateCtx {
+/** What this pass's gates measure against, in the shape the runner takes
+ *  (gates.ts). The predicates travel with it, so the runner calls them by
+ *  gate id and never reaches into this module. */
+export function gateCtx(a: {
   sceneName: string
   sceneBody: string
   sceneLocks: ResolvedLock[]
   lockedTexts: string[]
-  literals: ReturnType<typeof literalWithholds>
+  literals: string[]
   andCap: number | null
   wordCap: number | null
   destination: string[]
+  /** what the record holds and the destination did not bind — arc's own
+   *  key points, which are context; a claim that names one of these is
+   *  *outside the slice* rather than unresolvable (A67-8) */
+  known?: string[]
+}): ProseGateCtx {
+  return {
+    ...a,
+    known: a.known ?? [],
+    maxOverlap: MAX_OVERLAP,
+    lexicalOverlap, andChainViolations, longSentenceViolations, withholdViolations,
+    lockOrderViolation, parseCoverageTail, resolveCoverage,
+  }
 }
-
-export type GateChecked =
-  | { ok: true; body: string; briefing: string; coverage: RouteCoverage[] | null; overlap: number | null }
-  | { ok: false; reason: string }
 
 /** Every check an answer must clear before it lands beside the scene — one
  *  set, shared by the reroute and the rewrite, so the two passes cannot
  *  drift apart gate by gate. */
-export function gateAnswer(ctx: GateCtx, text: string): GateChecked {
-  const { body, briefing: rawBriefing } = splitBriefing(stripFences(text))
-  if (!body) return { ok: false, reason: 'the pass returned nothing' }
-  const violated = lockViolations(ctx.sceneBody, body, ctx.sceneLocks)
-  if (violated.length) return { ok: false, reason: `touched locked prose — ${describeViolation(ctx.sceneName, violated[0])}` }
-  if (lockOrderViolation(body, ctx.lockedTexts)) return { ok: false, reason: 'the locked paragraphs came back out of their settled order' }
-  const leaked = withholdViolations(ctx.literals, body)
-  if (leaked.length) return { ok: false, reason: `names what the contract withholds verbatim (${leaked.map(x => `"${x}"`).join(', ')})` }
-  if (ctx.andCap !== null) {
-    const chains = andChainViolations(body, ctx.andCap, ctx.lockedTexts)
-    if (chains.length) {
-      const worst = chains.sort((x, y) => y.ands - x.ands)[0]
-      return { ok: false, reason: `a sentence joins ${worst.ands} "and"s where the contract stops at ${ctx.andCap} (${chains.length} such sentence${chains.length === 1 ? '' : 's'}) — "${worst.sentence.slice(0, 160)}${worst.sentence.length > 160 ? '…' : ''}"` }
-    }
-  }
-  if (ctx.wordCap !== null) {
-    const long = longSentenceViolations(body, ctx.wordCap, ctx.lockedTexts)
-    if (long.length) {
-      const worst = long.sort((x, y) => y.words - x.words)[0]
-      return { ok: false, reason: `a sentence runs ${worst.words} words where the contract stops at ${ctx.wordCap} (${long.length} such sentence${long.length === 1 ? '' : 's'}) — "${worst.sentence.slice(0, 160)}${worst.sentence.length > 160 ? '…' : ''}"` }
-    }
-  }
-  const overlap = lexicalOverlap(body, ctx.sceneBody, ctx.lockedTexts)
-  if (overlap.share !== null && overlap.share > MAX_OVERLAP) {
-    return { ok: false, reason: `reused ${Math.round(overlap.share * 100)}% of the current wording (${overlap.overlapping} of ${overlap.counted} paragraphs; the limit is ${Math.round(MAX_OVERLAP * 100)}%)` }
-  }
-  const parsed = parseCoverageTail(rawBriefing)
-  return { ok: true, body: body.trim(), briefing: parsed.briefing, coverage: mergeCoverage(ctx.destination, parsed.coverage), overlap: overlap.share }
-}
-
+// The gates themselves live in gates.ts, called by the runner from the
+// row's gate ids (A67-6). This module keeps the measurements — what counts
+// as overlap, what a chain is, where the coverage tail is — and hands them
+// over in `gateCtx()`.
 /** Which alternatives survive pruning: the newest `keep` chain heads and
  *  every version they descend from. A version whose parent is already gone
  *  reads as its own head. Pure, for the tests. */
@@ -770,49 +1351,6 @@ export function pruneKeepIds(alts: RouteAlternative[], keep: number): Set<string
   return keepSet
 }
 
-export const REROUTE_REVISE_RULES = `You are arc's ROUTE REWRITE pass. The author read an alternative route for a
-scene of their own novel and asked for it rewritten. The route is your
-subject — you are shown it in full. The scene's current prose is
-deliberately not shown to you.
-
-THE AUTHOR'S NOTE binds. Keep what it keeps, change what it names. Where the
-note and anything else below disagree, the note wins.
-
-THE DESTINATION binds. Every item under "must be accomplished" happens in
-your rewrite, by whatever realization you choose.
-
-THE MANUSCRIPT'S KNOWN ROUTE is fenced. The rewrite stays another way
-through: do not drift toward that ordering or staging, what it opens on or
-what it closes on.
-
-WHAT MUST SURVIVE, exactly:
-1. The scene's meaning. Every event and fact the frontmatter binds still
-   happens here, in canon's order; character state at this moment in the
-   story is unchanged.
-2. The scene contract — purpose, must_establish, must_withhold, motifs,
-   constraints. Withholding is deliberate: do not "fix" it.
-3. The style contract. It is the author's voice; run its pre-draft
-   checklist before answering.
-4. POV, tense, and the anachronism boundary.
-5. Locked paragraphs, VERBATIM, word for word, in the relative order given.
-6. Canon is truth. Never invent a fact the record would have to carry — a
-   new person, date, or place is a proposal for the author, not yours to
-   make. If the note asks for one, say so in the briefing: that is a
-   story-state question, and only the author answers it.
-
-ANSWER IN TWO PARTS, separated by a line that is exactly:
-=== BRIEFING ===
-Part one: the rewritten route alone — no frontmatter, no commentary, no
-fences. Part two, the briefing, in the ARGUED register (claims for the
-author to judge, not verdicts): what the note asked and what you changed for
-it; what you kept of the route and why it earned its place; where each
-required beat lands, by paragraph number; the style checklist item by item;
-and any fact you needed that canon does not hold.
-End the briefing with ONE fenced json block of exactly this shape, and
-nothing else inside the fence:
-\`\`\`json
-{"coverage": [{"item": "<a required beat, verbatim>", "paragraph": <1-based paragraph number, or null>}]}
-\`\`\``
 
 export interface RevisePromptInput {
   scene: ProseScene
@@ -849,7 +1387,7 @@ export function buildRevisePrompt(a: RevisePromptInput): ReroutePrompt {
     ? `=== LOCKED PARAGRAPHS (reproduce VERBATIM, in this order) ===\n${a.locked.map(l => `[¶${l.paragraph + 1} in the current scene]\n${l.text}`).join('\n\n')}`
     : ''
   return {
-    stable: [REROUTE_REVISE_RULES, `=== THE STYLE CONTRACT (binding) ===\n${a.style}`].join('\n\n'),
+    stable: [ROW_EXPLORE_ROUTE.rules, `=== THE STYLE CONTRACT (binding) ===\n${a.style}`].join('\n\n'),
     volatile: [
       `=== THE SCENE CONTRACT (${a.scene.scene}) ===\n${contractBlock(a.scene.contract)}`,
       `=== CONTEXT PACK (canon truth; every item carries its inclusion reason) ===\n${a.pack}`,
@@ -865,12 +1403,13 @@ export function buildRevisePrompt(a: RevisePromptInput): ReroutePrompt {
   }
 }
 
-export interface ReviseTarget { scene: string; alt: string; note?: string }
+export interface ReviseTarget { scene: string; alt: string; note?: string; request?: ResolvedRequest }
 
 /** Rewrite one alternative under the author's note. The result is a NEW
  *  version of the same route — `revises` names the parent, the old version
  *  stays on disk, and the ledger still learns of a route only on adopt. */
 export async function runRevise(t: ReviseTarget): Promise<RerouteResponse> {
+  const request = t.request ?? defaultRequest(ROW_EXPLORE_ROUTE, 'rewrite this route from my notes on it', t.alt)
   const scene = proseScenes().find(s => s.scene === t.scene)
   if (!scene) throw new HttpError(400, `no scene ${t.scene}`)
   const parent = listAlternatives(t.scene).find(a => a.id === t.alt)
@@ -878,22 +1417,31 @@ export async function runRevise(t: ReviseTarget): Promise<RerouteResponse> {
   // The notes ARE the brief. A rewrite with nothing to say is a fresh
   // reroute, and that button already exists.
   const brief = reviseBrief(parent.notes ?? [], t.note)
-  if (!brief.trim()) throw new HttpError(400, 'say what to change — note the route, or add a line, and the rewrite follows it')
+  if (!brief.trim()) {
+    refuseWithReceipt(request, ROW_EXPLORE_ROUTE,
+      { gate: 'brief', verdict: 'refused', attempt: 1, stage: 'intake', measured: 0, bar: 1, bar_from: "the author's notes on the route" },
+      'say what to change — note the route, or add a line, and the rewrite follows it', 400)
+  }
 
   const kps = sceneKeypoints(t.scene, annotations())
   const destination = buildDestination(scene.contract, kps.author)
   if (!destination.length) {
-    throw new HttpError(400, `${t.scene} declares no contract and carries no author-marked key points — there is no destination; write one first`)
+    refuseWithReceipt(request, ROW_EXPLORE_ROUTE,
+      { gate: 'destination', verdict: 'refused', attempt: 1, stage: 'slice', measured: 0, bar: 1, bar_from: "the scene's contract and its author-marked key points" },
+      `${t.scene} declares no contract and carries no author-marked key points — there is no destination; write one first`, 400)
   }
   const live = locksOn(t.scene, scene.body)
     .filter(l => l.resolution.state === 'resolved' || l.resolution.state === 'drifted')
   const whole = live.find(l => l.scope === 'scene' || l.scope === 'chapter')
   if (whole) {
-    throw new HttpError(423,
-      `${whole.scope === 'chapter' ? 'this chapter' : 'this section'} is locked (${whole.id}) — the author settled it whole; a rewrite would unsettle it. Unlock it to keep working the route.`)
+    refuseWithReceipt(request, ROW_EXPLORE_ROUTE,
+      { gate: 'locks', verdict: 'refused', attempt: 1, stage: 'intake', bar: 0, bar_from: 'locks/', measured_against: [whole.id] },
+      `${whole.scope === 'chapter' ? 'this chapter' : 'this section'} is locked (${whole.id}) — the author settled it whole; a rewrite would unsettle it. Unlock it to keep working the route.`, 423)
   }
   if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
-    throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+    refuseWithReceipt(request, ROW_EXPLORE_ROUTE,
+      { gate: 'engine', verdict: 'could not judge', attempt: 1, stage: 'launch', bar_from: 'an engine the seam can reach' },
+      'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI', 400)
   }
 
   // The same context assembly as the reroute, minus the parts that describe
@@ -909,40 +1457,64 @@ export async function runRevise(t: ReviseTarget): Promise<RerouteResponse> {
   const pack = at
     ? buildContextPack(canon, { at, events: scene.events, pov: scene.pov ?? chapter?.pov })
     : buildContextPack(canon, { chapter: scene.chapter })
-  const style = stripSceneTouchstones(styleContract(), { scene: t.scene, file: scene.file })
+  const style = styleForPass({ scene: t.scene, file: scene.file, body: scene.body })
   const literals = literalWithholds(scene.contract?.must_withhold)
-  const ctx: GateCtx = {
+  const ctxGates = gateCtx({
     sceneName: t.scene, sceneBody: scene.body, sceneLocks, lockedTexts, literals,
     andCap: andCapFromContract(style), wordCap: wordCapFromContract(style), destination,
-  }
+    known: kps.agent.map(b => b.body),
+  })
 
   const prompt = buildRevisePrompt({
     scene, pack, style, destination,
     knownRoute: buildKnownRoute(kps.author, locked), locked,
     routeBody: parent.body, notes: parent.notes ?? [], extra: t.note,
   })
-  const attempt = async (p: ReroutePrompt): Promise<GateChecked> => {
-    try { return gateAnswer(ctx, await ask(p, 'reroute-revise')) } catch (e) { return { ok: false, reason: `engine: ${(e as Error).message}` } }
+  const used: SliceSpecUsed = {
+    included: ['style', 'contract', 'pack', 'destination', 'known-route', ...(locked.length ? ['locked'] : []), 'route', 'route-notes'],
+    withheld: [`the current prose of ${t.scene} (${paras.length} paragraphs), less its locked paragraphs`],
+    dropped: [],
+    read: readManifest({ style, scene: t.scene, sceneBody: scene.body, pack, notes: [], locks: sceneLocks.map(l => ({ id: l.id, quote: String(l.anchor.quote ?? '') })), siblings: '', route: parent.body }),
   }
-  const land = (checked: Extract<GateChecked, { ok: true }>, retried?: string): RouteAlternative => {
-    const created_at = new Date().toISOString()
-    const id = 'alt-' + createHash('sha256').update(`${parent.seed}\n${created_at}\n${checked.body}`).digest('hex').slice(0, 8)
-    return {
-      id, scene: t.scene, seed: parent.seed, guidance: brief.replace(/\s*\n+\s*/g, ' / '), based_on: bodyHash(scene.body),
-      created_at, body: checked.body, briefing: checked.briefing, coverage: checked.coverage,
-      overlap: checked.overlap, revises: parent.id, ...(retried ? { retried } : {}),
-    }
-  }
-
-  const first = await attempt(prompt)
-  if (first.ok) { const alt = land(first); writeAlternative(alt); return { alternatives: [alt], refused: [] } }
-  if (first.reason.startsWith('engine:')) return { alternatives: [], refused: [{ seed: parent.seed, reason: first.reason }] }
-  const again = await attempt({
-    ...prompt,
-    user: `${prompt.user}\n\nYOUR PREVIOUS ANSWER WAS REFUSED: ${first.reason}. Rewrite the route again under the author's note. The manuscript's known route stays fenced; the locked paragraphs are verbatim and in order; reuse none of the manuscript's wording; no sentence joins more "and"s or runs more words than the style contract allows.`,
+  return underRun(request, ROW_EXPLORE_ROUTE, used, async (rctx, kinds) => {
+  const { run, receipt } = rctx
+  // One job for the gate runner: it launches, walks the row's gates, keeps
+  // the refused text and offers the one repair (A67-6).
+  const out = await runGates({
+    row: ROW_EXPLORE_ROUTE, run, receipt,
+    brief: toBrief(prompt),
+    // The one repair, resumed where the engine keeps a transcript and sent
+    // whole where it does not (invariant 5).
+    repair: (refusal, resumed) => {
+      const line = `YOUR PREVIOUS ANSWER WAS REFUSED: ${refusal} Rewrite the route again under the author's note. The manuscript's known route stays fenced; the locked paragraphs are verbatim and in order; reuse none of the manuscript's wording; no sentence joins more "and"s or runs more words than the style contract allows. Answer in the two parts.`
+      return resumed
+        ? { blocks: [{ id: 'repair', cached: false, text: line }] }
+        : toBrief({ ...prompt, user: `${prompt.user}\n\n${line}` })
+    },
+    attempt: n => `rewrite-${n}`,
+    gateCtx: ctxGates,
+    // The rewrite's subject is the ROUTE, so the route's own text is not
+    // withheld — the scene's prose still is.
+    withheld: withheldSet(ROW_EXPLORE_ROUTE, { sceneBody: scene.body, locked: lockedTexts, literals, subject: parent.body }),
+    render: renderBrief,
   })
-  if (again.ok) { const alt = land(again, first.reason); writeAlternative(alt); return { alternatives: [alt], refused: [] } }
-  return { alternatives: [], refused: [{ seed: parent.seed, reason: `${first.reason}; retried once: ${again.reason}` }] }
+  if (!out.ok) {
+    kinds.push({ kind: out.kind, gateRefused: out.gateRefused, unreadable: out.unreadable })
+    return { alternatives: [], refused: [{ seed: parent.seed, reason: wasStopped(run, out.kind) ? 'stopped before it landed' : out.reason }] }
+  }
+  const created_at = new Date().toISOString()
+  const alt: RouteAlternative = {
+    id: 'alt-' + createHash('sha256').update(`${parent.seed}\n${created_at}\n${out.checked.body}`).digest('hex').slice(0, 8),
+    scene: t.scene, seed: parent.seed, guidance: brief.replace(/\s*\n+\s*/g, ' / '), based_on: bodyHash(scene.body),
+    created_at, body: out.checked.body, briefing: out.checked.briefing, coverage: out.checked.coverage,
+    ...(out.checked.dropped.length ? { dropped: out.checked.dropped } : {}),
+    reads: used.read,
+    overlap: out.checked.overlap, revises: parent.id, run: run.id, ...(out.retried ? { retried: out.retried } : {}),
+  }
+  writeAlternative(alt)
+  receipt.result.records = [`.arc/alternatives/${t.scene}/${alt.id}.md`]
+  return { alternatives: [alt], refused: [] }
+  })
 }
 
 // ---- notes on a route, and the field that clears (A58) --------------------
@@ -1006,25 +1578,43 @@ export function deleteRouteNote(scene: string, id: string, noteId: string): Rout
  *  the routes it beat go with it. Deliberately not on adopt: adopt only
  *  writes the draft, and a draft the author then discards must not cost
  *  them every route. Returns how many were removed. */
-export function clearAlternatives(scene: string): number {
+export function clearAlternatives(scene: string, opts: { because?: string; adopted?: string } = {}): number {
+  const because = opts.because ?? 'a route on this scene was adopted and accepted'
   const dir = DIR(scene)
   if (!fs.existsSync(dir)) return 0
   const alts = listAlternatives(scene)
-  for (const a of alts) fs.rmSync(path.join(dir, `${a.id}.md`), { force: true })
-  return alts.length
+  // Q13, decided by the author on 2026-09-13: clear and record. Each waiting
+  // route gets a `superseded` entry with its author notes copied in, and
+  // then the file goes — a new route can always be asked for the old way.
+  //
+  // THE ADOPTED ROUTE IS NOT SUPERSEDED BY ITS OWN ADOPTION. Its disposition
+  // was written at the adopt (`adopted`, with the file it was taken into);
+  // a second entry here would put both readings of the same route on record
+  // and the later one would be the lie. Its file still goes: it has a
+  // disposition, which is what the invariant asks.
+  let gone = 0
+  for (const a of alts) {
+    const removed = a.id === opts.adopted ? dropFile(a) : removeAlternative(a, 'superseded', because)
+    if (removed) gone += 1
+  }
+  return gone
 }
 
 /** How many routes wait on each scene — one read for the whole story, so the
  *  manuscript can mark every scene without a request per scene. Counts
  *  CHAINS, not versions: three rewrites of one route are one route waiting. */
-export function routeCounts(): Record<string, number> {
+export function routeCounts(): Record<string, { waiting: number; governed: number }> {
   const root = path.join(STORY, '.arc', 'alternatives')
   if (!fs.existsSync(root)) return {}
-  const out: Record<string, number> = {}
+  const out: Record<string, { waiting: number; governed: number }> = {}
   for (const scene of fs.readdirSync(root)) {
     try { if (!fs.statSync(path.join(root, scene)).isDirectory()) continue } catch { continue }
-    const n = routesWaiting(scene)     // the same counter the cap uses
-    if (n) out[scene] = n
+    // TWO counts, because they answer two questions: what is still waiting
+    // on the author (the briefing's, stale routes included — they are still
+    // theirs to re-run or cancel), and how many of the four places are
+    // taken (the cap's, which a stale route does not hold).
+    const heads = routeHeads(scene)
+    if (heads.all) out[scene] = { waiting: heads.all, governed: heads.governed }
   }
   return out
 }
