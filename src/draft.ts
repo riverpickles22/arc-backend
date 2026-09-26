@@ -1,67 +1,44 @@
-// The drafting pass: generation INTO the working tree. The author asks for a
-// scene; the model drafts it from the record's own context — the context-pack
-// bundle (every fact carrying its inclusion reason, payoffs fenced) plus the
-// story's style contract (docs/style.md) — and writes one scene file into
-// prose/ as an ordinary draft. No new review machinery: the result arrives
-// word-diffed in the existing draft layer, and the author's accept (which
-// runs capture) or discard stays the only gate. Iterating is discard +
-// regenerate with guidance appended.
+// The drafting pass, on the governed path (U1 · Draft · scene · one-shot;
+// A69-3).
+//
+// The author asks for the next scene of a chapter; arc resolves the gesture
+// to a row by code, assembles the writing slice from the record, mints a run
+// before the first token, and hands the brief to the gate runner — which owns
+// the child, reads the answer, offers the one repair and sees every ending.
+// Only when the gates hold does a file reach the working tree, and it reaches
+// it as an ordinary draft: word-diffed in the draft layer, the author's
+// accept or discard still the only way into the book.
+//
+// WHAT THIS FILE NO LONGER DOES. It does not hold the pass's rules — they are
+// the row's, because the row is the job's one definition. It does not call
+// the seam, retry, or decide its own tools. It does not write from inside a
+// tool call: the SDK tool-runner path is gone, and under the `sdk` engine
+// this row refuses as `could not run`, exactly as the route rows do. What is
+// left here is what only a draft knows: where the scene file goes, what the
+// assignment says, and how to write a file and put it back if the story
+// rejects it.
 import fs from 'node:fs'
 import path from 'node:path'
-import type Anthropic from '@anthropic-ai/sdk'
-import { betaTool } from '@anthropic-ai/sdk/helpers/beta/json-schema'
-import type { CanonDoc, ChatAction, DraftSceneResponse } from 'arc-canon-graph'
-import { buildContextPack } from 'arc-canon-graph/context-pack-lib.ts'
-import { MODEL, STORY } from './config'
+import type { CraftPlanned, DraftSceneResponse } from 'arc-canon-graph'
+import { STORY } from './config'
 import { canonJson, validateStory } from './canon'
-import { getClient, makeReadStoryTool } from './agent'
-import { currentEngine, runCliPrompt, stripFences } from './engine'
+import { currentEngine } from './engine'
 import { styleContract } from './style'
 import { recordGenerated } from './ledger'
 import { proseScenes } from './story'
 import { HttpError } from './http'
 import { resolveWithin } from './safe-path'
-
-const DRAFT_RULES = `You are arc's DRAFTING PASS. The author asked you to draft ONE scene of
-their novel. You write it as a complete scene file — frontmatter binding plus
-prose body — via the write_scene_file tool, at exactly the path you are given.
-
-THE SCENE FILE (conventions §10):
-- Frontmatter: scene (the id you are given), chapter, status: proposed, pov
-  (the chapter's POV where one exists), events (the chapter events this scene
-  actually depicts), facts (the entity/relationship ids the prose rests on),
-  and a contract block stating the intent you drafted to — purpose,
-  must_establish, must_withhold at minimum.
-- Every id in the binding must resolve in canon. The context pack below lists
-  the ids available to you; do not invent ids. Validation failures come back
-  to you — fix the file and retry.
-
-THE PROSE (binding rules, in priority order):
-1. The style contract below is law. Run its pre-draft checklist before
-   writing; a scene that violates the POV/tense contract, the no-comment law,
-   or the sensory rules is a failed draft even if the plot is right.
-2. The payoff fence: events listed under "Planted payoffs — do not reveal"
-   are known to the record, NOT to this scene. Nothing may foreshadow them
-   knowingly.
-3. POV knowledge: the scene knows only what its POV could know at T. Events
-   marked "happens after T" must not leak. Characters marked not living at T
-   appear only as memory.
-4. The anachronism boundary: nothing — object, phrase, attitude — that
-   postdates the scene's span.
-5. Canon is truth: contradict nothing in the context pack. Where canon is
-   silent you may invent texture (minor sensory detail, unnamed passers-by),
-   but any invention that deserves a record belongs in the briefing's
-   "to verify" list, not silently in the prose.
-- Length: a full dramatic scene, typically 700–1200 words, unless the
-  author's guidance says otherwise.
-
-THE BRIEFING (your final message — keep it tight):
-1. What the scene does and the contract you drafted to.
-2. Style-contract check — each checklist item, held or knowingly bent.
-3. To verify — inventions or borderline claims a human should confirm.
-
-=== THE STYLE CONTRACT (conventions §10) ===
-`
+import { resolveRequest, type ResolvedRequest } from './request'
+import { assembleWritingSlice } from './slice'
+import { runGates, parseCraftPlan, planSentence, type ProseGateCtx } from './gates'
+import { CRAFT_MOVES, stageRuns, type Stage, type StagedRow } from './registry'
+import { openRowRun, closeReceipt } from './rowrun'
+import { endRun, stateOf } from './runs'
+import { endingOf } from './reroute'
+import { outcomeSentence } from './run'
+import { sha16 } from './records'
+import { andCapFromContract, gateCtx as gateCtxOf, wordCapFromContract } from './reroute'
+import type { CanonDoc } from 'arc-canon-graph'
 
 /** Scene file slot for a chapter: directory from the chapter id's number
  *  (ch.00-prologue → prose/ch-00), next scene number from existing files.
@@ -86,110 +63,11 @@ export function draftUserMessage(chapterId: string, sceneId: string, file: strin
     : 'This is the chapter\'s first scene.'
   return [
     `Draft scene ${sceneId} of chapter ${chapterId}.`,
-    `Write it with write_scene_file to exactly this path: ${file}`,
+    `Its file is ${file}, and its id is ${sceneId} — write them into the frontmatter exactly.`,
     existing,
     guidance?.trim() ? `AUTHOR'S GUIDANCE (binding): ${guidance.trim()}` : '',
     'Run the drafting pass.',
   ].filter(Boolean).join('\n\n')
-}
-
-/** Run the drafting pass for a chapter. Throws HttpError(400) on an unknown
- *  chapter; SDK/credential errors are the route's to map. */
-export async function runDraft(chapterId: string, guidance?: string): Promise<DraftSceneResponse> {
-  const canon = JSON.parse(canonJson()) as CanonDoc
-  const chapter = (canon.chapters ?? []).find(c => c.id === chapterId)
-  if (!chapter) throw new HttpError(400, `no chapter ${chapterId}`)
-
-  const pack = buildContextPack(canon, { chapter: chapterId })
-  const style = styleContract()
-
-  const scenes = proseScenes()
-  const { file, sceneId } = sceneSlot(chapterId, chapter.order, scenes.map(s => s.file))
-  const chapterScenes = scenes.filter(s => s.chapter === chapterId)
-  const scenesText = chapterScenes.map(s => `=== ${s.file} ===\n${fs.readFileSync(path.join(STORY, s.file), 'utf8')}`).join('\n\n')
-
-  if (currentEngine() === 'claude-cli') {
-    return await runDraftCli({ chapterId, guidance, pack, style, file, sceneId, chapterScenes, scenesText })
-  }
-
-  const actions: ChatAction[] = []
-  let written: string | null = null
-
-  const writeSceneFile = betaTool({
-    name: 'write_scene_file',
-    description:
-      'Write the complete scene file (frontmatter + prose body) at the assigned path under prose/. ' +
-      'The story is validated after the write; on failure the write is REVERTED and you get the ' +
-      'validator errors — fix the file and retry.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        path: { type: 'string', description: 'the exact assigned path, e.g. prose/ch-02/scene-01.md' },
-        content: { type: 'string', description: 'complete file content: --- frontmatter --- then the prose body' },
-      },
-      required: ['path', 'content'],
-      additionalProperties: false,
-    } as const,
-    run: async (input: any) => {
-      if (!String(input.path).startsWith('prose/') || !String(input.path).endsWith('.md'))
-        return `path must be under prose/ and end .md: ${input.path}`
-      const abs = resolveWithin(STORY, input.path)
-      const existed = fs.existsSync(abs)
-      const prev = existed ? fs.readFileSync(abs, 'utf8') : null
-      fs.mkdirSync(path.dirname(abs), { recursive: true })
-      fs.writeFileSync(abs, input.content)
-      const check = validateStory()
-      if (!check.ok) {
-        if (prev !== null) fs.writeFileSync(abs, prev)
-        else fs.unlinkSync(abs)
-        actions.push({ tool: 'write_scene_file', path: input.path, ok: false, detail: 'validation failed, reverted' })
-        return `VALIDATION FAILED — write reverted. Fix these and retry:\n${check.output}`
-      }
-      recordGenerated(input.path, input.content, { engine: 'sdk', scene: sceneId, origin: 'draft' })
-      actions.push({ tool: 'write_scene_file', path: input.path, ok: true })
-      written = input.path
-      return `OK — written and validated (${check.output})`
-    },
-  })
-
-  const system: Anthropic.Beta.BetaTextBlockParam[] = [
-    // Stable per story: rules + the style contract. Own cache breakpoint.
-    { type: 'text', text: DRAFT_RULES + style, cache_control: { type: 'ephemeral' } },
-    // Volatile: the scene-scoped context pack and the chapter's existing prose.
-    {
-      type: 'text',
-      text: `=== CONTEXT PACK (traversal-selected; every item carries its inclusion reason) ===\n${pack}` +
-        (scenesText ? `\n\n=== THIS CHAPTER'S EXISTING SCENES ===\n${scenesText}` : ''),
-      cache_control: { type: 'ephemeral' },
-    },
-  ]
-
-  const finalMessage = await getClient().beta.messages.toolRunner({
-    model: MODEL,
-    max_tokens: 16000,
-    thinking: { type: 'adaptive' },
-    system,
-    tools: [makeReadStoryTool(), writeSceneFile],
-    messages: [{ role: 'user', content: draftUserMessage(chapterId, sceneId, file, guidance, chapterScenes) }],
-    max_iterations: 8,
-  })
-
-  const reply = finalMessage.content
-    .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text')
-    .map(b => b.text)
-    .join('\n')
-
-  return { reply, actions, file: written }
-}
-
-/** Write scene content through the gate both engines share: record what
- *  arc wrote to the generation ledger, write, validate the whole story,
- *  revert on failure. The ledger entry is only kept when the write survives
- *  — a reverted generation never happened, and must not be mined later. */
-function writeScene(rel: string, content: string, engine: string, scene?: string): { ok: boolean; output: string } {
-  const check = writeValidated(rel, content)
-  if (check.ok) recordGenerated(rel, content, { engine, scene, origin: 'draft' })
-  return check
 }
 
 export function writeValidated(rel: string, content: string): { ok: boolean; output: string } {
@@ -206,45 +84,338 @@ export function writeValidated(rel: string, content: string): { ok: boolean; out
   return check
 }
 
-/** The claude-cli engine: one shot of headless `claude -p` on the author's
- *  subscription login, plus one repair retry (--resume) when the validator
- *  rejects the scene. Slower and toolless next to the SDK path — the model
- *  replies with the complete file; the gate runs here in Node. */
-async function runDraftCli(a: {
-  chapterId: string; guidance?: string
-  pack: string; style: string; file: string; sceneId: string
-  chapterScenes: { scene: string; file: string }[]; scenesText: string
-}): Promise<DraftSceneResponse> {
-  const prompt = [
-    DRAFT_RULES + a.style,
-    `=== CONTEXT PACK (traversal-selected; every item carries its inclusion reason) ===\n${a.pack}`,
-    a.scenesText ? `=== THIS CHAPTER'S EXISTING SCENES ===\n${a.scenesText}` : '',
-    draftUserMessage(a.chapterId, a.sceneId, a.file, a.guidance, a.chapterScenes),
-    'ENGINE NOTE: you have no tools in this mode. Do not attempt tool calls. ' +
-    'Reply with ONLY the complete scene file content — the --- frontmatter block, then the prose body. ' +
-    'No preamble, no commentary, no code fences.',
-  ].filter(Boolean).join('\n\n')
 
-  const actions: ChatAction[] = []
-  const first = await runCliPrompt(prompt, { pass: 'draft' })
-  let content = stripFences(first.text)
-  let check = writeScene(a.file, content, 'claude-cli', a.sceneId)
-  actions.push({ tool: 'write_scene_file', path: a.file, ok: check.ok, detail: check.ok ? undefined : 'validation failed, reverted' })
+/** THE ASSIGNMENT — the brief's fifth slot, the ask. Pure, for tests. */
 
-  if (!check.ok && first.sessionId) {
-    const repair = await runCliPrompt(
-      `VALIDATION FAILED — the scene was reverted. Fix these and reply with ONLY the corrected complete file content:\n${check.output}`,
-      { pass: 'draft', resume: first.sessionId })
-    content = stripFences(repair.text)
-    check = writeScene(a.file, content, 'claude-cli', a.sceneId)
-    actions.push({ tool: 'write_scene_file', path: a.file, ok: check.ok, detail: check.ok ? 'repaired after validator errors' : 'validation failed again, reverted' })
+/** Run the drafting pass for a chapter, as a governed run.
+ *
+ *  Throws HttpError(400) on an unknown chapter, on a cell the rows do not
+ *  list, and — before a token — on a slice that cannot hold its floor. */
+export async function runDraft(chapterId: string, guidance?: string, given?: CraftPlanned | null): Promise<DraftSceneResponse> {
+  const canon = JSON.parse(canonJson()) as CanonDoc
+  const chapter = (canon.chapters ?? []).find(c => c.id === chapterId)
+  if (!chapter) throw new HttpError(400, `no chapter ${chapterId}`)
+
+  // THE REQUEST (§4): the gesture the author made, resolved by code to a cell
+  // and then to the row that admits it — refused here, in their words, if the
+  // rows do not list it.
+  const request = resolveRequest({
+    said: `draft the next scene of ${chapterId}`,
+    job: 'draft', scope: 'scene', mode: 'one-shot',
+    subject: chapterId,
+  })
+  const row = request.row as StagedRow
+  const stage = row.stages.find(s => s.id === 'write')
+  const planStage = row.stages.find(s => s.id === 'craft-plan')
+  if (!stage || !planStage) throw new HttpError(500, 'the drafting row is missing a stage')
+
+  // NO RUN FOR A PASS THAT CANNOT RUN. Every rowed pass refuses on the `sdk`
+  // engine (A69-3), and finding that out after a run is minted and a receipt
+  // written leaves the author with a record of something that never started.
+  if (currentEngine() === 'sdk') {
+    throw new HttpError(400,
+      'arc cannot draft on the engine it is set up to use — it can only show you what a pass was given when it runs the claude CLI on your login. ' +
+      'Log in with  claude  and ask again, or remove ANTHROPIC_API_KEY from arc-backend/.env.')
   }
 
+  const scenes = proseScenes()
+  // THE SLOT IS ABOUT WHAT IS ON DISK, not about what parses. `proseScenes()`
+  // drops any file whose frontmatter is broken — a scene the author is
+  // halfway through editing — and a slot chosen from the parsed list would
+  // hand back that exact path and write over their work (A69-3).
+  const { file, sceneId } = sceneSlot(chapterId, chapter.order, proseFiles())
+  const chapterScenes = scenes.filter(s => s.chapter === chapterId)
+
+  // THE SLICE, before anything is sent. A floor that will not fit refuses
+  // here, in the author's words, and nothing is spent finding out.
+  // The STAGE's slice and ceiling, not the row's: a stage is a launch, and
+  // the first stage with a narrower slice must not be briefed from the job.
+  const subject = { chapter: chapterId, sceneId }
+  const said = guidance?.trim() ?? ''
+
+  // THE CRAFT PLAN (A69-4; §4). A line said now becomes craft before a token
+  // is spent on prose, and the author reads it, edits it or drops it first.
+  //
+  // Whether a line "names an effect" is not something code can tell — that is
+  // the reading's own judgement, and the reading is what we have. So any line
+  // gets one, and the author's *drop* is the way out. No line, no stage, and
+  // the receipt records that there was nothing to translate.
+  //
+  // `given` is what comes back on the second call: `undefined` means the
+  // author has not been asked yet; a plan means they settled one; `null`
+  // means they withdrew the line and want the draft without it.
+  if (given === undefined && stageRuns(planStage, said)) {
+    return await planFirst(request, row, planStage, subject, said)
+  }
+  // THE VOCABULARY IS CLOSED HERE TOO. The route checks what the page sent,
+  // and this checks what any caller passes: a move outside the six reaching
+  // the writing pass is the one thing the closed set exists to prevent, and
+  // it must not depend on which door the plan came through (A69-4).
+  const plan = given?.moves?.length ? { moves: given.moves } : undefined
+  for (const m of plan?.moves ?? []) {
+    if (!(m.move in CRAFT_MOVES)) {
+      throw new HttpError(400,
+        `arc does not know how to ask a writing pass for "${m.move}". It can work on ${Object.keys(CRAFT_MOVES).join(', ')}.`)
+    }
+  }
+
+  // THE SLICE, before anything is sent. A floor that will not fit refuses
+  // here, in the author's words, and nothing is spent finding out. The
+  // STAGE's slice and ceiling, not the row's: a stage is a launch, and the
+  // first stage with a narrower slice must not be briefed from the job.
+  const slice = assembleWritingSlice(
+    { ...row, slice: stage.slice, budget: stage.budget }, subject,
+    { stage: 'write', intent: { line: said || undefined, plan } })
+
+  const ctx = openRowRun(request, row, {
+    ...slice.forReceipt(),
+    withheld: [],
+    dropped: slice.forReceipt().dropped_for_budget,
+    read: [{ id: `slice:${sceneId}`, version: sha16(slice.render()) }],
+  })
+  const { run, receipt } = ctx
+  // WHAT THE AUTHOR SAID AND WHAT IT BECAME, on the receipt. The plan is
+  // ephemeral — it lives here and in the evidence-log row the decision
+  // writes, and nowhere else (§4). A plan the author never settled dies with
+  // the sitting.
+  receipt.intent = {
+    said: said || null,
+    plan: plan ?? null,
+    ...(said && !plan ? { withdrawn: true } : {}),
+    // Only when there was nothing to translate AND nothing translated: a
+    // second call may carry the settled plan and not the line that made it.
+    ...(!said && !plan ? { note: 'nothing to translate' } : {}),
+  }
+
+  const assignment = draftUserMessage(chapterId, sceneId, file, undefined, chapterScenes)
+  const brief = {
+    blocks: [
+      { id: 'rules', text: stage.rules, cached: true },
+      { id: 'slice', text: slice.render(), cached: true },
+      { id: 'ask', text: assignment, cached: false },
+    ],
+  }
+
+  // THE GATE CHECKS; IT DOES NOT WRITE. The story's validator can only read a
+  // file that is on disk, so the candidate goes down and comes straight back
+  // up again whatever the verdict — and the draft is written once, below,
+  // because every gate held. A gate whose side effect is what puts prose in
+  // the book would mean removing that gate from the row silently stops the
+  // pass writing at all.
+  const validate = (content: string): { ok: boolean; output: string } => {
+    const trial = writeTrial(file, content)
+    trial.restore()
+    return trial.check
+  }
+
+  const ctxForGates: ProseGateCtx = {
+    ...gateCtxOf({
+      sceneName: sceneId,
+      sceneBody: '',
+      sceneLocks: [],
+      lockedTexts: [],
+      literals: [],
+      andCap: andCapFromContract(styleContract()),
+      wordCap: wordCapFromContract(styleContract()),
+      destination: [],
+      known: [],
+    }),
+    validate,
+  }
+
+  let landed = false
+  try {
+    const out = await runGates({
+      row: { ...stage, ...cellOf(row, 'write'), withholding: row.withholding, withheld: row.withheld, envelope: row.envelope },
+      run, receipt, brief,
+      repair: (refusal, resumed) => ({
+        blocks: resumed
+          ? [{ id: 'repair', text: refusal, cached: false }]
+          : [...brief.blocks, { id: 'repair', text: refusal, cached: false }],
+      }),
+      attempt: n => `write-${n}`,
+      gateCtx: ctxForGates,
+      render: b => b.blocks.map(x => x.text).join('\n\n'),
+    })
+
+    const stopped = stateOf(run.id) === 'cancelled'
+    if (!out.ok) {
+      // endingOf() is the one place the closed set is read (A67-3): a second
+      // chain here would drift from it, and has.
+      const ending = endingOf([{ kind: out.kind, gateRefused: out.gateRefused, unreadable: out.unreadable }], stopped)
+      closeReceipt(ctx, ending)
+      endRun(run.id, ending, { refused: out.reason })
+      return {
+        reply: outcomeSentence({ ending, gates: receipt.gates }) ?? out.reason,
+        actions: [{ tool: 'draft', path: file, ok: false, detail: out.reason }],
+        file: null,
+        run: run.id,
+      }
+    }
+
+    // A STOP IS NOT A DRAFT. The author pressed stop while this was working;
+    // writing the answer now would put prose in the book after they said no.
+    if (stopped) {
+      closeReceipt(ctx, 'cancelled')
+      endRun(run.id, 'cancelled', { stopped_by: 'author' })
+      return {
+        reply: outcomeSentence({ ending: 'cancelled', gates: receipt.gates }) ?? 'you stopped it before it landed — ask again to draft from where the chapter stands now.',
+        actions: [],
+        file: null,
+        run: run.id,
+      }
+    }
+
+    // Every gate held, so the draft is written — once, here, by this pass.
+    const check = writeValidated(file, out.checked.body)
+    if (!check.ok) {
+      revert(file)
+      closeReceipt(ctx, 'could not run')
+      endRun(run.id, 'could not run', { error: check.output })
+      throw new HttpError(500, `arc could not write that draft into your story — ${check.output.split('\n')[0]}. Nothing was written.`)
+    }
+    landed = true
+    recordGenerated(file, out.checked.body, { engine: currentEngine() ?? 'fixture', scene: sceneId, origin: 'draft', run: run.id })
+    closeReceipt(ctx, 'landed')
+    endRun(run.id, 'landed', { landed: [sceneId] })
+    return {
+      reply: `Drafted ${sceneId}. It is waiting in ${file} — read it, then accept or discard.`,
+      actions: [{ tool: 'draft', path: file, ok: true }],
+      file,
+      run: run.id,
+      ...(plan ? { plan } : {}),
+    }
+  } catch (e) {
+    // Only if nothing landed: a throw after the draft is written and in the
+    // ledger must not delete the thing the ledger names.
+    if (!landed) revert(file)
+    const ending = stateOf(run.id) === 'cancelled' ? 'cancelled' : 'could not run'
+    closeReceipt(ctx, ending)
+    endRun(run.id, ending, { error: (e as Error).message })
+    throw e
+  }
+}
+
+/** THE FIRST HALF OF A DRAFT THE AUTHOR GAVE A LINE TO: the reading alone.
+ *
+ *  Its own run, because it is its own launch with its own brief, its own
+ *  gates and its own receipt — and because the author may never come back,
+ *  in which case what is on record is a reading that happened and a draft
+ *  that did not. Nothing is written here and nothing can be: the stage has
+ *  no validator, no file and no ledger. */
+async function planFirst(
+  request: ResolvedRequest, row: StagedRow, planStage: Stage,
+  subject: { chapter: string; sceneId: string }, said: string,
+): Promise<DraftSceneResponse> {
+  const slice = assembleWritingSlice(
+    { ...row, slice: planStage.slice, budget: planStage.budget }, subject,
+    { stage: 'craft-plan', intent: { line: said } })
+
+  const ctx = openRowRun(request, row, {
+    ...slice.forReceipt(),
+    withheld: [],
+    dropped: slice.forReceipt().dropped_for_budget,
+    read: [{ id: `slice:${subject.sceneId}:craft-plan`, version: sha16(slice.render()) }],
+  })
+  const { run, receipt } = ctx
+  receipt.intent = { said, plan: null }
+
+  const brief = {
+    blocks: [
+      { id: 'rules', text: planStage.rules, cached: true },
+      { id: 'slice', text: slice.render(), cached: true },
+      { id: 'ask', text: `The author said: ${said}\n\nAnswer with the JSON block.`, cached: false },
+    ],
+  }
+
+  try {
+    const out = await runGates({
+      row: { ...planStage, ...cellOf(row, 'craft-plan'), withholding: row.withholding, withheld: row.withheld, envelope: row.envelope },
+      run, receipt, brief,
+      repair: (refusal, resumed) => ({
+        blocks: resumed
+          ? [{ id: 'repair', text: refusal, cached: false }]
+          : [...brief.blocks, { id: 'repair', text: refusal, cached: false }],
+      }),
+      attempt: n => `craft-plan-${n}`,
+      gateCtx: planGateCtx(),
+      render: b => b.blocks.map(x => x.text).join('\n\n'),
+    })
+
+    const stopped = stateOf(run.id) === 'cancelled'
+    if (!out.ok) {
+      const ending = endingOf([{ kind: out.kind, gateRefused: out.gateRefused, unreadable: out.unreadable }], stopped)
+      closeReceipt(ctx, ending)
+      endRun(run.id, ending, { refused: out.reason })
+      return { reply: outcomeSentence({ ending, gates: receipt.gates }) ?? out.reason, actions: [], file: null, run: run.id }
+    }
+    const plan = parseCraftPlan(out.checked.body)!
+    receipt.intent = { said, plan }
+    closeReceipt(ctx, 'landed')
+    endRun(run.id, 'landed', { plan: plan.moves.map(m => m.move) })
+    return {
+      reply: `Writing toward: ${planSentence(plan)}`,
+      actions: [],
+      file: null,
+      run: run.id,
+      plan,
+    }
+  } catch (e) {
+    const ending = stateOf(run.id) === 'cancelled' ? 'cancelled' : 'could not run'
+    closeReceipt(ctx, ending)
+    endRun(run.id, ending, { error: (e as Error).message })
+    throw e
+  }
+}
+
+/** The reading has no prose to measure and nothing to overlap: its one gate
+ *  reads the answer's own shape. */
+const planGateCtx = (): ProseGateCtx => gateCtxOf({
+  sceneName: '', sceneBody: '', sceneLocks: [], lockedTexts: [], literals: [],
+  andCap: null, wordCap: null, destination: [], known: [],
+})
+
+const cellOf = (row: StagedRow, stage: string) => ({ job: row.job, scope: row.scope, mode: row.mode, depth: row.depth, stage })
+
+/** Every markdown file under `prose/`, parsed or not. */
+export function proseFiles(): string[] {
+  const root = path.join(STORY, 'prose')
+  const out: string[] = []
+  const walk = (dir: string): void => {
+    let entries: fs.Dirent[]
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      const full = path.join(dir, e.name)
+      if (e.isDirectory()) walk(full)
+      else if (e.name.endsWith('.md')) out.push(path.relative(STORY, full))
+    }
+  }
+  walk(root)
+  return out.sort()
+}
+
+/** A TRIAL WRITE. The story's validator reads files, so a candidate has to be
+ *  on disk to be judged — and whatever it finds, the working tree goes back
+ *  exactly as it was: the previous content restored, or the file removed if
+ *  there was none. Deleting instead of restoring is how a draft that went
+ *  wrong takes the author's own scene with it. */
+function writeTrial(rel: string, content: string): { check: { ok: boolean; output: string }; restore: () => void } {
+  const abs = resolveWithin(STORY, rel)
+  const had = fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : null
+  const check = writeValidated(rel, content)
   return {
-    reply: check.ok
-      ? `Drafted ${a.sceneId} via the claude CLI on the subscription login (no API key). Written and validated: ${a.file}.`
-      : `The claude CLI engine could not produce a valid scene — the write was reverted.\n\nValidator output:\n${check.output}`,
-    actions,
-    file: check.ok ? a.file : null,
+    check,
+    restore: () => {
+      try {
+        if (had === null) fs.rmSync(abs, { force: true })
+        else fs.writeFileSync(abs, had)
+      } catch (e) { console.error('[warn] could not put the scene file back:', e) }
+    },
   }
+}
+
+/** Put a rejected draft back: a scene that did not pass its gates never
+ *  existed, and leaving it on disk would put unratified prose in the book. */
+function revert(rel: string): void {
+  try { fs.rmSync(resolveWithin(STORY, rel), { force: true }) } catch { /* nothing to put back */ }
 }

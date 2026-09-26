@@ -185,11 +185,15 @@ test('a gate that genuinely cannot judge is recorded as such — never as passed
 test('a row naming a gate this arc cannot run is refused, never quietly skipped', async () => {
   const { runRowGates, GATES } = await import('../src/gates.ts')
   const { gateCtx } = await import('../src/reroute.ts')
+  // `validator` was the stand-in here until A69-3 implemented it. The rule is
+  // about a gate id with no implementation, so the stand-in is now an id the
+  // registry declares and no slice has built.
+
   const ctx = gateCtx({ sceneName: 'sc.x', sceneBody: 'a\n\nb\n\nc', sceneLocks: [], lockedTexts: [], literals: [], andCap: null, wordCap: null, destination: ['x'] })
-  const row = { ...ROW_EXPLORE_ROUTE, gates: ['validator'] as never }
-  assert.ok(!('validator' in GATES), 'the validator is declared in the registry and not implemented here yet')
+  const row = { ...ROW_EXPLORE_ROUTE, gates: ['coverage-tail-shape'] as never }
+  assert.ok(!('coverage-tail-shape' in GATES), 'this id is declared nowhere and implemented nowhere')
   const out = runRowGates(row, ctx, `a\n\nb\n\nc${TAIL}`)
   assert.equal(out.ok, false)
-  assert.match(out.reason, /could not check validator/)
-  assert.equal(out.gates.find(g => g.gate === 'validator')?.verdict, 'could not judge')
+  assert.match(out.reason, /could not check coverage-tail-shape/)
+  assert.equal(out.gates.find(g => g.gate === 'coverage-tail-shape')?.verdict, 'could not judge')
 })

@@ -1,7 +1,8 @@
 ---
 row: explore.route.one-shot
 name: overlap
-fingerprint: ccb3bdba55d24042
+fingerprint: a855a9c3f2021eed
+because: "A69-1: the worked example's pack now carries Ines's wants, fears and beliefs in their own fields (conventions §4) and, through her possessions at T, the proposed keeper's log and its edge (obj.keepers-log, rel.ines-log). The recorded answers are unchanged."
 expect: overlap
 scenario: >
   the landed reroute/lands route with one note on the whole route: "bring the

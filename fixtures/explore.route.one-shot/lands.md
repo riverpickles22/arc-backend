@@ -1,7 +1,8 @@
 ---
 row: explore.route.one-shot
 name: lands
-fingerprint: 2b7450687abc4414
+fingerprint: b741e9aa12654e07
+because: "A69-1: the worked example's pack now carries Ines's wants, fears and beliefs in their own fields (conventions §4) and, through her possessions at T, the proposed keeper's log and its edge (obj.keepers-log, rel.ines-log). The recorded answers are unchanged."
 expect: lands
 scenario: >
   the landed reroute/lands route with one note on its third paragraph:

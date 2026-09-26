@@ -34,7 +34,10 @@ test('other chapters’ files never advance the counter', () => {
 test('assignment message: path, id, guidance, and existing scenes all present', () => {
   const msg = draftUserMessage('ch.02-x', 'sc.02-2', 'prose/ch-02/scene-02.md', ' tighter, colder ', [{ scene: 'sc.02-1', file: 'prose/ch-02/scene-01.md' }])
   assert.match(msg, /Draft scene sc\.02-2 of chapter ch\.02-x/)
-  assert.match(msg, /exactly this path: prose\/ch-02\/scene-02\.md/)
+  // The assignment names the file and the id for the FRONTMATTER: since
+  // A69-3 the pass has no tool to write with, and telling it to call one
+  // is telling it to do something that cannot happen.
+  assert.match(msg, /Its file is prose\/ch-02\/scene-02\.md, and its id is sc\.02-2/)
   assert.match(msg, /already has 1 scene\(s\): sc\.02-1/)
   assert.match(msg, /AUTHOR'S GUIDANCE \(binding\): tighter, colder/)
 })

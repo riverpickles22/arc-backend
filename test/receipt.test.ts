@@ -11,6 +11,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { load as yamlLoad } from 'js-yaml'
 // type-only, so nothing under src/ loads before the environment is set
+import type { RerouteResponse } from 'arc-canon-graph/api-types.ts'
 import type { Receipt } from '../src/run.ts'
 // Sets the story and the fixture engine before anything under src/ loads.
 import { SCENARIOS, SCENE, STORY, renderScenario, reset } from './fixture-scenarios.ts'
@@ -28,7 +29,9 @@ const overlap = SCENARIOS.find(s => s.row === 'explore.scene.one-shot' && s.name
 
 /** Run a scenario and return the receipt the run wrote. */
 async function receiptOf(scenario: typeof lands): Promise<{ receipt: Receipt; run: string }> {
-  const { result } = await renderScenario(scenario)
+  // The harness hands back whatever the row's pass returns (A69-1); these
+  // scenarios are route rows, so it is a RerouteResponse.
+  const { result } = await renderScenario(scenario) as { result: RerouteResponse }
   const run = result.run!
   assert.ok(run, 'the response names the run')
   const receipt = readWorkingReceipt(run)

@@ -410,6 +410,21 @@ export interface RequestRecord {
   subject?: string
 }
 
+/** WHAT THE AUTHOR SAID AND WHAT IT BECAME (A69-4; §4, "The craft plan").
+ *  Ephemeral by design: it lives on the receipt and in the evidence-log row
+ *  the author's decision writes, and nowhere else. A plan they never settled
+ *  dies with the sitting and is re-derived from the record on restart. */
+export interface IntentRecord {
+  /** the line said now, in the author's words — null when they said nothing */
+  said: string | null
+  /** the craft it became — null when no reading ran */
+  plan: { moves: { move: string; how: string }[] } | null
+  /** the author was shown a plan and drafted without it */
+  withdrawn?: boolean
+  /** why no reading ran, when none did */
+  note?: string
+}
+
 /** What the model was given and what it was not — three separate readings,
  *  so "arc chose not to show it" never reads as "arc ran out of room". */
 export interface SliceManifest {
@@ -421,6 +436,18 @@ export interface SliceManifest {
   dropped_for_budget: string[]
   /** what the runtime added on its own, observed rather than declared */
   runtime_added: string[]
+  /** THE LAYER MANIFEST (A69-2), for a job whose slice the assembler built:
+   *  every layer of §4's table with the status the author reads — given, not
+   *  shown, deferred, none — its ids, and why when it is not `given`. The
+   *  three lists above are the summary; this is the reading. Names and ids
+   *  only, so a record receipt may carry it whole. */
+  layers?: {
+    layer: string
+    status: 'given' | 'not shown' | 'deferred' | 'none'
+    ids: string[]
+    because?: string
+    note?: string
+  }[]
 }
 
 /** The envelope as the runtime reported it, with each field's proof class
@@ -488,7 +515,8 @@ interface Receipt {
    *  its rules, its slice and its gates */
   produced_by?: { arc_commit: string | null; job_fingerprint: string | null }
 
-  intent: unknown
+  /** what the author said and what it became (A69-4) */
+  intent: IntentRecord | null
   claims: { node: string; kind: string; claim: Capability }[]
   scope_expansions: { node: string; granted: string; at: string }[]
   context_manifest: { id: string; version: string }[]
@@ -718,7 +746,9 @@ export function buildReceipt(
     decided_at: new Date().toISOString(),
     story_revision: run.root.story_revision,
     story_revision_at_decision: storyRevision(),
-    intent: graph.intent,
+    // The notes-work spine's own intent envelope, which is a different
+    // record from a writing job's craft plan and shares the slot.
+    intent: graph.intent as IntentRecord | null,
     claims: graph.nodes.map(n => ({ node: n.id, kind: n.kind, claim: n.claim })),
     scope_expansions: run.expansions,
     context_manifest: [...manifest].map(([id, version]) => ({ id, version })),

@@ -102,7 +102,13 @@ export function createAnnotation(input: CreateAnnotationRequest): ResolvedAnnota
     // A keypoint has no lifecycle: it exists or it doesn't. Giving it a
     // status would put it in every surface that works notes as tasks.
     ...(keypoint ? { kind: 'keypoint' as const } : { status: 'open' as const }),
-    ...(input.by ? { by: input.by } : {}),
+    // ALWAYS WRITTEN, never inferred (A69-2). A writing brief carries the
+    // author's notes and not arc's (§4), and the filter that does it can only
+    // be safe if absence has one meaning. Every note written from here on says
+    // who wrote it; the notes already on disk predate the field and are the
+    // author's, which is why the reader's default is `author` and must stay
+    // the same shape as this line.
+    by: input.by ?? 'author',
     created_at: new Date().toISOString().slice(0, 10),
   }
   fs.mkdirSync(DIR(), { recursive: true })

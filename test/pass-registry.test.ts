@@ -71,7 +71,7 @@ const ACCOUNTED: Record<string, string> = {
 
 test('every launch in src names a pass or carries a row, and every pass it names has a row', () => {
   const sites = launchSites()
-  assert.ok(sites.length >= 12, `expected the backend's launch sites, found ${sites.length}`)
+  assert.ok(sites.length >= 11, `expected the backend's launch sites, found ${sites.length}`)
 
   const silent = sites.filter(s => s.pass === null && !s.rowed)
   assert.deepEqual(silent, [],
@@ -84,12 +84,12 @@ test('every launch in src names a pass or carries a row, and every pass it names
 
 /** THE RATCHET (A67-1; agent-workflows §11, "drift protection starts with
  *  the first row"). Seam launches that carry no registry row — a pass named
- *  by string, with the interim PASS_REGISTRY deciding its tools. Twelve
- *  today, across eleven passes (draft launches twice); reroute's one site
- *  took its row and was never among them. The count may only fall: a
+ *  by string, with the interim PASS_REGISTRY deciding its tools. Ten today,
+ *  across ten passes: draft took its row in A69-3 and its two sites went
+ *  with it, as reroute's did in slice 1. The count may only fall — a
  *  migration lowers this number in the same change, and a new bare launch
  *  fails here. */
-const BARE_SEAM_CALLS = 12
+const BARE_SEAM_CALLS = 10
 
 test(`the ratchet: ${BARE_SEAM_CALLS} seam launches carry no row, and the count may only fall`, () => {
   const bare = launchSites().filter(s => !s.rowed)
@@ -98,7 +98,7 @@ test(`the ratchet: ${BARE_SEAM_CALLS} seam launches carry no row, and the count 
     `${bare.length} launches carry no row, more than the ${BARE_SEAM_CALLS} recorded — a new launch must take a registry row, never a pass name: ${where}`)
   assert.equal(bare.length, BARE_SEAM_CALLS,
     `${bare.length} launches carry no row, fewer than the ${BARE_SEAM_CALLS} recorded — a pass migrated; lower BARE_SEAM_CALLS in the same change: ${where}`)
-  assert.equal(new Set(bare.map(s => s.file)).size, 11, 'across eleven passes')
+  assert.equal(new Set(bare.map(s => s.file)).size, 10, 'across ten passes')
   const rowed = launchSites().filter(s => s.rowed)
   assert.deepEqual(rowed.map(s => s.file), ['gates.ts'], 'the one rowed launch is the gate runner\'s, and it serves every rowed pass')
 })
@@ -135,6 +135,8 @@ test('every reading pass really launches with an empty toolbelt, argv recorded f
 })
 
 test('a pass the author did not pin keeps its tools, so the pin is a decision and not a blanket', async () => {
-  await runCliPrompt('write this', { pass: 'draft' })
+  // `redraft` since A69-3 — draft left PASS_REGISTRY with its row, and an
+  // unpinned pass is what this is about, not which one.
+  await runCliPrompt('write this', { pass: 'redraft' })
   assert.ok(!recorded().at(-1)!.includes('--tools'))
 })

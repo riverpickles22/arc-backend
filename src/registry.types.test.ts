@@ -4,7 +4,7 @@
 // admitting a field a variant must not carry, or stops requiring one it
 // must. tsconfig covers src/, which is why this sits beside registry.ts
 // rather than under test/.
-import type { InvestigationRow, SealedRow } from './registry'
+import type { InvestigationRow, SealedRow, Stage } from './registry'
 import { ROW_EXPLORE_SCENE } from './registry'
 
 // A sealed row cannot carry a toolbelt, a session or a subagent depth.
@@ -55,3 +55,29 @@ export const investigation: InvestigationRow = {
   pool: { steps: 10, subagents: 1, subagentDepth: 1, wallClockMs: 1 },
   envelope: { tools: { read: ['Read'] }, subagents: 'one-read', session: 'none', projectContext: 'none', runtimeAdditions: 'user-level', network: 'none', directory: 'scratch', transcript: 'delete-at-decision' },
 }
+
+// ---- a stage is a sealed launch, and cannot be anything else (A69-3) -------
+//
+// Splitting a job into stages must not be a way to smuggle in a toolbelt or a
+// session: a stage carries neither FIELD, so there is nothing to set wrongly.
+
+const stageBase = {
+  id: 'write', when: 'always' as const, rules: 'x',
+  slice: { id: 's', layers: ['contract'], dropOrder: [], floor: ['contract'] },
+  gates: [], answer: 'scene-file' as const,
+  budget: { outputTokens: 1, wallClockMs: 1 }, fixtures: ['lands'],
+}
+
+export const stage: Stage = stageBase
+
+// @ts-expect-error a stage has no toolbelt: it runs inside the row's sealed envelope
+export const stageWithTools: Stage = { ...stageBase, tools: { read: ['Read'] } }
+
+// @ts-expect-error a stage has no session either — a sealed launch cannot resume
+export const stageWithSession: Stage = { ...stageBase, session: 'resume-once' }
+
+// @ts-expect-error a stage has no envelope of its own; the envelope is the job's
+export const stageWithEnvelope: Stage = { ...stageBase, envelope: { tools: 'none' } }
+
+// @ts-expect-error `when` is closed: a stage runs always, or when the line names an effect
+export const stageWithUnknownWhen: Stage = { ...stageBase, when: 'sometimes' }

@@ -92,10 +92,45 @@ export interface RecordAgentEnvelope extends EnvelopeBase {
  *  reads the answer and may refuse the write (§4, "The gates"). */
 export type GateId =
   | 'locks' | 'lock-order' | 'withhold-literals' | 'and-chain' | 'sentence-length'
-  | 'overlap' | 'coverage-tail' | 'validator' | 'leak'
+  | 'overlap' | 'coverage-tail' | 'validator' | 'leak' | 'plan-vocabulary'
 
 /** How the answer is shaped, so a gate can read it without a model. */
-export type AnswerShape = 'coverage-tail'
+/** THE CRAFT MOVES (A69-4; §4, "The craft plan"). Q11, decided by the author
+ *  2026-09-24: a FIXED vocabulary, because fixed is what a gate can check and
+ *  what the style learner can count. Each move carries one free clause of how
+ *  — that is what keeps it honest.
+ *
+ *  THE ID IS THE VOCABULARY; THE COPY IS NOT (the author's implementation
+ *  note, 2026-09-24). The id is what the gate checks, what the receipt
+ *  records and what the evidence log counts — so a plan stays comparable
+ *  across every sitting, and the style learner can say "they keep asking for
+ *  this one" about a thing with a name.
+ *
+ *  Be precise about what moves a fingerprint, because the note is easy to
+ *  over-read. The wording below is part of the RULES the reading is given, so
+ *  editing it IS a brief change and the job fingerprint moves — as it should,
+ *  since the model is being told something different. What the note protects
+ *  is the other direction: the author-facing labels in the viewer are not
+ *  these strings, and rewording a label there changes nothing here. And an ID
+ *  is never edited for readability: an id is a claim that two plans a year
+ *  apart asked for the same thing. */
+export const CRAFT_MOVES = {
+  narrative_distance: 'how close the telling sits to the point-of-view character',
+  sensory_access: 'which senses the scene gives the reader, and which it withholds',
+  attention: 'whose noticing reveals whom',
+  inventory: 'what is named, and what is cut because it reveals nobody',
+  structure: 'the order of the beats, and what is kept of it',
+  withheld: 'what the scene still does not say',
+} as const
+export type CraftMove = keyof typeof CRAFT_MOVES
+
+export type AnswerShape =
+  /** prose, then `=== BRIEFING ===`, then a fenced coverage tail */
+  | 'coverage-tail'
+  /** a complete scene file — frontmatter and body — then the briefing */
+  | 'scene-file'
+  /** one fenced JSON object: the craft moves chosen, each with one clause */
+  | 'craft-plan'
 
 /** What a withholding row withholds, declared on the ROW rather than known
  *  by the pass (§4, envelope rule 4; A67-7). The leak gate reads this to
@@ -124,8 +159,17 @@ export interface RowBase extends Cell {
   gates: readonly GateId[]
   answer: AnswerShape
   /** per pass: output tokens the answer may spend, and wall clock from send
-   *  to answer — time waiting on the author is never budget */
-  budget: { outputTokens: number; wallClockMs: number }
+   *  to answer — time waiting on the author is never budget.
+   *
+   *  `inputTokens` is the CEILING on the assembled slice (A69-2, estimated as
+   *  characters ÷ 4): layers drop in `slice.dropOrder` until the brief fits,
+   *  the floor never drops, and a floor that will not fit refuses before a
+   *  token is spent. It is a ceiling and not an operating point — nothing is
+   *  padded to use the room that is left (the author, 2026-09-24). Optional
+   *  because only a row whose slice the assembler builds can honour one, and
+   *  a row that carries the number without the assembler would be promising
+   *  what no code does. */
+  budget: { outputTokens: number; wallClockMs: number; inputTokens?: number }
   /** the role and the rules, verbatim — the first slot of the brief */
   rules: string
   /** the recorded briefs under fixtures/<key>/, by name; two per
@@ -134,7 +178,44 @@ export interface RowBase extends Cell {
 }
 
 export interface SealedRow extends RowBase { pattern: 'sealed'; envelope: SealedEnvelope }
-export interface StagedRow extends RowBase { pattern: 'staged'; envelope: SealedEnvelope; stages: readonly string[] }
+/** ONE LAUNCH INSIDE A STAGED JOB (A69-3). A stage is a sealed pass in its
+ *  own right — its own rules, slice, gates, answer shape and budget — and it
+ *  carries no toolbelt and no session, by type, exactly as a sealed row does.
+ *  Splitting a job into stages must not be a way to smuggle one in.
+ *
+ *  `when` says whether the stage always runs, or only when the line the
+ *  author said names an effect to translate (§4, the craft plan). A stage
+ *  that does not run is recorded on the receipt as not having run, never
+ *  omitted — a stage nobody can see is a stage nobody can audit. */
+export interface Stage {
+  id: string
+  when: 'always' | 'line-names-effect'
+  rules: string
+  slice: SliceSpec
+  gates: readonly GateId[]
+  answer: AnswerShape
+  budget: { outputTokens: number; wallClockMs: number; inputTokens?: number }
+  /** the recorded briefs under `fixtures/<stage key>/`. A stage's list is its
+   *  own: the reading that decides a destination has nothing a validator can
+   *  refuse, and requiring the row's list of every stage would drop a rowed
+   *  job back to `designed` the day it grows a second stage (A69-3). */
+  fixtures: readonly string[]
+}
+
+export interface StagedRow extends RowBase { pattern: 'staged'; envelope: SealedEnvelope; stages: readonly Stage[] }
+
+/** Does this stage run for this request? The one place `when` is read.
+ *
+ *  Whether a line "names an effect" is not something code can tell — that is
+ *  the reading's own judgement, and the reading is what we have. So a line
+ *  said now is reason enough to run it, and the author's *drop* is the way
+ *  out. No line, no stage. */
+export function stageRuns(stage: Stage, said: string): boolean {
+  switch (stage.when) {
+    case 'always': return true
+    case 'line-names-effect': return said.trim().length > 0
+  }
+}
 export interface FanOutRow extends RowBase { pattern: 'fan-out'; envelope: SealedEnvelope; stages: readonly string[]; reduce: string }
 export interface InvestigationRow extends RowBase {
   pattern: 'investigation'
@@ -144,12 +225,70 @@ export interface InvestigationRow extends RowBase {
 }
 export interface RecordAgentRow extends RowBase { pattern: 'record-agent'; envelope: RecordAgentEnvelope; claim: string }
 
+/** What the runner needs of whatever it is launching: a sealed row, or one
+ *  stage of a staged job (A69-3). Both are sealed launches — a gate list, an
+ *  answer shape, a budget — and both run inside the JOB's envelope, which is
+ *  the row's and never a stage's: splitting a job into stages must not be a
+ *  way for one of them to run under different rules.
+ *
+ *  It carries the CELL because a stage has its own fixture directory: the
+ *  write stage of a draft and the reading that precedes it are two different
+ *  briefs, and `rowKey` is what tells them apart. */
+export type LaunchSpec = Cell & Pick<SealedRow, 'withholding' | 'withheld' | 'gates' | 'answer' | 'budget' | 'envelope'>
+
 export type Row = SealedRow | StagedRow | FanOutRow | InvestigationRow | RecordAgentRow
 
 /** The row's key: job.scope.mode, with the stage when it has one. Names
  *  its fixture directory and its line on the receipt. */
 export type RowKey = string
 export const rowKey = (r: Cell): RowKey => `${r.job}.${r.scope}.${r.mode}${r.stage ? `.${r.stage}` : ''}`
+
+// ---- the writing slice (A69-2) --------------------------------------------
+
+/** THE SLICE EVERY PROSE-WRITING ROW DECLARES (§4, "What a writing slice
+ *  holds"). The layers are §4's eleven; `slice.ts` assembles them.
+ *
+ *  THE FLOOR is §4's floor sentence, exactly: the contract, the withholds,
+ *  the LOCK NOTICE, the handoff, and the canon the scene's bindings name. The
+ *  lock notice is the twelfth layer — §4's table lists eleven and its floor
+ *  sentence names this one — and it is floor because a pass told nothing
+ *  about locked prose rewrites it, and the gate then refuses an answer that
+ *  cost the author a pass to produce. A pass that cannot be told what the
+ *  scene must do, what it must not reveal, where the story stands and what is
+ *  true is not a pass that should run — it is a question for the author.
+ *
+ *  THE DROP ORDER is least costly first. Position goes before what is live
+ *  here, which goes before voice, which goes before the author's own notes —
+ *  and the style contract goes last, because a draft in the wrong voice is
+ *  work the author has to undo rather than work they have to finish. Every
+ *  layer that is not floor is listed here: a layer in neither list would
+ *  behave as floor without ever having been declared one, and the assembler
+ *  refuses a row shaped that way. */
+/** Q3, decided by the author 2026-09-24 for the writing rows: a CEILING on
+ *  the assembled brief, not an operating point. Provisional, to be reset from
+ *  the first ten receipts. */
+export const WRITING_INPUT_TOKENS = 40_000
+
+/** What a draft's answer is checked against.
+ *
+ *  No overlap and no coverage tail: there is no current wording to measure
+ *  against and no route to cover. No locks and no withheld literals either,
+ *  and for the same reason — the scene does not exist yet, so there is
+ *  nothing in it the author has settled and no contract it could have
+ *  withheld from. Those gates arrive with U3, which rewrites a scene that is
+ *  already there. What is left is the story's own validator and the two
+ *  countable style rules. */
+export const DRAFT_GATES: readonly GateId[] = ['validator', 'and-chain', 'sentence-length']
+
+export const WRITING_SLICE: SliceSpec = {
+  id: 'writing',
+  layers: [
+    'intent', 'contract', 'handoff', 'dramatic-condition', 'canon',
+    'position', 'voice', 'research', 'notes', 'promoted-rules', 'withholds', 'locks',
+  ],
+  dropOrder: ['research', 'position', 'intent', 'dramatic-condition', 'voice', 'notes', 'promoted-rules'],
+  floor: ['contract', 'withholds', 'handoff', 'canon', 'locks'],
+}
 
 // ---- U4 · Explore · scene · one-shot, withholding -------------------------
 
@@ -322,9 +461,162 @@ export const ROW_EXPLORE_ROUTE: SealedRow = {
   fixtures: ['lands', 'overlap', 'coverage-drop'],
 }
 
+// ---- U1 · Draft · scene · one-shot ----------------------------------------
+
+/** The drafting pass's rules — the first slot of its brief. They live on the
+ *  row because the row is the job's ONE definition (§11's drift rule): the
+ *  text, the slice, the gates and the budget move together or the pass has
+ *  two addresses. */
+export const DRAFT_RULES = `You are arc's DRAFTING PASS. The author asked you to draft ONE scene of
+their novel, and you are writing it from their record.
+
+YOU HAVE NO TOOLS. Nothing is fetched, nothing is read, nothing is written by
+you. Everything you are allowed to know is in this brief, under the headings
+below, and what you answer with is the whole of what arc receives.
+
+THE SCENE FILE (conventions §10). Your answer opens with the file, and the
+file opens with its frontmatter fence:
+- \`scene\` (the id you are given), \`chapter\`, \`status: proposed\`, \`pov\` (the
+  chapter's POV where one exists), \`events\` (the chapter events this scene
+  actually depicts), \`facts\` (the entity and relationship ids the prose rests
+  on), and a \`contract\` block stating the intent you drafted to — \`purpose\`,
+  \`must_establish\`, \`must_withhold\` at minimum.
+- EVERY ID MUST RESOLVE. The record below lists the ids available to you, each
+  with the reason it is here. Do not invent one. An id that does not resolve
+  fails the story's own validator, the draft is refused, and nothing is
+  written.
+- A fact marked \`proposed\` or \`material\` may be REFERENCED and may not be
+  rested on: the author has not ratified it.
+
+THE PROSE (binding rules, in priority order):
+1. The style contract below is law. Run its pre-draft checklist before
+   writing; a scene that breaks the POV or tense contract, the no-comment law,
+   or the sensory rules is a failed draft even where the plot is right.
+2. The payoff fence: anything under "do not reveal" is known to the record and
+   NOT to this scene. Nothing may foreshadow it knowingly.
+3. POV knowledge: the scene knows only what its POV could know at this moment.
+   Events after it must not leak. People not living then appear only as
+   memory.
+4. The anachronism boundary: nothing — object, phrase, attitude — that
+   postdates the scene's span.
+5. Canon is truth: contradict nothing in the record below. Where it is silent
+   you may invent texture — a minor sensory detail, an unnamed passer-by — but
+   any invention that deserves a record goes in your briefing's "to verify"
+   list, never silently into the prose.
+6. Length: a full dramatic scene, typically 700–1200 words, unless the
+   author's line says otherwise.
+
+ANSWER IN TWO PARTS, separated by a line that is exactly:
+=== BRIEFING ===
+Part one: the complete scene file and nothing else — the \`---\` frontmatter
+fence, then the prose body. No preamble, no commentary, no code fences.
+Part two, the briefing, in the ARGUED register (claims for the author to
+judge, never verdicts):
+1. What the scene does, and the contract you drafted to.
+2. The style checklist, item by item: held, or knowingly bent and why.
+3. To verify — inventions and borderline claims a person should confirm.
+`
+
+/** The craft-plan reading's rules. A cheap sealed pass that settles the
+ *  destination before the expensive one runs — the same shape as U2's
+ *  conflict reading. */
+export const CRAFT_PLAN_RULES = `You are arc's CRAFT PLAN pass. The author said one line about the scene they
+are about to have drafted. Your whole job is to turn what they want the
+READER to feel into CRAFT the writing pass can act on.
+
+The writing pass will never see their line. It sees your plan. This is
+deliberate: a pass told to write "more dread" writes about dread, which is
+the one thing prose cannot do — it produces the comment instead of the
+experience. A pass told to cut the distance by half, give the reader only
+what the ears reach, and withhold the thing in the next room produces dread.
+
+CHOOSE ONLY FROM THESE MOVES. Use the id exactly as written:
+${Object.entries(CRAFT_MOVES).map(([id, what]) => `  ${id} — ${what}`).join('\n')}
+
+Choose the FEWEST that carry the line. Two or three is usually right; six is
+almost always someone avoiding a decision. A move you cannot say something
+specific about is a move you should not have chosen.
+
+Each move gets ONE clause saying what to do. It must be an INSTRUCTION A
+WRITER COULD FOLLOW without knowing anything you were not told: you are shown
+the author's line and, when the scene already exists, its contract. You are
+NOT shown the story, the people in it or the prose, so do not write as though
+you were — a clause that names a character or a place is a clause you invented.
+"cut the distance: stay in what the body registers" is a clause;
+"increase the tension" is not, and neither is "put her hand on the rail".
+
+NEVER NAME THE EFFECT. The words the author used, and any synonym for the
+feeling they asked for, must not appear in your answer.
+
+ANSWER WITH ONE FENCED JSON BLOCK AND NOTHING ELSE:
+\`\`\`json
+{"moves": [{"move": "<id from the list above>", "how": "<one clause>"}]}
+\`\`\``
+
+/** What the craft plan is shown. The contract WITH its reader-effect fields —
+ *  translating them is this stage's only purpose — and the line said now.
+ *  Nothing else: it is a reading, not a writing, and every layer it does not
+ *  need is a layer it could quote back. */
+export const CRAFT_PLAN_SLICE: SliceSpec = {
+  id: 'craft-plan',
+  layers: ['contract', 'intent'],
+  dropOrder: [],
+  floor: ['contract', 'intent'],
+}
+
+/** U1 · Draft · scene · one-shot. Staged, because §4 puts the craft-plan
+ *  stage in front of every row that writes prose; it arrives with the stage
+ *  that translates a line into craft (A69-4) and today carries the write
+ *  stage alone.
+ *
+ *  NOT withholding: a draft is written from the record, and there is no
+ *  current prose to keep from it — the scene does not exist yet. */
+export const ROW_DRAFT_SCENE: StagedRow = {
+  job: 'draft', scope: 'scene', mode: 'one-shot', depth: 'standard', stage: null,
+  pattern: 'staged',
+  withholding: false,
+  slice: WRITING_SLICE,
+  envelope: ROUTE_ENVELOPE,
+  gates: DRAFT_GATES,
+  answer: 'scene-file',
+  budget: { outputTokens: ROUTE_OUTPUT_TOKENS, wallClockMs: ROUTE_WALL_CLOCK_MS, inputTokens: WRITING_INPUT_TOKENS },
+  rules: DRAFT_RULES,
+  // A STAGED ROW'S FIXTURES ARE ITS STAGES'. Each stage is a launch with its
+  // own brief and its own recorded answers, and `fixturesRecorded` reads them
+  // there — a second list here would be a copy nobody consults and everybody
+  // trusts.
+  fixtures: [],
+  stages: [
+    {
+      // Runs only when the line the author said names an effect. When it
+      // names none there is nothing to translate, no token is spent, and the
+      // receipt records the stage as having had nothing to do.
+      id: 'craft-plan',
+      when: 'line-names-effect',
+      rules: CRAFT_PLAN_RULES,
+      slice: CRAFT_PLAN_SLICE,
+      gates: ['plan-vocabulary'],
+      answer: 'craft-plan',
+      // A reading, not a writing: it costs a fraction of a scene.
+      budget: { outputTokens: 1_000, wallClockMs: 5 * 60 * 1000, inputTokens: 4_000 },
+      fixtures: ['plan-dread'],
+    },
+    {
+      id: 'write',
+      when: 'always',
+      rules: DRAFT_RULES,
+      slice: WRITING_SLICE,
+      gates: DRAFT_GATES,
+      answer: 'scene-file',
+      budget: { outputTokens: ROUTE_OUTPUT_TOKENS, wallClockMs: ROUTE_WALL_CLOCK_MS, inputTokens: WRITING_INPUT_TOKENS },
+      fixtures: ['lands', 'lands-from-plan', 'validator-refused'],
+    },
+  ],
+}
+
 // ---- the table ---------------------------------------------------------------
 
-export const ROWS: readonly Row[] = [ROW_EXPLORE_SCENE, ROW_EXPLORE_ROUTE]
+export const ROWS: readonly Row[] = [ROW_EXPLORE_SCENE, ROW_EXPLORE_ROUTE, ROW_DRAFT_SCENE]
 
 /** The row for a cell, or nothing: a job × scope × mode the rows do not
  *  list is refused at intake (invariant 10), never mapped to a neighbour. */
@@ -385,8 +677,16 @@ export function readStatusReceipts(dir: string = path.join(STORY, 'history')): S
 /** Is every fixture the row names recorded under its key? `recorded` is
  *  the store as loaded once by the caller — never re-read per row. */
 export function fixturesRecorded(row: Row, recorded: readonly Fixture[]): boolean {
-  const key = rowKey(row)
-  return row.fixtures.length > 0 && row.fixtures.every(name => recorded.some(f => f.row === key && f.name === name))
+  // A STAGE IS A LAUNCH, so its fixtures live under its own key: the reading
+  // that decides a destination and the writing that goes there are two
+  // different briefs, and one directory for both would let a change to either
+  // pass unnoticed. A job with one stage is the degenerate case, not an
+  // exception (A69-3).
+  const launches = row.pattern === 'staged' && row.stages.length
+    ? row.stages.map(st => ({ key: rowKey({ ...row, stage: st.id }), names: st.fixtures }))
+    : [{ key: rowKey(row), names: row.fixtures }]
+  return launches.every(l =>
+    l.names.length > 0 && l.names.every(name => recorded.some(f => f.row === l.key && f.name === name)))
 }
 
 /** designed (no fixtures recorded — nothing proves the code) · built (every

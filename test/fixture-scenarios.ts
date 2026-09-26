@@ -13,9 +13,10 @@
 // story at load: import it before anything under src/.
 import fs from 'node:fs'
 import path from 'node:path'
-import type { RerouteResponse, RouteAlternative } from 'arc-canon-graph/api-types.ts'
+import type { RouteAlternative } from 'arc-canon-graph/api-types.ts'
 // type-only, so nothing under src/ loads before the environment is set
 import type { BriefSeen } from '../src/fixtures.ts'
+import type { RowKey } from '../src/registry.ts'
 import { copyExampleStory, git } from './fixture.ts'
 
 export const STORY = copyExampleStory()
@@ -28,6 +29,8 @@ delete process.env.ANTHROPIC_API_KEY
 delete process.env.ANTHROPIC_AUTH_TOKEN
 
 const { runReroute, runRevise, addRouteNote } = await import('../src/reroute.ts')
+const { runDraft } = await import('../src/draft.ts')
+const { ROWS, rowKey } = await import('../src/registry.ts')
 const { observeBriefs } = await import('../src/fixtures.ts')
 
 export const SCENE = 'sc.01-1'
@@ -40,16 +43,24 @@ export const QUOTED_SENTENCE = 'a light that stopped turning was a light that li
 export const STRAY_CLAIM = 'The supply boat is a month out'
 
 export interface Scenario {
-  row: 'explore.scene.one-shot' | 'explore.route.one-shot'
+  /** The row key, as the registry spells it (A69-1). `RowKey` is a string
+   *  alias, not a union, and `test/` is not typechecked — so this buys no
+   *  compile-time check and does not pretend to. What holds the line is the
+   *  assertion below: every scenario must name a row that exists. The writing
+   *  rows of slice 2 join by adding a scenario here; nothing else changes. */
+  row: RowKey
   name: string
   /** what the fixture's `expect` field must say. `leak` is the one that
    *  never reaches the engine: the gate proves the brief and refuses before
    *  the send (A67-7), so the scenario carries no recorded answer. */
-  expect: 'lands' | 'overlap' | 'coverage-drop' | 'leak'
+  expect: 'lands' | 'overlap' | 'coverage-drop' | 'leak' | 'validator-refused'
   /** the story state and request, in one breath — copied into the fixture */
   scenario: string
   prepare?: () => Promise<void>
-  run: () => Promise<RerouteResponse>
+  /** What the pass returns. The harness only watches the briefs that reach
+   *  the seam, so what comes back is the scenario's own business — a route
+   *  response today, a drafting response when U1 has its row. */
+  run: () => Promise<unknown>
 }
 
 /** The example exactly as committed: every edit and every route gone. */
@@ -117,15 +128,57 @@ export const SCENARIOS: Scenario[] = [
   rewrite('coverage-drop', 'coverage-drop',
     'the landed explore.scene.one-shot/lands route with one note on its fifth paragraph: "the boat is a month out; say so" — the answer claims a beat the destination never held',
     'the boat is a month out; say so', 5),
+  {
+    row: 'draft.scene.one-shot.write', name: 'lands', expect: 'lands',
+    scenario: 'the worked example as shipped; draft the next scene of ch.01, no line said',
+    run: () => runDraft('ch.01-ninety-one-stairs'),
+  },
+  {
+    row: 'draft.scene.one-shot.write', name: 'validator-refused', expect: 'validator-refused',
+    scenario: 'the same story, with a craft plan the author settled, so the write stage runs on the second call; the answer binds a character canon does not hold, and the story\'s own validator refuses it',
+    run: () => runDraft('ch.01-ninety-one-stairs', 'bring the inspector up the point', {
+      moves: [{ move: 'structure', how: 'open on the arrival and let the watch come second' }],
+    }),
+  },
+  {
+    row: 'draft.scene.one-shot.craft-plan', name: 'plan-dread', expect: 'lands',
+    scenario: 'the worked example; the author said "more dread" about the scene to be drafted, and the reading turns it into craft',
+    run: () => runDraft('ch.01-ninety-one-stairs', 'more dread'),
+  },
+  {
+    row: 'draft.scene.one-shot.write', name: 'lands-from-plan', expect: 'lands',
+    scenario: 'the author said "more dread", read the plan the reading returned and settled it as it stood; the write stage is briefed with that craft and never with their line',
+    run: async () => {
+      const first = await runDraft('ch.01-ninety-one-stairs', 'more dread')
+      return runDraft('ch.01-ninety-one-stairs', 'more dread', first.plan!)
+    },
+  },
   rewrite('leak', 'leak',
     `the landed explore.scene.one-shot/lands route with one note on the whole route that quotes the manuscript — "${QUOTED_SENTENCE}" — so the brief would carry a sentence of the withheld prose. The leak gate refuses before the send.`,
     `the book has "${QUOTED_SENTENCE}"; get that pressure in without the sentence`, null),
 ]
 
+/** EVERY SCENARIO NAMES A REAL LAUNCH — a row, or a stage of one, which is
+ *  what a brief belongs to. The row key is a string, so a typo would
+ *  otherwise surface as `no fixture on disk` during a rekey, or as an empty
+ *  `seen[]` in a test that then asserts nothing. Checked once, at import, so
+ *  it fails before any scenario runs. */
+const KNOWN = new Set(ROWS.flatMap(r =>
+  r.pattern === 'staged' && r.stages.length
+    ? r.stages.map(st => rowKey({ ...r, stage: st.id }))
+    : [rowKey(r)]))
+for (const s of SCENARIOS) {
+  if (!KNOWN.has(s.row)) {
+    throw new Error(
+      `scenario ${s.row}/${s.name} names a row the registry does not have. ` +
+      `Rows today: ${[...KNOWN].join(', ')}`)
+  }
+}
+
 /** Run one scenario from a clean story, watching every brief that reaches
  *  the fixture engine. `seen[0]` is the scenario's own brief; a refusal's
  *  repair attempt, when the pass makes one, is `seen[1]`. */
-export async function renderScenario(s: Scenario): Promise<{ seen: BriefSeen[]; result: RerouteResponse }> {
+export async function renderScenario(s: Scenario): Promise<{ seen: BriefSeen[]; result: unknown }> {
   reset()
   await s.prepare?.()
   const seen: BriefSeen[] = []

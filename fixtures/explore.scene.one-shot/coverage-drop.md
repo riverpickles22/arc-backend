@@ -1,7 +1,8 @@
 ---
 row: explore.scene.one-shot
 name: coverage-drop
-fingerprint: 29c9fdb1ff4a94c9
+fingerprint: a1963ce3a68c9ab1
+because: "A69-1: the worked example's pack now carries Ines's wants, fears and beliefs in their own fields (conventions §4) and, through her possessions at T, the proposed keeper's log and its edge (obj.keepers-log, rel.ines-log). The recorded answers are unchanged."
 expect: coverage-drop
 scenario: >
   the example scene as shipped; another way through with the guidance "give

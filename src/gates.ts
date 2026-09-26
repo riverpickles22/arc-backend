@@ -27,7 +27,8 @@ import type { DroppedClaim, RouteCoverage } from 'arc-canon-graph/api-types.ts'
 import { lockViolations } from 'arc-canon-graph/annotations.ts'
 import { EngineError, askRow, engineResumes, isDry, recordedEnvelope, stripFences, type Brief, type EngineErrorKind } from './engine'
 import { describeViolation } from './locks'
-import type { GateId, SealedRow } from './registry'
+import { CRAFT_MOVES } from './registry'
+import type { GateId, LaunchSpec } from './registry'
 import { keepWithRun, recordLaunch, writeWorkingReceipt, type GateRecord, type Receipt, type Run } from './run'
 import { sha16 } from './records'
 import { attachLaunch } from './runs'
@@ -63,11 +64,25 @@ export interface ProseGateCtx {
   /** what the record holds but did not bind — arc's own key points, which
    *  are context and never the destination */
   known: string[]
+  /** HOW THIS STORY SAYS YES (A69-3). A drafting pass answers with a whole
+   *  scene file, and the only honest check of one is the story's own
+   *  validator: write it, validate the story, keep it or put it back. The
+   *  pass supplies this because the pass knows the path; the gate supplies
+   *  the verdict and the record. A row that names the `validator` gate and
+   *  gives no way to run it is refused, never quietly passed. */
+  validate?: (sceneFile: string) => { ok: boolean; output: string }
 }
 
 /** The answer, split by the row's answer shape, as the gates read it. */
 export interface ParsedAnswer {
   body: string
+  /** THE PROSE ALONE (A69-3). For an answer that is a whole scene file, the
+   *  body opens with the YAML binding — which is a record, not writing, and
+   *  measuring a sentence cap against it refuses every draft on a story whose
+   *  contract states one. The validator reads `body`, because the file is
+   *  what it validates; every countable style rule reads this. For any other
+   *  answer shape the two are the same string. */
+  prose: string
   briefing: string
   coverage: RouteCoverage[] | null
   /** claims that did not resolve, by reason */
@@ -85,15 +100,94 @@ type GateVerdict =
 type GateFn = (ctx: ProseGateCtx, a: ParsedAnswer) => GateVerdict
 
 const held = (record: Omit<GateRecord, 'gate' | 'attempt' | 'verdict'> = { stage: 'answer' }): GateVerdict => ({ verdict: 'held', record })
+/** The validator speaks in lines; the author gets the first one, which is
+ *  the one that says what is wrong. The whole output stays on the receipt. */
+/** A scene file's prose, without the binding above it. The file opens with a
+ *  `---` fence, and everything to the closing fence is the record's, not the
+ *  writer's. */
+export function withoutFrontmatter(file: string): string {
+  const m = file.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/)
+  return m ? file.slice(m[0].length).trim() : file
+}
+
+const firstLine = (out: string): string => (out.trim().split('\n').find(l => l.trim()) ?? 'it did not say why').trim()
+
 const refuse = (reason: string, record: Omit<GateRecord, 'gate' | 'attempt' | 'verdict'>): GateVerdict => ({ verdict: 'refused', reason, record })
 
 /** The gate ids of slice 1, each an implementation the runner calls by id.
  *  A row naming an id that is not here is refused rather than skipped — a
  *  declared gate that silently does not run is the failure the typed record
  *  exists to prevent. */
+/** THE PLAN, as the pass returned it. */
+export interface CraftPlan { moves: { move: string; how: string }[] }
+
+/** Read the plan out of a fenced JSON block. Tolerant of what surrounds it
+ *  and strict about its shape: a plan arc cannot read is not a plan it may
+ *  hand to the pass that writes. */
+export function parseCraftPlan(text: string): CraftPlan | null {
+  const raw = stripFences(text)
+  const start = raw.indexOf('{')
+  const end = raw.lastIndexOf('}')
+  if (start < 0 || end < start) return null
+  try {
+    const parsed = JSON.parse(raw.slice(start, end + 1)) as { moves?: unknown }
+    if (!Array.isArray(parsed.moves)) return null
+    const moves = parsed.moves
+      .filter((m): m is { move: string; how: string } =>
+        !!m && typeof (m as { move?: unknown }).move === 'string' && typeof (m as { how?: unknown }).how === 'string')
+      .map(m => ({ move: m.move.trim(), how: m.how.trim() }))
+      .filter(m => m.move && m.how)
+    return moves.length ? { moves } : null
+  } catch {
+    return null
+  }
+}
+
+/** One line for the author: *Writing toward: …*. The ids are arc's; what the
+ *  author reads is the clauses they were given, in the order the pass chose
+ *  them. */
+export const planSentence = (plan: CraftPlan): string => plan.moves.map(m => m.how).join('; ')
+
 export const GATES: Partial<Record<GateId, GateFn>> = {
+  /** THE VOCABULARY IS CLOSED (A69-4, Q11). A move outside the six is not a
+   *  richer plan, it is a plan the gate cannot check and the style learner
+   *  cannot count — and it is usually the pass restating the effect it was
+   *  told not to name. */
+  'plan-vocabulary': (_ctx, a) => {
+    const plan = parseCraftPlan(a.body)
+    if (!plan) {
+      return refuse(
+        'arc could not read that plan, so nothing was written. Ask again.',
+        { stage: 'answer', bar: 'one fenced json block of craft moves', bar_from: "the row's answer shape" })
+    }
+    const known = new Set(Object.keys(CRAFT_MOVES))
+    const strange = plan.moves.filter(m => !known.has(m.move)).map(m => m.move)
+    return strange.length
+      ? refuse(
+        `that plan asked for something arc does not know how to ask a writing pass for — ${strange.join(', ')}. Nothing was written; ask again.`,
+        { stage: 'answer', bar: [...known].join(', '), measured: strange.join(', '), bar_from: "arc's craft vocabulary" })
+      : held({ stage: 'answer', bar: 'moves from the craft vocabulary', measured: plan.moves.map(m => m.move).join(', '), bar_from: "arc's craft vocabulary" })
+  },
+  /** THE STORY'S OWN VALIDATOR, on a whole scene file. Everything a draft can
+   *  get wrong about the record rather than the prose — a binding that names
+   *  an id canon does not hold, a chapter that is not there, frontmatter that
+   *  is not a scene — is what this catches, and it catches it before the file
+   *  is anywhere the author can see. */
+  validator: (ctx, a) => {
+    if (!ctx.validate) {
+      return refuse(
+        'arc could not check that draft against your story, so nothing was written. Ask again.',
+        { stage: 'answer', bar_from: 'the row names the validator gate and this pass supplied no way to run it' })
+    }
+    const check = ctx.validate(a.body)
+    return check.ok
+      ? held({ stage: 'answer', bar: 'the story validates', measured: 'it does', bar_from: "the story's own validator" })
+      : refuse(
+        `that draft does not fit your record — ${firstLine(check.output)}. Nothing was written; ask again.`,
+        { stage: 'answer', bar: 'the story validates', measured: firstLine(check.output), bar_from: "the story's own validator" })
+  },
   locks: (ctx, a) => {
-    const violated = lockViolations(ctx.sceneBody, a.body, ctx.sceneLocks)
+    const violated = lockViolations(ctx.sceneBody, a.prose, ctx.sceneLocks)
     const record = { measured: violated.length, bar: 0, bar_from: 'locks/', measured_against: ctx.sceneLocks.map(l => l.id), stage: 'answer' as const }
     return violated.length
       ? refuse(`touched locked prose — ${describeViolation(ctx.sceneName, violated[0])}`, record)
@@ -101,12 +195,12 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
   },
   'lock-order': (ctx, a) => {
     const record = { measured_against: ctx.sceneLocks.map(l => l.id), stage: 'answer' as const }
-    return ctx.lockOrderViolation(a.body, ctx.lockedTexts)
+    return ctx.lockOrderViolation(a.prose, ctx.lockedTexts)
       ? refuse('the locked paragraphs came back out of their settled order', record)
       : held(record)
   },
   'withhold-literals': (ctx, a) => {
-    const leaked = ctx.withholdViolations(ctx.literals, a.body)
+    const leaked = ctx.withholdViolations(ctx.literals, a.prose)
     const record = { measured: leaked.length, bar: 0, bar_from: "the contract's must_withhold, quoted", stage: 'answer' as const }
     return leaked.length
       ? refuse(`names what the contract withholds verbatim (${leaked.map(x => `"${x}"`).join(', ')})`, record)
@@ -115,7 +209,7 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
   'and-chain': (ctx, a) => {
     const bar_from = 'the style contract: "a chain stops at N"'
     if (ctx.andCap === null) return { verdict: 'not applicable', record: { bar_from: 'the style contract states no chain rule', stage: 'answer' } }
-    const chains = ctx.andChainViolations(a.body, ctx.andCap, ctx.lockedTexts)
+    const chains = ctx.andChainViolations(a.prose, ctx.andCap, ctx.lockedTexts)
     if (!chains.length) return held({ measured: 0, bar: ctx.andCap, bar_from, stage: 'answer' })
     const worst = [...chains].sort((x, y) => y.ands - x.ands)[0]
     return refuse(
@@ -125,7 +219,7 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
   'sentence-length': (ctx, a) => {
     const bar_from = 'the style contract: "a sentence stops at N words"'
     if (ctx.wordCap === null) return { verdict: 'not applicable', record: { bar_from: 'the style contract states no sentence rule', stage: 'answer' } }
-    const long = ctx.longSentenceViolations(a.body, ctx.wordCap, ctx.lockedTexts)
+    const long = ctx.longSentenceViolations(a.prose, ctx.wordCap, ctx.lockedTexts)
     if (!long.length) return held({ measured: 0, bar: ctx.wordCap, bar_from, stage: 'answer' })
     const worst = [...long].sort((x, y) => y.words - x.words)[0]
     return refuse(
@@ -133,7 +227,7 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
       { measured: worst.words, bar: ctx.wordCap, bar_from, stage: 'answer' })
   },
   overlap: (ctx, a) => {
-    const measured = ctx.lexicalOverlap(a.body, ctx.sceneBody, ctx.lockedTexts)
+    const measured = ctx.lexicalOverlap(a.prose, ctx.sceneBody, ctx.lockedTexts)
     const bar_from = `MAX_OVERLAP, arc-backend ${ctx.maxOverlap}`
     if (measured.share === null) {
       // Too few countable paragraphs to judge. Not a pass: the author reads
@@ -167,12 +261,38 @@ export type GateChecked =
 /** Run the row's gate ids, in the row's order, over one answer. Every gate
  *  that runs leaves a typed record; the first refusal stops the walk,
  *  because a refused write is refused. */
-export function runRowGates(row: SealedRow, ctx: ProseGateCtx, text: string, attempt = 1, launch?: string): GateChecked {
+
+export function runRowGates(row: LaunchSpec, ctx: ProseGateCtx, text: string, attempt = 1, launch?: string): GateChecked {
   const gates: GateRecord[] = []
 
   // The answer shape first: the gates read the parts, so a shapeless answer
   // is refused before any of them runs.
   const { body, briefing: rawBriefing } = splitBriefing(stripFences(text))
+  // A READING ANSWERS WITH ITS SHAPE, not with prose. The craft plan returns
+  // one JSON block; there is no body to be empty and no briefing to split,
+  // so the prose shape checks below would refuse every honest answer.
+  if (row.answer === 'craft-plan') {
+    const plan = parseCraftPlan(text)
+    if (!plan) {
+      gates.push({ gate: 'shape', verdict: 'refused', attempt, ...(launch ? { launch } : {}), stage: 'answer', measured: 0, bar: 'one fenced json block of craft moves', bar_from: "the row's answer shape" })
+      return { ok: false, reason: 'arc could not read that plan, so nothing was written. Ask again.', gates, unreadable: true }
+    }
+    gates.push({ gate: 'shape', verdict: 'held', attempt, ...(launch ? { launch } : {}), stage: 'answer' })
+    const a: ParsedAnswer = { body: text, prose: '', briefing: '', coverage: null, dropped: [], returned: 0, overlap: null }
+    for (const id of row.gates) {
+      // The leak gate ran on the BRIEF, before the send — not here.
+      if (id === 'leak') continue
+      const fn = GATES[id]
+      if (!fn) {
+        gates.push({ gate: id, verdict: 'could not judge', attempt, ...(launch ? { launch } : {}), stage: 'answer', bar_from: 'this arc has no implementation for that gate' })
+        return { ok: false, reason: `arc could not check ${id} on that answer, so nothing was written. Ask again.`, gates }
+      }
+      const v = fn(ctx, a)
+      gates.push({ gate: id, verdict: v.verdict, attempt, ...(launch ? { launch } : {}), ...v.record })
+      if (v.verdict === 'refused') return { ok: false, reason: v.reason, gates }
+    }
+    return { ok: true, body: text, briefing: '', coverage: null, dropped: [], returned: 0, overlap: null, gates }
+  }
   if (!body.trim()) {
     gates.push({ gate: 'shape', verdict: 'refused', attempt, ...(launch ? { launch } : {}), stage: 'answer', measured: 0, bar: 'a body and a briefing', bar_from: "the row's answer shape" })
     // An answer that parsed to nothing is UNREADABLE, never an empty route.
@@ -189,7 +309,11 @@ export function runRowGates(row: SealedRow, ctx: ProseGateCtx, text: string, att
     ...resolved.dropped,
     ...(parsedTail.unparseable ? [{ reason: 'unparseable' as const, count: parsedTail.unparseable }] : []),
   ]
-  const a: ParsedAnswer = { body: body.trim(), briefing: parsedTail.briefing, coverage: resolved.coverage, dropped, returned: resolved.returned, overlap: null }
+  const a: ParsedAnswer = {
+    body: body.trim(),
+    prose: row.answer === 'scene-file' ? withoutFrontmatter(body.trim()) : body.trim(),
+    briefing: parsedTail.briefing, coverage: resolved.coverage, dropped, returned: resolved.returned, overlap: null,
+  }
 
   for (const id of row.gates) {
     // The leak gate ran on the BRIEF, before the send — not here.
@@ -399,7 +523,7 @@ export function leakGate(brief: string, withheld: WithheldSet, attempt: number, 
 
 /** What the runner needs to launch, judge and repair one job. */
 export interface GateJob {
-  row: SealedRow
+  row: LaunchSpec
   run: Run
   receipt: Receipt
   /** the brief for the first attempt */

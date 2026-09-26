@@ -21,9 +21,10 @@
 //   <the answer, verbatim, as the model would have returned it>
 //
 // The scenarios that render the briefs live in arc-backend's tests
-// (test/fixture-scenarios.ts); `npm run fixtures:rekey` re-fingerprints
-// every fixture after a deliberate brief change. Nothing here renders a
-// brief — the engine only recognises one.
+// (test/fixture-scenarios.ts); `npm run fixtures:rekey -- --because "…"`
+// re-fingerprints every fixture after a deliberate brief change and records
+// why on each one it moves. Nothing here renders a brief — the engine only
+// recognises one.
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -45,6 +46,12 @@ export interface Fixture {
   /** what the gate should do with this answer — the test reads it, the engine does not */
   expect: string
   scenario: string
+  /** WHY THIS FINGERPRINT LAST MOVED. A rekey is a deliberate brief change,
+   *  and a fingerprint that changes with no reason recorded is the fixture
+   *  store quietly agreeing to whatever the brief became. Written by
+   *  `fixtures:rekey -- --because "…"`; absent on a fixture recorded and never
+   *  rekeyed since (A69-1). */
+  because?: string
   answer: string
   file: string
 }
@@ -67,6 +74,7 @@ export function parseFixture(text: string, file: string): Fixture | null {
   return {
     row: head.row, name: head.name, fingerprint: head.fingerprint,
     expect: String(head.expect ?? ''), scenario: String(head.scenario ?? '').trim(),
+    ...(head.because ? { because: String(head.because).trim() } : {}),
     answer: text.slice(m[0].length).replace(/^\n/, '').replace(/\n$/, ''),
     file,
   }
@@ -96,7 +104,7 @@ export class FixtureMiss extends Error {
       `fixture engine has no recorded answer for the ${row} brief ${fingerprint} — ` +
       `the brief changed, or this scenario was never recorded` +
       (known.length ? ` (recorded for ${row}: ${known.map(k => `${k.name} ${k.fingerprint}`).join(', ')})` : ` (nothing is recorded for ${row})`) +
-      `. If the change is intended, run \`npm run fixtures:rekey\` in arc-backend.`,
+      `. If the change is intended, run \`npm run fixtures:rekey -- --because "why the brief moved"\` in arc-backend.`,
     )
     this.name = 'FixtureMiss'
   }

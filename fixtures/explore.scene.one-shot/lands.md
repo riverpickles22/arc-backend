@@ -1,7 +1,8 @@
 ---
 row: explore.scene.one-shot
 name: lands
-fingerprint: 25308db3a5302f23
+fingerprint: 807580382ccda671
+because: "A69-1: the worked example's pack now carries Ines's wants, fears and beliefs in their own fields (conventions §4) and, through her possessions at T, the proposed keeper's log and its edge (obj.keepers-log, rel.ines-log). The recorded answers are unchanged."
 expect: lands
 scenario: >
   the example scene as shipped; another way through, one route, no guidance

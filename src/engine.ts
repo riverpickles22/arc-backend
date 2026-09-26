@@ -39,7 +39,7 @@ import { MODEL, STORY } from './config'
 import { runFixturePrompt } from './fixtures'
 import { buildCliArgs, type InvocationOpts } from './invocation'
 import { sha16 } from './records'
-import { rowKey, type SealedRow } from './registry'
+import { rowKey, type LaunchSpec } from './registry'
 
 export type Engine = 'sdk' | 'claude-cli' | 'fixture'
 
@@ -390,7 +390,7 @@ const refusal = (field: string, declared: unknown, observed: unknown, sentence: 
  *  Proven: tools, MCP servers, the working directory, the session, and
  *  through the empty toolbelt both network and subagents. */
 export function proveEnvelope(
-  row: SealedRow,
+  row: LaunchSpec,
   init: InitEvent | null,
   expect: { scratchDir: string; sessionId: string | null },
   home: string = os.homedir(),
@@ -683,7 +683,7 @@ export interface RowLaunchOpts {
  *  streamed output, the run id in its environment and its session
  *  pre-assigned. Returns the handle; the answer is `result`. A launch with
  *  no row throws here, before the spawn. */
-export function launchCli(row: SealedRow, brief: Brief, opts: RowLaunchOpts): Launch {
+export function launchCli(row: LaunchSpec, brief: Brief, opts: RowLaunchOpts): Launch {
   if (!row) throw new Error('a launch needs a registry row — no row, no launch')
   if (!opts?.runId) throw new Error(`a launch of ${rowKey(row)} needs its run id before the first token`)
   const attempt = opts.attempt ?? '1'
@@ -724,7 +724,7 @@ export function launchCli(row: SealedRow, brief: Brief, opts: RowLaunchOpts): La
 
 // ---- the SDK adapter ----------------------------------------------------------------
 
-async function askSdk(row: SealedRow, brief: Brief, opts: AskOpts): Promise<CliAnswer> {
+async function askSdk(row: LaunchSpec, brief: Brief, opts: AskOpts): Promise<CliAnswer> {
   // Lazily: agent.ts holds the client and reads this module's engine choice.
   const { getClient } = await import('./agent')
   const started = Date.now()
@@ -789,7 +789,7 @@ export type DryAnswer = { dry: true; brief: string }
 
 /** The row in, the brief in, the answer out — from whichever engine is
  *  configured. Throws before anything is spent when there is no row. */
-export async function askRow(row: SealedRow, brief: Brief, opts: AskOpts): Promise<CliAnswer | DryAnswer> {
+export async function askRow(row: LaunchSpec, brief: Brief, opts: AskOpts): Promise<CliAnswer | DryAnswer> {
   if (!row) throw new Error('a launch needs a registry row — no row, no launch')
   const rendered = renderBrief(brief)
   if (opts.dry) return { dry: true, brief: rendered }
@@ -817,12 +817,20 @@ export async function askRow(row: SealedRow, brief: Brief, opts: AskOpts): Promi
     return launch.result
   }
   if (engine === 'sdk') {
-    // Slice 6 proves the second runtime (agent-workflows §11). Until then
-    // this adapter reports nothing about what it loaded, so a withholding
-    // row cannot be honest on it and refuses rather than promising.
-    if (row.withholding) {
+    // EVERY ROWED PASS REFUSES HERE, not only the withholding ones (A69-3,
+    // the author's decision of 2026-09-24). Slice 6 proves the second runtime
+    // (agent-workflows §11); until then this adapter reports nothing about
+    // what it loaded, and every row declares an envelope — tools none,
+    // project context none, a scratch directory — that it therefore cannot
+    // prove. A row that runs where its envelope cannot be proven is a row
+    // whose receipt says "proven" about something nobody checked.
+    //
+    // `askSdk` below is kept, and unreachable, on purpose: it is the adapter
+    // slice 6 grows, and deleting it would mean writing it again from the
+    // same notes.
+    {
       throw new EngineError('envelope',
-        'arc cannot show what that pass was given on this engine, and this one is defined by what it is not shown — so nothing was written. Log in to the claude CLI and ask again.')
+        'arc cannot show what that pass was given on this engine, so nothing was written. Log in to the claude CLI and ask again.')
     }
     return askSdk(row, brief, opts)
   }

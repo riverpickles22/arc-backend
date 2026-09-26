@@ -14,7 +14,7 @@ process.env.ARC_STORY_PATH = makeStory()
 process.env.ARC_DRAFT_ENGINE = 'none'
 
 const {
-  ROWS, ROW_EXPLORE_SCENE, ROW_EXPLORE_ROUTE, ROUTE_WALL_CLOCK_MS, ROUTE_OUTPUT_TOKENS,
+  ROWS, ROW_EXPLORE_SCENE, ROW_EXPLORE_ROUTE, ROW_DRAFT_SCENE, ROUTE_WALL_CLOCK_MS, ROUTE_OUTPUT_TOKENS,
   findRow, rowKey, jobFingerprint, rowStatus, readStatusReceipts, fixturesRecorded, registryStatus,
 } = await import('../src/registry.ts')
 const { PASS_REGISTRY } = await import('../src/invocation.ts')
@@ -23,7 +23,7 @@ const { loadFixtures } = await import('../src/fixtures.ts')
 const RECORDED = loadFixtures()
 
 test('U4 and U5 are the first rows: sealed, withholding, keyed by their cell', () => {
-  assert.deepEqual(ROWS.map(rowKey), ['explore.scene.one-shot', 'explore.route.one-shot'])
+  assert.deepEqual(ROWS.map(rowKey), ['explore.scene.one-shot', 'explore.route.one-shot', 'draft.scene.one-shot'])
   for (const row of [ROW_EXPLORE_SCENE, ROW_EXPLORE_ROUTE]) {
     assert.equal(row.pattern, 'sealed')
     assert.equal(row.withholding, true)
@@ -42,7 +42,15 @@ test('U4 and U5 are the first rows: sealed, withholding, keyed by their cell', (
 test('the budgets are Q3\'s, decided 2026-09-13 for this row only', () => {
   assert.equal(ROUTE_WALL_CLOCK_MS, 20 * 60 * 1000, 'twenty minutes per call — the one evidence-based number')
   assert.equal(ROUTE_OUTPUT_TOKENS, 12_000, 'about four times the novel\'s longest scene')
-  for (const row of ROWS) assert.deepEqual(row.budget, { outputTokens: 12_000, wallClockMs: 20 * 60 * 1000 })
+  for (const row of ROWS) {
+    assert.equal(row.budget.outputTokens, 12_000)
+    assert.equal(row.budget.wallClockMs, 20 * 60 * 1000)
+  }
+  // The writing rows carry a third ceiling the route rows do not: the
+  // assembled brief (A69-2, Q3 for these rows, decided 2026-09-24).
+  assert.equal(ROW_DRAFT_SCENE.budget.inputTokens, 40_000)
+  assert.equal(ROW_EXPLORE_SCENE.budget.inputTokens, undefined,
+    'a row whose slice the assembler does not build carries no number it cannot honour')
 })
 
 test('the rules text lives on the row, and the pass reads it from there — one address per job', () => {
@@ -65,7 +73,8 @@ test('findRow answers a listed cell and nothing else — never a neighbour', () 
   assert.equal(findRow({ job: 'explore', scope: 'route', mode: 'one-shot', depth: 'standard' }), ROW_EXPLORE_ROUTE)
   assert.equal(findRow({ job: 'explore', scope: 'scene', mode: 'batch' }), undefined, 'a mode the rows do not list')
   assert.equal(findRow({ job: 'explore', scope: 'scene', mode: 'one-shot', depth: 'quick' }), undefined, 'a depth the rows do not carry is not mapped to standard')
-  assert.equal(findRow({ job: 'draft', scope: 'scene', mode: 'one-shot' }), undefined, 'draft has no row until slice 2')
+  assert.equal(findRow({ job: 'draft', scope: 'scene', mode: 'one-shot' }), ROW_DRAFT_SCENE, 'draft took its row in A69-3')
+  assert.equal(findRow({ job: 'draft', scope: 'chapter', mode: 'one-shot' }), undefined, 'and only at scene scope')
 })
 
 test('the job fingerprint moves with the rules, the slice, the gates and the budget — not with the fixture list', () => {
@@ -142,7 +151,7 @@ test('receipts are read from history/, and one that does not parse attends nothi
 
 test('registryStatus reads the story\'s history and reports every row', () => {
   const status = registryStatus()
-  assert.deepEqual(status.map(s => s.key), ['explore.scene.one-shot', 'explore.route.one-shot'])
-  assert.deepEqual(status.map(s => s.status), ['built', 'built'], 'no receipt in this story yet')
+  assert.deepEqual(status.map(s => s.key), ['explore.scene.one-shot', 'explore.route.one-shot', 'draft.scene.one-shot'])
+  assert.deepEqual(status.map(s => s.status), ['built', 'built', 'built'], 'no receipt in this story yet')
   assert.equal(status[0].fingerprint, fp)
 })

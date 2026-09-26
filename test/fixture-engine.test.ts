@@ -12,6 +12,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
 // Sets the story and the engine before anything under src/ loads.
+import type { RerouteResponse } from 'arc-canon-graph/api-types.ts'
+import type { BriefSeen } from '../src/fixtures.ts'
 import { SCENARIOS, SCENE, STORY, QUOTED_SENTENCE, STRAY_CLAIM, renderScenario } from './fixture-scenarios.ts'
 import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
 import type { RouteAlternative } from 'arc-canon-graph/api-types.ts'
@@ -123,10 +125,27 @@ const expectLanded = (alt: RouteAlternative | undefined, refused: { reason: stri
   return alt
 }
 
+/** THE OTHER HALF OF arc-core's `test_example_writing_layers.py` (A69-1).
+ *  That test proves the example still HOLDS what a writing brief reads; this
+ *  one proves the brief actually CARRIES it. They are different claims: an
+ *  object reaches a drafting context only through the POV's possessions at T,
+ *  and an edge only when both endpoints are already in, so a proposed fact
+ *  can be perfectly valid on disk and in no brief at all. */
+test("the example's proposed fact reaches the brief, so a status layer has something to tag", async () => {
+  const lands = SCENARIOS.find(s => s.row === 'explore.scene.one-shot' && s.name === 'lands')!
+  const { seen } = await renderScenario(lands)
+  const brief = seen[0]?.brief ?? ''
+  assert.ok(brief.includes('obj.keepers-log'),
+    'the proposed object is in the rendered brief — if this fails, it is reachable from nothing the pack walks')
+  assert.ok(brief.includes('rel.ines-log'),
+    'and so is the proposed edge, which needs both endpoints included')
+})
+
 for (const s of SCENARIOS) {
   test(`${s.row}/${s.name}: the brief is the one recorded, and the gate does what the fixture says`, async () => {
     const fixture = loadFixtures().find(f => f.row === s.row && f.name === s.name)
-    const { seen, result } = await renderScenario(s)
+    // Route rows today; the harness itself is row-agnostic (A69-1).
+    const { seen, result } = await renderScenario(s) as { seen: BriefSeen[]; result: RerouteResponse }
 
     // The leak scenario never reaches the engine: the gate proves the brief
     // and refuses before the send (A67-7), so there is no brief to compare
@@ -147,13 +166,48 @@ for (const s of SCENARIOS) {
       `the ${s.row} brief for "${s.name}" changed: recorded ${fixture.fingerprint}, rendered ${rendered.fingerprint}. ` +
       `A rule, a slice layer or the example scene moved. If that was meant, run \`npm run fixtures:rekey\` and review the diff (${path.relative(process.cwd(), fixture.file)}).`)
 
-    // The brief never carries the current prose except the locked paragraph —
-    // U4's whole premise, checked on every fixture's own brief.
-    const paras = paragraphsOf(scene().body)
-    paras.forEach((p, i) => {
-      if (i === 1) assert.ok(rendered.brief.includes(p), 'the locked paragraph is in the brief, verbatim')
-      else assert.ok(!rendered.brief.includes(p), `paragraph ${i + 1} of the manuscript reached the brief`)
-    })
+    // WHAT THE BRIEF MAY CARRY IS THE ROW'S BUSINESS, not the harness's.
+    // A withholding route row is shown none of the scene but its locked
+    // paragraph — U4's whole premise. A drafting row is writing a scene that
+    // does not exist; there is no current prose for it to be kept from, and
+    // asserting otherwise would be testing the harness's memory of slice 1.
+    if (s.row.startsWith('explore.')) {
+      const paras = paragraphsOf(scene().body)
+      paras.forEach((p, i) => {
+        if (i === 1) assert.ok(rendered.brief.includes(p), 'the locked paragraph is in the brief, verbatim')
+        else assert.ok(!rendered.brief.includes(p), `paragraph ${i + 1} of the manuscript reached the brief`)
+      })
+    }
+
+    // A READING ANSWERS WITH A PLAN. The craft-plan stage writes nothing and
+    // returns one line for the author to read, edit or drop (A69-4) — and
+    // the one thing it must never contain is the word they said.
+    if (s.row.endsWith('.craft-plan')) {
+      const out = result as unknown as { file: string | null; run?: string; reply: string; plan?: { moves: { move: string; how: string }[] } }
+      assert.ok(out.run, 'the reading is a run of its own, with its own receipt')
+      assert.equal(out.file, null, 'and it writes nothing')
+      assert.ok(out.plan?.moves.length, 'it answers with craft moves')
+      assert.match(out.reply, /^Writing toward: /, 'shown to the author as one line')
+      assert.ok(!/dread/i.test(JSON.stringify(out.plan)),
+        'and never names the effect — a pass told to write dread writes about dread')
+      return
+    }
+
+    // A draft answers with a file, not with routes, and is read on its own
+    // terms (A69-3).
+    if (s.row.startsWith('draft.')) {
+      const draft = result as unknown as { file: string | null; run?: string; reply: string }
+      assert.ok(draft.run, 'the response names the run that made it')
+      if (s.expect === 'lands') {
+        assert.equal(draft.file, 'prose/ch-01/scene-02.md', 'the scene is waiting in the draft layer')
+        assert.match(draft.reply, /accept or discard/, 'and the author is told the next move')
+      } else {
+        assert.equal(draft.file, null, 'nothing was written')
+        assert.match(draft.reply, /would not keep it|could not run|does not fit your record/,
+          'and the refusal says so in the author\'s words')
+      }
+      return
+    }
 
     switch (s.expect) {
       case 'lands':

@@ -10,13 +10,41 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import type {
+  AgentsResponse,
+  AnalyzeResponse,
+  AnnotationsResponse,
+  ApiErrorResponse,
+  AttentionResponse,
+  BriefingResponse,
+  CraftPlanned,
+  DeleteTranscriptResponse,
+  DocsResponse,
+  DraftSceneResponse,
+  HealthResponse,
+  HookResponse,
+  LensesResponse,
   LocksResponse,
-  AnalyzeResponse, ApiErrorResponse, AttentionResponse, DocsResponse, DraftSceneResponse,
-  AnnotationsResponse, HealthResponse, MaterialResponse, NoteResponse, NotesResponse,
-  AgentsResponse, HookResponse, LensesResponse, OkResponse, ReviseResponse, RunDecisionResponse, StopRunResponse, DeleteTranscriptResponse, RunDetailResponse, RunResponse, RunsResponse,
-  UpdateMaterialResponse, WorkDecisionResponse, WorkResponse,
-  BriefingResponse, ProseAcceptResponse, ProseCheckHit, ProseChecksResponse, ProseParagraphRequest, ProseResponse, ProseSentenceRequest,
-  RatifyRuleResponse, StyleResponse,
+  MaterialResponse,
+  NoteResponse,
+  NotesResponse,
+  OkResponse,
+  ProseAcceptResponse,
+  ProseCheckHit,
+  ProseChecksResponse,
+  ProseParagraphRequest,
+  ProseResponse,
+  ProseSentenceRequest,
+  RatifyRuleResponse,
+  ReviseResponse,
+  RunDecisionResponse,
+  RunDetailResponse,
+  RunResponse,
+  RunsResponse,
+  StopRunResponse,
+  StyleResponse,
+  UpdateMaterialResponse,
+  WorkDecisionResponse,
+  WorkResponse,
 } from 'arc-canon-graph'
 import { STORY } from './config'
 import { HttpError, corsOrigin, json, readBody } from './http'
@@ -38,6 +66,32 @@ import { runCapture } from './capture'
 import { runAnalysis } from './analyze'
 import { runSuggest } from './suggest'
 import { runDraft } from './draft'
+import { CRAFT_MOVES } from './registry'
+
+/** The plan as the viewer sends it back, checked here rather than trusted:
+ *  the author may have edited it, and what they edited is text. */
+function parsePlan(raw: unknown): CraftPlanned {
+  const moves = (raw as { moves?: unknown })?.moves
+  if (!Array.isArray(moves) || !moves.length) throw new HttpError(400, 'a plan needs at least one craft move')
+  return {
+    moves: moves.map(m => {
+      const move = (m as { move?: unknown })?.move
+      const how = (m as { how?: unknown })?.how
+      if (typeof move !== 'string' || typeof how !== 'string' || !move.trim() || !how.trim()) {
+        throw new HttpError(400, 'each craft move needs a move and a clause saying what to do')
+      }
+      // THE VOCABULARY IS CLOSED IN BOTH DIRECTIONS (A69-4). The gate checks
+      // what the model answered; this checks what comes back from the page,
+      // which the author may have edited. Without it the closed set is a
+      // suggestion: anything typed here reaches the writing pass verbatim.
+      if (!(move.trim() in CRAFT_MOVES)) {
+        throw new HttpError(400,
+          `arc does not know how to ask a writing pass for "${move.trim()}". It can work on ${Object.keys(CRAFT_MOVES).join(', ')}.`)
+      }
+      return { move: move.trim(), how: how.trim() }
+    }),
+  }
+}
 import { currentEngine } from './engine'
 import { authorStylePath, commitAuthorStyle, loadStyleLayers } from './style'
 import { DISMISSED_REL, QUEUE_REL, ratifyRule, ratifyTouchstone, readQueue, readTouchstones } from './style-queue'
@@ -881,10 +935,18 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
           'No generation engine. Either set ANTHROPIC_API_KEY in the environment, ' +
           'or install and log in the claude CLI (its subscription login works — no key needed), then restart the backend.')
       }
-      const body = (await parsedBody(req)) as { chapter?: unknown; guidance?: unknown }
+      const body = (await parsedBody(req)) as { chapter?: unknown; guidance?: unknown; plan?: unknown }
       if (typeof body.chapter !== 'string' || !body.chapter) throw new HttpError(400, 'chapter required')
       const guidance = typeof body.guidance === 'string' ? body.guidance : undefined
-      json(res, 200, await runDraft(body.chapter, guidance) satisfies DraftSceneResponse)
+      // THREE STATES, and they mean three different things (A69-4):
+      // absent — the author has not been shown a plan, so a line said now
+      // returns one and nothing is written; an object — the plan they
+      // settled, as given or edited; null — they read it and withdrew the
+      // line, so the draft runs without it.
+      const plan = body.plan === null ? null
+        : body.plan === undefined ? undefined
+          : parsePlan(body.plan)
+      json(res, 200, await runDraft(body.chapter, guidance, plan) satisfies DraftSceneResponse)
     },
   },
 

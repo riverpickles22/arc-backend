@@ -43,7 +43,7 @@ test('the route button on a scene resolves to U4, and rewrite-from-notes on a ro
 
 test('a cell the rows do not list is refused at intake, in the author\'s words', () => {
   for (const bad of [
-    gesture({ job: 'draft' }),                    // no draft row until slice 2
+    gesture({ job: 'compose' }),                  // no composing row at all
     gesture({ scope: 'chapter' }),                // no chapter row
     gesture({ mode: 'batch' }),                   // no batch row
   ]) {

@@ -11,7 +11,7 @@
 /** Engagement rungs (harness.md §4). Only rung 1 exists in code today; the
  *  registry carries the rung so later rungs (sessions, roams, governed hands)
  *  attach to the same rows instead of a second table. */
-import { rowKey, type Row } from './registry'
+import { rowKey, type LaunchSpec } from './registry'
 
 export type Rung = 0 | 1 | 2 | 3 | 4
 
@@ -49,7 +49,6 @@ export interface PassSpec {
  *  iterative verbs a scene session would serve (`idea-scene-session`) — a
  *  session and a withheld set cannot coexist, by the rule below. */
 export const PASS_REGISTRY = {
-  draft: { rung: 1, withholding: false, sessionAllowed: true },
   redraft: { rung: 1, withholding: false, sessionAllowed: true },
   revise: { rung: 1, withholding: false, sessionAllowed: true },
   // Pinned 2026-09-11: rephrase reads a selection and offers wordings. It
@@ -63,8 +62,9 @@ export const PASS_REGISTRY = {
   'learn-style': { rung: 1, withholding: false, sessionAllowed: false },
   lenses: { rung: 1, withholding: true, sessionAllowed: false },
   bootstrap: { rung: 1, withholding: true, sessionAllowed: false },
-  // reroute and reroute-revise are gone from here (A67-1): their one
-  // definition is the row in registry.ts, and the launch takes the row.
+  // reroute and reroute-revise are gone from here (A67-1), and draft with
+  // them (A69-3): their one definition is the row in registry.ts, and the
+  // launch takes the row.
   capture: { rung: 1, withholding: true, sessionAllowed: false },
 } as const satisfies Record<string, PassSpec>
 
@@ -77,7 +77,7 @@ export type PassName = keyof typeof PASS_REGISTRY
  *  governed path hands over its registry row and the toolbelt derives from
  *  the row's envelope; a pass not yet migrated names its PASS_REGISTRY row.
  *  Either way a launch with neither fails to compile. */
-export type InvocationOpts = ({ pass: PassName; row?: undefined } | { row: Row; pass?: undefined }) & {
+export type InvocationOpts = ({ pass: PassName; row?: undefined } | { row: LaunchSpec; pass?: undefined }) & {
   /** A caller may narrow the envelope — add "no tools" — and never widen it. */
   noTools?: boolean
   resume?: string | null

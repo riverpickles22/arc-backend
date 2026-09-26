@@ -160,6 +160,13 @@ export interface Judgment {
   authorKept: string
   /** Read from the generation ledger, never guessed from context. */
   origin: string
+  /** THE LINE THE AUTHOR SAID AND THE CRAFT IT BECAME (A69-4; §4, "The
+   *  evidence log"). Copied from the run's receipt at the decision, which is
+   *  the only way a plan the author keeps asking for becomes evidence for a
+   *  rule — the plan itself is ephemeral and dies with the sitting. Absent
+   *  for work no plan preceded. */
+  said?: string
+  plan?: { move: string; how: string }[]
   /** The commit this file's pending work started from. */
   baseline: string | null
 }

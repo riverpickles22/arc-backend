@@ -20,6 +20,7 @@ import { assertUnlocked, locksOn } from './locks'
 import { resolveWithin } from './safe-path'
 import { canonicalYaml } from './agent'
 import { validateStory } from './canon'
+import { readWorkingReceipt } from './run'
 
 // The wire types live in arc-canon-graph (graph/api-types.ts) — one source
 // of truth shared with the frontend. Re-exported so importers of this
@@ -457,12 +458,29 @@ function arcSideOf(file: string, draftParas: string[], draftIndex: number): stri
   return hit.mainIndex === null ? '' : genParas[hit.mainIndex]
 }
 
+/** What the author said before this was written, and the craft it became —
+ *  from the run's own receipt, at the decision. The plan lives on the receipt
+ *  and in this row, and nowhere else (§4): a plan the author never decided
+ *  about dies with the sitting. */
+function intentOf(run: string | undefined): { said?: string; plan?: { move: string; how: string }[] } {
+  if (!run) return {}
+  const intent = readWorkingReceipt(run)?.intent as
+    { said?: string | null; plan?: { moves?: { move: string; how: string }[] } | null } | undefined
+  if (!intent) return {}
+  return {
+    ...(intent.said ? { said: intent.said } : {}),
+    ...(intent.plan?.moves?.length ? { plan: intent.plan.moves } : {}),
+  }
+}
+
 function judged(file: string, scene: string | null, granularity: Granularity,
                 paragraph: number | null, verdict: Verdict, arcWrote: string, authorKept: string): void {
+  const entry = generatedFor(file)?.entry
   recordJudgment({
     file, scene, granularity, paragraph, verdict, arcWrote, authorKept,
-    origin: generatedFor(file)?.entry.origin ?? 'hand',
+    origin: entry?.origin ?? 'hand',
     baseline: pinBaseline(file, headSha()),
+    ...intentOf(entry?.run),
   })
 }
 

@@ -339,11 +339,24 @@ export const toBrief = (p: ReroutePrompt): Brief => ({
  *  paragraph it is about is the same leak in a different shape, and the leak
  *  gate counts it the same way. */
 export function styleForPass(target: { scene: string; file: string; body: string }): string {
+  return styleForPassRead(target).text
+}
+
+/** THE CONTRACT AS RENDERED FOR ONE PASS, and what the rendering did.
+ *
+ *  `abbreviated` is the number of passages the projection left out — the
+ *  author's ratified contract is never touched (it is a file, and this reads
+ *  it), and a brief that carries less than all of it says so on the receipt
+ *  rather than pretending it carried the whole (A69-2, the author's
+ *  decision of 2026-09-24: constrain the representation, never the record). */
+export function styleForPassRead(target: { scene: string; file: string; body: string }): { text: string; abbreviated: number } {
   const contract = styleContract()
   const key = `${target.scene}\n${sha16(contract)}\n${sha16(target.body)}`
   const had = STYLE_FOR_PASS.get(key)
   if (had !== undefined) return had
-  const out = withoutSubjectProse(stripSceneTouchstones(contract, target), target)
+  const touchstones = stripSceneTouchstonesRead(contract, target)
+  const quoted = withoutSubjectProseRead(touchstones.text, target)
+  const out = { text: quoted.text, abbreviated: touchstones.stripped + quoted.stripped }
   // One manuscript render asks this once per scene through `routeCounts`, and
   // the answer only changes when the contract or the scene body does — which
   // is exactly what the key is.
@@ -351,7 +364,7 @@ export function styleForPass(target: { scene: string; file: string; body: string
   STYLE_FOR_PASS.set(key, out)
   return out
 }
-const STYLE_FOR_PASS = new Map<string, string>()
+const STYLE_FOR_PASS = new Map<string, { text: string; abbreviated: number }>()
 
 /** Cut any run of the subject scene's own prose out of a layer of the brief,
  *  by the leak gate's rule and minus what the row allows through.
@@ -361,14 +374,24 @@ const STYLE_FOR_PASS = new Map<string, string>()
  *  sentence with this one — two scenes of a chapter that repeat a line are a
  *  thing authors do on purpose, and the pass is handed its siblings in full.
  *  Whatever the layer, the fix is the same and it is applied in one place. */
-export function withoutSubjectProse(layer: string, target: { scene: string; body: string }): string {
+export function withoutSubjectProse(layer: string, target: { scene: string; body: string }, spanWords?: number): string {
+  return withoutSubjectProseRead(layer, target, spanWords).text
+}
+
+/** The same cut, saying how many runs it took out — so a brief can record
+ *  that a layer it carried was abbreviated (A69-2). One definition, because
+ *  a second copy of the marker or the allowance is how the brief and the
+ *  fingerprint of what the brief read become two different strings. */
+export function withoutSubjectProseRead(
+  layer: string, target: { scene: string; body: string }, spanWords: number = ROUTE_WITHHELD.spanWords,
+): { text: string; stripped: number } {
   return stripQuotedSpans(
     layer,
     target.body,
-    ROUTE_WITHHELD.spanWords,
+    spanWords,
     `**(a quotation from ${target.scene} is withheld from this pass — it is the current route)**`,
     allowedThrough(target),
-  ).text
+  )
 }
 
 /** What the row lets through even though it is the scene: the locked
@@ -387,9 +410,17 @@ function allowedThrough(target: { scene: string; body: string }): string[] {
 }
 
 export function stripSceneTouchstones(style: string, target: { scene: string; file: string }): string {
+  return stripSceneTouchstonesRead(style, target).text
+}
+
+/** The same strip, saying how many touchstones it took out — so a brief can
+ *  record that the contract it carried was ABBREVIATED, and by how much
+ *  (A69-2). The ratified contract is never edited; this is what the renderer
+ *  did on the way into one pass, and the receipt says so. */
+export function stripSceneTouchstonesRead(style: string, target: { scene: string; file: string }): { text: string; stripped: number } {
   const lines = style.split('\n')
   const start = lines.findIndex(l => /^##\s+(?:\d+[.)]\s*)?touchstones\s*$/i.test(l))
-  if (start < 0) return style
+  if (start < 0) return { text: style, stripped: 0 }
   let end = lines.length
   for (let i = start + 1; i < lines.length; i++) if (/^##\s+/.test(lines[i])) { end = i; break }
   const fileish = target.file.replace(/^prose\//, '').replace(/\.md$/, '')
@@ -425,7 +456,7 @@ export function stripSceneTouchstones(style: string, target: { scene: string; fi
     i = j
   }
   out.push(...lines.slice(end))
-  return stripped ? out.join('\n') : style
+  return { text: stripped ? out.join('\n') : style, stripped }
 }
 
 /** The coverage tail: the one machine-readable thing the pass returns. Parsed
@@ -924,7 +955,7 @@ const wasStopped = (run: Run, kind?: EngineErrorKind): boolean => stateOf(run.id
  *  because that is what stopped the run — a repair that could not run
  *  afterwards is in the gate records and in the sentence, and does not
  *  relabel the refusal. Otherwise the kind the seam reported. */
-function endingOf(refused: { kind?: EngineErrorKind; gateRefused?: boolean; unreadable?: boolean }[], stopped: boolean): RunEnding {
+export function endingOf(refused: { kind?: EngineErrorKind; gateRefused?: boolean; unreadable?: boolean }[], stopped: boolean): RunEnding {
   if (stopped || refused.some(r => r.kind === 'cancelled')) return 'cancelled'
   const first = refused[0]
   if (!first) return 'refused'

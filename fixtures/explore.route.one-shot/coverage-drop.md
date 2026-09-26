@@ -1,7 +1,8 @@
 ---
 row: explore.route.one-shot
 name: coverage-drop
-fingerprint: 0976b27d63f9d425
+fingerprint: cb28c7501c6f3187
+because: "A69-1: the worked example's pack now carries Ines's wants, fears and beliefs in their own fields (conventions §4) and, through her possessions at T, the proposed keeper's log and its edge (obj.keepers-log, rel.ines-log). The recorded answers are unchanged."
 expect: coverage-drop
 scenario: >
   the landed reroute/lands route with one note on its fifth paragraph: "the

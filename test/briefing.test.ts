@@ -76,7 +76,12 @@ test('pending counts match their stores', async () => {
   assert.deepEqual(empty.draft, [])
   assert.deepEqual(empty.notes, [])
   assert.deepEqual(empty.routes, {})
-  assert.equal(empty.unplaced, 0)
+  // Not zero: the worked example SHIPS one open obligation
+  // (mat.light-must-nearly-fail), because the writing slice's
+  // live-obligations layer needs one nothing satisfies (A69-1). The baseline
+  // is named rather than assumed, so a second one arriving is a decision
+  // somebody made and not a number that drifted.
+  assert.equal(empty.unplaced, 1)
 
   // Draft: one added scene.
   fs.writeFileSync(path.join(STORY, 'prose', 'ch-01', 'scene-02.md'),
@@ -104,7 +109,7 @@ test('pending counts match their stores', async () => {
   assert.deepEqual(b.notes.map((n: { id: string }) => n.id), ['note.001', 'note.002'])
   assert.equal(b.notes[0].scene, 'sc.02-1')
   assert.deepEqual(b.routes, { 'sc.02-1': 2 })
-  assert.equal(b.unplaced, 2)
+  assert.equal(b.unplaced, 3)   // the example's own, plus the two written here
   fs.rmSync(path.join(STORY, 'prose', 'ch-01', 'scene-02.md'))
 })
 
@@ -117,9 +122,16 @@ test("what's due: only obligations whose window touches the current chapter", as
   obl('span', 'window:\n  from: ch.01-ninety-one-stairs\n  to: ch.02-the-aurelia\n')   // spans → due
   obl('nowhere', '')                                                        // no window → not due anywhere
   const b = await load()
-  assert.deepEqual(b.due.map((d: { id: string }) => d.id), ['obl.open-from', 'obl.span'])
-  assert.equal(b.due[0].klass, 'unowned')
-  assert.deepEqual(b.due[0].window, { from: 'ch.02-the-aurelia' })
+  // The example's own obligation spans ch.01 to ch.02 and is due here too
+  // (A69-1) — the rule under test is the windowing, and it holds over all of
+  // them.
+  // dueIn sorts by id (briefing.ts) and the order is part of what it
+  // promises, so the actual list is compared as it comes back.
+  assert.deepEqual(b.due.map((d: { id: string }) => d.id),
+    ['mat.light-must-nearly-fail', 'obl.open-from', 'obl.span'])
+  const openFrom = b.due.find((d: { id: string }) => d.id === 'obl.open-from')
+  assert.equal(openFrom.klass, 'unowned')
+  assert.deepEqual(openFrom.window, { from: 'ch.02-the-aurelia' })
   for (const n of ['open-from', 'closed', 'span', 'nowhere']) fs.rmSync(path.join(mat, `o${n}.yaml`))
 })
 
