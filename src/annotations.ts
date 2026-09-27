@@ -72,6 +72,18 @@ export function createAnnotation(input: CreateAnnotationRequest): ResolvedAnnota
     throw new HttpError(400, `no such scene: ${input.scene}`)
   }
   const keypoint = input.kind === 'keypoint'
+  // A KEYPOINT SAYS WHO MINTED IT. A note comes through one door, the
+  // viewer, and is the author's; a keypoint is minted by the author's hand
+  // and by agent sessions alike, and conventions §14 keeps those apart by
+  // `by` — a session's keypoints are the agent's, always. Absence here would
+  // have to be guessed, and a guess of `author` puts an agent's reading of
+  // the scene in the record under the author's name. So it is refused.
+  if (input.by !== undefined && input.by !== 'author' && input.by !== 'agent') {
+    throw new HttpError(400, `"${String(input.by)}" is not someone arc knows: by author, or by agent`)
+  }
+  if (keypoint && input.by === undefined) {
+    throw new HttpError(400, 'a keypoint must say who minted it: by author, or by agent')
+  }
   // The snapshot: the covered paragraphs' verbatim text, captured NOW,
   // because the note's referent will not stand still (A49-1). Coverage is
   // the anchored paragraph, extended forward only as far as the quote

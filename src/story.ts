@@ -78,6 +78,19 @@ export function docsArticles(): DocArticle[] {
   })
 }
 
+/** A span's endpoints as the record spells them — `"1910-11"`, `"1957-06-01"`.
+ *  YAML reads an unquoted day date as a Date and a bare year as a number, and
+ *  `dateOf` reads neither; a span that reached the handoff in either shape
+ *  would diff nothing and say so as if the record were silent. */
+function spanOf(raw: Record<string, unknown>): ProseScene['span'] {
+  const str = (v: unknown): string | undefined =>
+    v instanceof Date ? v.toISOString().slice(0, 10)
+      : typeof v === 'number' ? String(v)
+        : typeof v === 'string' ? v : undefined
+  const start = str(raw.start), end = str(raw.end)
+  return { ...(start ? { start } : {}), ...(end ? { end } : {}) }
+}
+
 /** Parse one scene file (conventions §10). Files without scene frontmatter
  *  (READMEs, loose drafts) are not part of the manuscript. */
 export function parseScene(text: string, file: string): ProseScene | null {
@@ -93,6 +106,7 @@ export function parseScene(text: string, file: string): ProseScene | null {
     events: Array.isArray(meta.events) ? meta.events.map(String) : [],
     facts: Array.isArray(meta.facts) ? meta.facts.map(String) : [],
     contract: meta.contract && typeof meta.contract === 'object' ? (meta.contract as SceneContract) : null,
+    ...(meta.span && typeof meta.span === 'object' ? { span: spanOf(meta.span as Record<string, unknown>) } : {}),
     file,
     body: text.slice(fm[0].length),
   }
@@ -216,7 +230,10 @@ export function proseDraft(): ProseDraft {
   const changes: ProseChange[] = []
   // -uall: list untracked FILES, not their directory — a scene in a brand-new
   // chapter dir otherwise reports as `?? prose/ch-01/` and vanishes here.
-  for (const line of git('status', '--porcelain', '-uall', '--', 'prose').split('\n')) {
+  // core.quotepath=false: with the default, git prints a path with a
+  // non-ASCII byte quoted and escaped — `"prose/ch-03/se\303\261or.md"` —
+  // and the `.md` test below would drop the scene from the draft layer.
+  for (const line of git('-c', 'core.quotepath=false', 'status', '--porcelain', '-uall', '--', 'prose').split('\n')) {
     if (!line.trim()) continue
     const xy = line.slice(0, 2)
     let repoRel = line.slice(3).trim()

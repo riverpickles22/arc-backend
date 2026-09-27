@@ -49,7 +49,7 @@ assert.equal(openNotesOn('sc.02-1').length, 0)
 const n1 = createAnnotation({ scene: 'sc.02-1', paragraph: 0, quote: 'The light held', body: 'Slow the doorway down.' })
 const n2 = createAnnotation({ scene: 'sc.02-1', body: 'The whole scene wants more heat.' })
 createAnnotation({ scene: 'sc.02-2', paragraph: 0, quote: 'Another', body: 'NOT-FOR-SCENE-ONE' })
-createAnnotation({ scene: 'sc.02-1', paragraph: 0, quote: 'The light held', body: 'a marker, not a request', kind: 'keypoint' })
+createAnnotation({ scene: 'sc.02-1', paragraph: 0, quote: 'The light held', body: 'a marker, not a request', kind: 'keypoint', by: 'author' })
 git(STORY, 'add', '-A'); git(STORY, 'commit', '-qm', 'notes')
 
 test('a scene with no open notes is refused with the next action, and nothing runs', async () => {

@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { copyExampleStory } from './fixture.ts'
+import { copyExampleStory, git } from './fixture.ts'
 
 const STORY = copyExampleStory()
 process.env.ARC_STORY_PATH = STORY
@@ -45,7 +45,7 @@ const subject = () => ({ chapter: scene().chapter, scene: scene() })
 test('every layer of §4 is on the manifest, with a status and never "missing"', () => {
   const s = assembleWritingSlice(rowWith(40_000), subject())
   assert.deepEqual(s.manifest.map(l => l.layer), [...WRITING_LAYERS],
-    'all eleven, in the order a brief carries them')
+    'all twelve, in the order a brief carries them')
   for (const l of s.manifest) {
     assert.ok(['given', 'not shown', 'deferred', 'none'].includes(l.status), `${l.layer}: ${l.status}`)
     if (l.status !== 'given') {
@@ -327,11 +327,109 @@ test('the first scene of the book reads `none`, with the reason — never `not s
   assert.match(handoff.because!, /the first scene of the book/)
 })
 
-test('a handoff that follows a draft says so, because the ground may move', () => {
+test('a handoff that follows a scene still proposed says so — accepted, and not yet a fact', () => {
   const s = assembleWritingSlice(rowWith(40_000), { chapter: scene().chapter, sceneId: 'sc.01-2' })
-  // The example's scene ships `status: proposed` — not accepted canon.
-  assert.match(s.blocks.find(b => b.layer === 'handoff')!.text, /FOLLOWS A DRAFT — NOT YET ACCEPTED/)
-  assert.match(s.manifest.find(l => l.layer === 'handoff')!.note!, /has not accepted/)
+  // The example's scene ships `status: proposed` and is committed: in the
+  // book, not promoted. Promotion is the author's act, never the accept's
+  // side effect (conventions §4), so this is not "not accepted".
+  const text = s.blocks.find(b => b.layer === 'handoff')!.text
+  assert.match(text, /FOLLOWS A SCENE STILL PROPOSED/)
+  assert.ok(!text.includes('NOT YET ACCEPTED'))
+  assert.match(s.manifest.find(l => l.layer === 'handoff')!.note!, /accepted and not yet promoted/)
+})
+
+test('a span the record spells as a bare date or year still reads as a span', async () => {
+  const { parseScene } = await import('../src/story.ts')
+  // YAML hands an unquoted day date over as a Date and a bare year as a
+  // number; the record's own spelling is what the diff reads.
+  const s = parseScene('---\nscene: sc.09-1\nchapter: ch.09\nspan: { start: 1910-11-03, end: 1911 }\n---\nbody\n', 'f.md')!
+  assert.deepEqual(s.span, { start: '1910-11-03', end: '1911' })
+})
+
+test('what it moved is read from the record: a span that crosses a state change names the change', () => {
+  const file = path.join(STORY, scene().file)
+  const original = fs.readFileSync(file, 'utf8')
+  const oneMonth = 'span: { start: "1910-11", end: "1910-11" }'
+  assert.ok(original.includes(oneMonth), 'the example scene states its span')
+  try {
+    // The example's scene covers one month and Ines's two states sit a year
+    // apart, so over it nothing honestly moved. Stretched over her second
+    // state, the handoff has to say what changed — by name, never a count.
+    fs.writeFileSync(file, original.replace(oneMonth, 'span: { start: "1910-11", end: "1911-02" }'))
+    const s = assembleWritingSlice(rowWith(40_000), { chapter: scene().chapter, sceneId: 'sc.01-2' })
+    const text = s.blocks.find(b => b.layer === 'handoff')!.text
+    assert.match(text, /WHAT IT MOVED\nchar\.ines\n/)
+    assert.match(text, /age: 36 → 37/)
+    assert.match(text, /condition: /)
+    assert.ok(!text.includes('nothing the record has caught up with yet'))
+  } finally {
+    fs.writeFileSync(file, original)
+  }
+})
+
+test('an obligation the record marks absorbed, or satisfied, is not owing — whoever it touches', () => {
+  const dir = path.join(STORY, 'material')
+  const absorbed = path.join(dir, 'mat-test-absorbed.yaml')
+  const satisfied = path.join(dir, 'mat-test-satisfied.yaml')
+  fs.writeFileSync(absorbed, ['id: mat.test-absorbed', 'type: obligation', 'status: absorbed',
+    'body: the dog must be seen to age', 'related: [char.ines]'].join('\n') + '\n')
+  fs.writeFileSync(satisfied, ['id: mat.test-satisfied', 'type: obligation', 'status: unplaced',
+    'body: the stair must be counted once', 'related: [char.ines]', 'satisfied_by: [sc.01-1]'].join('\n') + '\n')
+  const unwritten = path.join(dir, 'mat-test-unwritten.yaml')
+  fs.writeFileSync(unwritten, ['id: mat.test-unwritten', 'type: obligation', 'status: placed',
+    'body: the burn must be seen to heal', 'related: [char.ines]', 'satisfied_by: [sc.05-1]'].join('\n') + '\n')
+  try {
+    const s = assembleWritingSlice(rowWith(40_000), { chapter: scene().chapter, sceneId: 'sc.01-2' })
+    const text = s.blocks.find(b => b.layer === 'handoff')!.text
+    assert.match(text, /open mat\.light-must-nearly-fail/, 'the live one is owing')
+    assert.ok(!text.includes('mat.test-absorbed'), 'a paid debt is not handed to the pass')
+    assert.ok(!text.includes('mat.test-satisfied'), 'nor one a written scene satisfies')
+    assert.match(text, /open mat\.test-unwritten/, 'but one claimed by a scene that does not exist is still owed — only prose discharges')
+  } finally {
+    fs.rmSync(absorbed, { force: true })
+    fs.rmSync(satisfied, { force: true })
+    fs.rmSync(unwritten, { force: true })
+  }
+})
+
+test('a chapter the canon does not list is never mistaken for the start of the book', async () => {
+  const { previousScene } = await import('../src/slice.ts')
+  const canon = JSON.parse((await import('../src/canon.ts')).canonJson())
+  assert.equal(previousScene(canon, { chapter: 'ch.09-unlisted', sceneId: 'sc.09-1' }, proseScenes())?.scene, SCENE,
+    'it ranks by the number in its id, so the scene before it is still found')
+})
+
+test('a handoff that follows text the author has not accepted says so, whatever the frontmatter says', () => {
+  const file = path.join(STORY, scene().file)
+  const original = fs.readFileSync(file, 'utf8')
+  const head = git(STORY, 'rev-parse', 'HEAD').trim()
+  const handoff = () => assembleWritingSlice(rowWith(40_000), { chapter: scene().chapter, sceneId: 'sc.01-2' })
+    .blocks.find(b => b.layer === 'handoff')!.text
+  try {
+    // Accepted and promoted: canon in the frontmatter, byte-equal to HEAD.
+    fs.writeFileSync(file, original.replace('status: proposed', 'status: canon'))
+    git(STORY, 'commit', '-qam', 'accepted and promoted, for the test')
+    assert.ok(!handoff().includes('FOLLOWS A'), 'no warning of either kind')
+
+    // Then edited: the draft layer holds the edit, and the ground may move.
+    fs.appendFileSync(file, '\nA paragraph the author has not accepted yet.\n')
+    assert.match(handoff(), /FOLLOWS A DRAFT — NOT YET ACCEPTED/)
+  } finally {
+    git(STORY, 'reset', '-q', '--hard', head)
+  }
+})
+
+test('the draft layer keeps a scene whose file name is not ASCII', async () => {
+  const { proseDraft } = await import('../src/story.ts')
+  const file = path.join(STORY, 'prose', 'ch-01', 'scene-09-señor.md')
+  fs.writeFileSync(file, '---\nscene: sc.01-9\nchapter: ch.01-ninety-one-stairs\nstatus: proposed\n---\n\nUn señor.\n')
+  try {
+    // git quotes a non-ASCII path unless told not to; a quoted path is not a
+    // `.md` path, and the scene would fall out of the draft layer unseen.
+    assert.ok(proseDraft().changes.some(c => c.file === 'prose/ch-01/scene-09-señor.md'))
+  } finally {
+    fs.rmSync(file, { force: true })
+  }
 })
 
 test('the handoff is floor: a budget that cannot hold it refuses before a token', () => {

@@ -224,6 +224,7 @@ export async function runDraft(chapterId: string, guidance?: string, given?: Cra
   }
 
   let landed = false
+  let wrote = false
   try {
     const out = await runGates({
       row: { ...stage, ...cellOf(row, 'write'), withholding: row.withholding, withheld: row.withheld, envelope: row.envelope },
@@ -267,9 +268,13 @@ export async function runDraft(chapterId: string, guidance?: string, given?: Cra
     }
 
     // Every gate held, so the draft is written — once, here, by this pass.
+    // A write the story's validator refuses is put back by writeValidated
+    // itself — the previous contents restored, or the file removed if there
+    // were none — so nothing here removes the file on that path: a revert
+    // after a restore would delete what was just put back.
+    wrote = true
     const check = writeValidated(file, out.checked.body)
     if (!check.ok) {
-      revert(file)
       closeReceipt(ctx, 'could not run')
       endRun(run.id, 'could not run', { error: check.output })
       throw new HttpError(500, `arc could not write that draft into your story — ${check.output.split('\n')[0]}. Nothing was written.`)
@@ -286,9 +291,10 @@ export async function runDraft(chapterId: string, guidance?: string, given?: Cra
       ...(plan ? { plan } : {}),
     }
   } catch (e) {
-    // Only if nothing landed: a throw after the draft is written and in the
-    // ledger must not delete the thing the ledger names.
-    if (!landed) revert(file)
+    // Only a file this pass wrote and did not land is removed: a throw after
+    // the draft is in the ledger must not delete the thing the ledger names,
+    // and a throw before the write must not delete what was there before.
+    if (wrote && !landed) revert(file)
     const ending = stateOf(run.id) === 'cancelled' ? 'cancelled' : 'could not run'
     closeReceipt(ctx, ending)
     endRun(run.id, ending, { error: (e as Error).message })

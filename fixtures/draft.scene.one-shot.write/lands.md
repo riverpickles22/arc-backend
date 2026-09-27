@@ -1,12 +1,12 @@
 ---
 row: draft.scene.one-shot.write
 name: lands
-fingerprint: c31c702c7e72c6c7
+fingerprint: b125c78acf510188
 expect: lands
 scenario: >
   the worked example as shipped; draft the next scene of ch.01, no line said.
   The answer is a scene file that validates against the example's canon.
-because: "A69-5: the writing slice reads the previous scene back — its reader_after, the state its events moved, and what it left owing — so a draft is told where the story stands rather than starting cold."
+because: "the handoff says which kind of unsettled ground it follows — a draft not yet accepted, or a scene accepted and not yet promoted — and owes what the graph's obligations() says is owed (A69-5 review)"
 ---
 ---
 scene: sc.01-2

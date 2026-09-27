@@ -474,7 +474,9 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         ...(b.quote == null ? {} : { quote: String(b.quote) }),
         body: String(b.body ?? ''),
         ...(b.kind === 'keypoint' ? { kind: 'keypoint' as const } : {}),
-        ...(b.by === 'agent' || b.by === 'author' ? { by: b.by as 'agent' | 'author' } : {}),
+        // As said, never filtered: a value arc does not know is refused by
+        // the writer with the value named, not silently treated as unsaid.
+        ...(b.by == null ? {} : { by: b.by as 'agent' | 'author' }),
       }))
     },
   },

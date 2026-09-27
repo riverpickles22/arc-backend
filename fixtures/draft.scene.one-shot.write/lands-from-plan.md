@@ -1,13 +1,13 @@
 ---
 row: draft.scene.one-shot.write
 name: lands-from-plan
-fingerprint: 62afd8dbd8d284a7
+fingerprint: 0146f9f9f98919e1
 expect: lands
 scenario: >
   the author said "more dread", read the craft plan the reading returned, and
   settled it as it stood. The write stage is briefed with that craft and never
   with their line.
-because: "A69-5: the writing slice reads the previous scene back — its reader_after, the state its events moved, and what it left owing — so a draft is told where the story stands rather than starting cold."
+because: "the handoff says which kind of unsettled ground it follows — a draft not yet accepted, or a scene accepted and not yet promoted — and owes what the graph's obligations() says is owed (A69-5 review)"
 ---
 ---
 scene: sc.01-2

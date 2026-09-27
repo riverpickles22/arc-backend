@@ -161,7 +161,7 @@ test('a legacy annotation without kind is a note, everywhere', () => {
 })
 
 test('delete removes a keypoint and refuses a note', () => {
-  const kp = createAnnotation({ scene: 'sc.01-1', paragraph: 1, quote: 'Second paragraph.', body: 'Held.', kind: 'keypoint' })
+  const kp = createAnnotation({ scene: 'sc.01-1', paragraph: 1, quote: 'Second paragraph.', body: 'Held.', kind: 'keypoint', by: 'author' })
   const note = createAnnotation({ scene: 'sc.01-1', paragraph: 1, quote: 'Second paragraph.', body: 'A kept thought.' })
   deleteAnnotation(kp.id)
   assert.ok(!annotations().some(a => a.id === kp.id), 'the keypoint is gone')

@@ -1,12 +1,12 @@
 ---
 row: draft.scene.one-shot.write
 name: validator-refused
-fingerprint: 7c7279743e287dba
+fingerprint: e9c919c1b328b464
 expect: validator-refused
 scenario: >
   the same brief; the answer binds `char.the-inspector`, whom canon does not
   hold. The story's own validator refuses it and the file is put back.
-because: "A69-5: the writing slice reads the previous scene back — its reader_after, the state its events moved, and what it left owing — so a draft is told where the story stands rather than starting cold."
+because: "the handoff says which kind of unsettled ground it follows — a draft not yet accepted, or a scene accepted and not yet promoted — and owes what the graph's obligations() says is owed (A69-5 review)"
 ---
 ---
 scene: sc.01-2

@@ -169,3 +169,22 @@ test('POST /api/annotations carries an absent paragraph through as absence', asy
   assert.equal((await passage.json()).anchor.paragraph, 0,
     'a real paragraph 0 must not be mistaken for absence')
 })
+
+// A keypoint is minted by the author's hand and by agent sessions alike, and
+// conventions §14 keeps the two apart by `by`. A note has one door and one
+// author; a keypoint that does not say who minted it would have to be
+// guessed, and the guess would put an agent's reading under the author's name.
+test('POST /api/annotations refuses a keypoint that does not say who minted it', async () => {
+  const kp = { scene: 'sc.01-1', paragraph: 0, quote: 'Original', body: 'the stair is loose', kind: 'keypoint' }
+  const unsaid = await post('/api/annotations', kp)
+  assert.equal(unsaid.status, 400)
+  assert.match((await unsaid.json()).error, /who minted it/)
+
+  const agent = await post('/api/annotations', { ...kp, by: 'agent' })
+  assert.equal(agent.status, 200)
+  assert.equal((await agent.json()).by, 'agent', 'and a session\'s keypoint stays the agent\'s')
+
+  const stranger = await post('/api/annotations', { ...kp, by: 'robot' })
+  assert.equal(stranger.status, 400, 'a value arc does not know is refused, never treated as unsaid')
+  assert.match((await stranger.json()).error, /robot/)
+})

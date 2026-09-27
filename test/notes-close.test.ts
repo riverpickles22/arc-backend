@@ -32,7 +32,7 @@ test('the notes a change was written from resolve when that change is accepted',
   const bystander = createAnnotation({ scene: 'sc.01-1', body: 'a thought the pass was never handed' })
   const already = createAnnotation({ scene: 'sc.01-1', body: 'closed by the author already' })
   updateAnnotation(already.id, { status: 'dropped' })
-  const kp = createAnnotation({ scene: 'sc.01-1', paragraph: 0, quote: 'Original first', body: 'a marker', kind: 'keypoint' })
+  const kp = createAnnotation({ scene: 'sc.01-1', paragraph: 0, quote: 'Original first', body: 'a marker', kind: 'keypoint', by: 'author' })
   git(STORY, 'add', '-A'); git(STORY, 'commit', '-qm', 'notes')
 
   // The pass writes, and the ledger records what it was handed.

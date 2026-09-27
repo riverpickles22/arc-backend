@@ -246,7 +246,8 @@ export const rowKey = (r: Cell): RowKey => `${r.job}.${r.scope}.${r.mode}${r.sta
 // ---- the writing slice (A69-2) --------------------------------------------
 
 /** THE SLICE EVERY PROSE-WRITING ROW DECLARES (§4, "What a writing slice
- *  holds"). The layers are §4's eleven; `slice.ts` assembles them.
+ *  holds"). The layers are §4's eleven and the lock notice, twelve;
+ *  `slice.ts` assembles them.
  *
  *  THE FLOOR is §4's floor sentence, exactly: the contract, the withholds,
  *  the LOCK NOTICE, the handoff, and the canon the scene's bindings name. The

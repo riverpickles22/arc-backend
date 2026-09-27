@@ -11,6 +11,7 @@ const { planSentence, runRowGates } = await import('../src/gates.ts')
 const { CRAFT_MOVES, ROW_DRAFT_SCENE } = await import('../src/registry.ts')
 const { gateCtx } = await import('../src/reroute.ts')
 const { SCENARIOS } = await import('./fixture-scenarios.ts')
+const { HttpError } = await import('../src/http.ts')
 
 const CHAPTER = 'ch.01-ninety-one-stairs'
 const plan = SCENARIOS.find(s => s.row === 'draft.scene.one-shot.craft-plan')!
@@ -39,8 +40,9 @@ test('THE PASS THAT WRITES NEVER SEES THE EFFECT', async () => {
   const briefs: string[] = []
   const { observeBriefs } = await import('../src/fixtures.ts')
   const stop = observeBriefs(b => { if (b.row.endsWith('.write')) briefs.push(b.brief) })
-  await runDraft(CHAPTER, 'more dread', settled.plan!).catch(() => {})
+  const written = await runDraft(CHAPTER, 'more dread', settled.plan!)
   stop()
+  assert.ok(written.file, 'and the draft landed on the plan')
   assert.ok(briefs.length, 'the write stage was briefed')
   assert.ok(!/dread/i.test(briefs[0]),
     'the word the author said is nowhere in the brief the writing pass received')
@@ -115,6 +117,20 @@ test('the record carries ids, never the wording — a plan stays comparable acro
   const reworded = { ...ROW_DRAFT_SCENE, rules: ROW_DRAFT_SCENE.rules.replace('DRAFTING PASS', 'DRAFTING STEP') }
   assert.notEqual(jobFingerprint(reworded), jobFingerprint(ROW_DRAFT_SCENE),
     'a changed brief is a changed job, and waiting drafts are labelled as written by an older arc')
+
+  // Both halves of a move are in the reading's rules, so either moves the
+  // fingerprint: the copy, because the model is told something different;
+  // the id, because a plan under another id is a different claim about what
+  // was asked for. What the record carries is the id alone (asserted above).
+  const withRules = (rules: string) => ({
+    ...ROW_DRAFT_SCENE,
+    stages: ROW_DRAFT_SCENE.stages.map(s => (s.id === 'craft-plan' ? { ...s, rules } : s)),
+  }) as typeof ROW_DRAFT_SCENE
+  assert.ok(stage.rules.includes(CRAFT_MOVES.attention))
+  assert.notEqual(jobFingerprint(withRules(stage.rules.replace(CRAFT_MOVES.attention, 'whose noticing shows whom'))),
+    jobFingerprint(ROW_DRAFT_SCENE), 'reworded copy is a different brief')
+  assert.notEqual(jobFingerprint(withRules(stage.rules.replace('attention —', 'noticing —'))),
+    jobFingerprint(ROW_DRAFT_SCENE), 'a renamed id is a different job')
 })
 
 test('the plan is ephemeral: it is on the receipt and nowhere else', async () => {
@@ -122,10 +138,25 @@ test('the plan is ephemeral: it is on the receipt and nowhere else', async () =>
   const out = await runDraft(CHAPTER, 'more dread')
   const fs = await import('node:fs')
   const path = await import('node:path')
-  // No file of its own anywhere in the story.
-  const stray = fs.readdirSync(STORY).filter(f => f.toLowerCase().includes('plan'))
-  assert.deepEqual(stray, [], 'a craft plan is never a record of its own')
-  assert.ok(fs.existsSync(path.join(STORY, '.arc', 'runs', out.run!, 'receipt.yaml')))
+  // The plan's own words appear on this run's receipt and in no other file
+  // of the story — not canon, not notes, not docs, not another run.
+  const clause = out.plan!.moves[0].how
+  const hits: string[] = []
+  const walk = (dir: string) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name)
+      if (e.isDirectory()) { if (e.name !== '.git') walk(p); continue }
+      // YAML folds a long clause across lines; compare with whitespace flattened.
+      if (fs.readFileSync(p, 'utf8').replace(/\s+/g, ' ').includes(clause)) hits.push(path.relative(STORY, p))
+    }
+  }
+  walk(STORY)
+  const runs = path.join('.arc', 'runs') + path.sep
+  assert.ok(hits.includes(path.join(runs, out.run!, 'receipt.yaml')), 'it is on the receipt')
+  // A run keeps the raw answer beside its receipt (gitignored, both), and
+  // other runs in this file were handed the same fixture plan, so their
+  // directories may carry the words too. Nothing outside the runs may.
+  assert.deepEqual(hits.filter(h => !h.startsWith(runs)), [], 'and nowhere the record, the notes or the book can read')
 })
 
 test('the decision copies the line and the plan into the evidence log', async () => {
@@ -171,9 +202,11 @@ test('a move the author edits into something arc does not know is refused at the
   await assert.rejects(
     () => draft(CHAPTER, 'more dread', { moves: [{ move: 'raise_the_stakes', how: 'write about dread' }] } as never),
     (e: unknown) => {
-      // It is refused wherever the check lives; what matters is that the
-      // writing pass never receives a move outside the six.
-      assert.ok(e)
+      // Refused in the author's words, before a run is minted — and naming
+      // the move, so the sentence says what to take out.
+      assert.ok(e instanceof HttpError, 'an HttpError, not a stray throw')
+      assert.equal(e.status, 400)
+      assert.match(e.message, /raise_the_stakes/)
       return true
     })
 })

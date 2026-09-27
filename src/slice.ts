@@ -4,7 +4,8 @@
 //
 // §2's claim is that the quality lever is the brief, not the agent. This file
 // is where that claim holds or does not. A writing pass is told the story
-// from the record, in eleven layers, each from a named place, each carrying
+// from the record, in twelve layers — §4's eleven and the lock notice —
+// each from a named place, each carrying
 // its ids and the reason it is here — and the slice is not finished until
 // every layer has a STATUS the receipt can show the author:
 //
@@ -31,15 +32,12 @@
 // without, and the manifest says how many passages that cost. Constrain the
 // representation, never the record.
 import { HttpError } from './http'
-import type { CanonDoc, ProseScene, ResolvedAnnotation, SceneContract } from 'arc-canon-graph'
+import type { CanonDoc, MaterialItem, ProseScene, ResolvedAnnotation, SceneContract } from 'arc-canon-graph'
 import { buildContextPack } from 'arc-canon-graph/context-pack-lib.ts'
 import { dateOf, diffCharacter, dk } from 'arc-canon-graph/canon-graph.ts'
+import { loadGraph } from 'arc-canon-graph'
 import { canonJson } from './canon'
-import fs from 'node:fs'
-import path from 'node:path'
-import { load as yamlLoad } from 'js-yaml'
-import { STORY } from './config'
-import { proseScenes } from './story'
+import { materialItems, proseDraft, proseScenes } from './story'
 import { openNotesOn } from './annotations'
 import { locksOn } from './locks'
 import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
@@ -48,7 +46,7 @@ import { styleForPassRead } from './reroute'
 import { styleContract } from './style'
 import type { Row } from './registry'
 
-/** §4's eleven layers, in the order a brief carries them. The list is the
+/** §4's eleven layers and the lock notice, in the order a brief carries them. The list is the
  *  checklist: a layer arc cannot assemble yet is still named, with the status
  *  that says so, because a brief whose gaps are invisible cannot be audited. */
 export const WRITING_LAYERS = [
@@ -157,9 +155,14 @@ function contractBlock(c: SceneContract | null | undefined, stage: SliceStage): 
  *  the chapter before — the book's momentum does not stop at a chapter break,
  *  and a draft that begins one is exactly where the handoff matters most. */
 export function previousScene(canon: CanonDoc, subject: WritingSubject, scenes: ProseScene[]): ProseScene | null {
-  const order = new Map((canon.chapters ?? []).map(c => [c.id, c.order ?? 0]))
+  const order = new Map((canon.chapters ?? []).map(c => [c.id, c.order]))
   const num = (id: string): number => Number(id.split('-').pop()) || 0
-  const rank = (chapter: string, scene: string): number => (order.get(chapter) ?? 0) * 1000 + num(scene)
+  // A chapter the canon does not list, or lists without an `order`, ranks by
+  // the number in its id — never as chapter zero. Ranked first, the scene
+  // after it would read as "the first scene of the book": a false `none`,
+  // the one status this file promises is honest.
+  const chapterRank = (chapter: string): number => order.get(chapter) ?? Number(chapter.match(/\d+/)?.[0] ?? 0)
+  const rank = (chapter: string, scene: string): number => chapterRank(chapter) * 1000 + num(scene)
   const mine = rank(subject.chapter, subject.scene?.scene ?? subject.sceneId ?? '')
   return scenes
     .filter(s => s.scene !== subject.scene?.scene)
@@ -176,7 +179,7 @@ export function previousScene(canon: CanonDoc, subject: WritingSubject, scenes: 
  *  obligations it opened or discharged. U7 writes those at the accept; this
  *  reads them back, and that is how the book's momentum crosses a scene
  *  boundary without anyone maintaining a summary by hand. */
-function handoffText(canon: CanonDoc, prev: ProseScene, material: MaterialItem[]): string {
+function handoffText(canon: CanonDoc, prev: ProseScene, material: MaterialItem[], scenes: ProseScene[]): string {
   const out: string[] = []
   const eras = (canon as { timeline?: { eras?: unknown[] } }).timeline?.eras ?? []
   out.push(`It follows ${prev.scene} (${prev.file}).`)
@@ -184,8 +187,9 @@ function handoffText(canon: CanonDoc, prev: ProseScene, material: MaterialItem[]
   const after = prev.contract?.reader_after?.trim()
   if (after) out.push(`WHAT THE READER NOW HAS\n${after}`)
 
-  // The window the scene covers, from its own frontmatter.
-  const span = (prev as unknown as { span?: { start?: string; end?: string } }).span
+  // The window the scene covers, from its own frontmatter (parseScene
+  // carries it; a scene that states none has nothing to diff over).
+  const span = prev.span
   const fromDate = dateOf(span?.start) ?? dateOf(span?.end)
   const toDate = dateOf(span?.end) ?? fromDate
   const from = fromDate ? dk(fromDate) : null
@@ -211,29 +215,28 @@ function handoffText(canon: CanonDoc, prev: ProseScene, material: MaterialItem[]
     ? `WHAT IT MOVED\n${moved.join('\n')}`
     : 'WHAT IT MOVED\nnothing the record has caught up with yet')
 
-  const satisfies = (prev.contract as { satisfies?: string[] } | null)?.satisfies ?? []
-  const opened = material.filter(m => m.type === 'obligation' && (m.related ?? []).some(r => (prev.facts ?? []).includes(r)))
+  // WHAT IT LEFT OWING: what its contract says it discharged, and every
+  // obligation the story still owes that names one of the people or places
+  // the scene binds. "Still owes" is arc-core's one definition — the graph's
+  // `obligations()`, which the briefing and the attention report read too:
+  // nothing claims it, or what claims it is not written, or it landed late.
+  // Only prose discharges an obligation; a debt the record marks absorbed
+  // or dropped is not owing, whoever it touches, and one a scene's contract
+  // says it satisfies is owed until that scene exists. Two definitions here
+  // would tell the pass a debt is settled that the author's briefing says
+  // is due.
+  const satisfies = prev.contract?.satisfies ?? []
+  const owed = loadGraph(canon).obligations(material,
+    scenes.map(s => ({ scene: s.scene, chapter: s.chapter, satisfies: s.contract?.satisfies })))
+  const bound = new Set(prev.facts ?? [])
+  const touches = new Map(material.filter(m => m.type === 'obligation' && (m.related ?? []).some(r => bound.has(r))).map(m => [m.id, m]))
+  const live = [...owed.unowned, ...owed.unwritten, ...owed.overdue].filter(o => touches.has(o.id))
   const obligations = [
     ...satisfies.map(id => `discharged ${id}`),
-    ...opened.filter(m => !satisfies.includes(m.id)).map(m => `open ${m.id} — ${String(m.body ?? '').trim().split('\n')[0]}`),
+    ...live.filter(o => !satisfies.includes(o.id)).map(o => `open ${o.id} — ${o.body.split('\n')[0]}`),
   ]
   if (obligations.length) out.push(`WHAT IT LEFT OWING\n${obligations.map(o => `- ${o}`).join('\n')}`)
   return out.join('\n\n')
-}
-
-interface MaterialItem { id: string; type?: string; body?: string; related?: string[]; satisfied_by?: string[] }
-
-/** The story's material, read fresh. Absent directory, no obligations. */
-function materialItems(): MaterialItem[] {
-  const dir = path.join(STORY, 'material')
-  try {
-    return fs.readdirSync(dir)
-      .filter(f => f.endsWith('.yaml'))
-      .map(f => yamlLoad(fs.readFileSync(path.join(dir, f), 'utf8')) as MaterialItem)
-      .filter(m => m?.id)
-  } catch {
-    return []
-  }
 }
 
 /** Every layer arc can assemble today, each with its ids and its reason.
@@ -313,25 +316,52 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
       { because: 'this scene has not been written yet, so it has no contract of its own' }),
 
     (() => {
-      const prev = previousScene(canon, subject, proseScenes())
+      // Only a slice that declares the handoff pays for it: the craft-plan
+      // reading declares two layers, and building this one — the previous
+      // scene, the record's diff over it, the draft layer under git — for a
+      // manifest that will not list it is work the receipt never shows.
+      const reason = 'the condition the previous scene left the story in'
+      if (!(row.slice.layers as readonly string[]).includes('handoff')) {
+        return { layer: 'handoff' as const, ids: [], reason, status: 'none' as const, text: '', because: 'not a layer of this reading' }
+      }
+      const scenes = proseScenes()
+      const prev = previousScene(canon, subject, scenes)
       if (!prev) {
         return {
-          layer: 'handoff' as const, ids: [], reason: 'the condition the previous scene left the story in',
+          layer: 'handoff' as const, ids: [], reason,
           status: 'none' as const, text: '',
           because: 'this is the first scene of the book, so there is nothing behind it',
         }
       }
-      // A SCENE THAT IS STILL A PROPOSAL IS SAID TO BE ONE. Writing the next
-      // scene onto prose the author has not accepted is a reasonable thing to
-      // do and a dangerous thing to do silently: the pass should know the
-      // ground it is building on may move.
-      const draft = prev.status !== 'canon'
+      // A SCENE THAT IS STILL A PROPOSAL IS SAID TO BE ONE — and which kind.
+      // Writing the next scene onto ground that may move is a reasonable
+      // thing to do and a dangerous thing to do silently. Two different
+      // facts, said apart: the text on disk is not what the author accepted
+      // (the draft layer — main is HEAD), or the scene is in the book and its
+      // frontmatter still says `proposed`, because promotion to canon is an
+      // explicit authorial act and never a side effect of the accept
+      // (conventions §4). The second is every accepted scene of a book whose
+      // author has not promoted yet; calling it "not accepted" would teach
+      // the pass to ignore the first.
+      const layer = proseDraft()
+      const pending = new Set(layer.changes.filter(c => c.status !== 'deleted').map(c => c.file))
+      const unaccepted = pending.has(prev.file)
+      const proposed = prev.status !== 'canon'
+      const heading = unaccepted
+        ? 'FOLLOWS A DRAFT — NOT YET ACCEPTED. What is below may change under you.\n\n'
+        : proposed
+          ? 'FOLLOWS A SCENE STILL PROPOSED — in the book, not yet promoted to canon; what it settles is not yet a fact.\n\n'
+          : ''
+      const note = unaccepted
+        ? `follows ${prev.scene}, which the author has not accepted`
+        : proposed
+          ? `follows ${prev.scene}, accepted and not yet promoted to canon`
+          : layer.git ? undefined : `follows ${prev.scene}; whether it is accepted could not be read — this story is not under git`
       return {
-        layer: 'handoff' as const, ids: [prev.scene], reason: 'the condition the previous scene left the story in',
+        layer: 'handoff' as const, ids: [prev.scene], reason,
         status: 'given' as const,
-        text: (draft ? 'FOLLOWS A DRAFT — NOT YET ACCEPTED. What is below may change under you.\n\n' : '') +
-          handoffText(canon, prev, materialItems()),
-        ...(draft ? { note: `follows ${prev.scene}, which the author has not accepted` } : {}),
+        text: heading + handoffText(canon, prev, materialItems(), scenes),
+        ...(note ? { note } : {}),
       }
     })(),
 
