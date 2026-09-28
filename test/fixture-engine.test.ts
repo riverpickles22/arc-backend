@@ -203,7 +203,7 @@ for (const s of SCENARIOS) {
         assert.match(draft.reply, /accept or discard/, 'and the author is told the next move')
       } else {
         assert.equal(draft.file, null, 'nothing was written')
-        assert.match(draft.reply, /would not keep it|could not run|does not fit your record/,
+        assert.match(draft.reply, /would not keep it|could not run|does not fit your record|did not check out/,
           'and the refusal says so in the author\'s words')
       }
       return

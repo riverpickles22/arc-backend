@@ -1,12 +1,12 @@
 ---
 row: draft.scene.one-shot.write
 name: validator-refused
-fingerprint: e9c919c1b328b464
+fingerprint: 005cbb003b106ac8
 expect: validator-refused
 scenario: >
   the same brief; the answer binds `char.the-inspector`, whom canon does not
   hold. The story's own validator refuses it and the file is put back.
-because: "the handoff says which kind of unsettled ground it follows — a draft not yet accepted, or a scene accepted and not yet promoted — and owes what the graph's obligations() says is owed (A69-5 review)"
+because: "the leans-on rule covers what the file binds, and an aged state fact says it is given rather than rested on (A69-6 review)"
 ---
 ---
 scene: sc.01-2
@@ -36,3 +36,8 @@ Ines gave it to him. There was nothing in it that was not true.
 **To verify.** The inspector is a new person. Canon does not hold him, and a
 scene that binds him is a scene resting on a fact nobody has ratified — which
 is what the validator is about to say.
+
+**Leans on.**
+```leans-on
+char.ines
+```

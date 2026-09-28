@@ -53,7 +53,7 @@ export interface Scenario {
   /** what the fixture's `expect` field must say. `leak` is the one that
    *  never reaches the engine: the gate proves the brief and refuses before
    *  the send (A67-7), so the scenario carries no recorded answer. */
-  expect: 'lands' | 'overlap' | 'coverage-drop' | 'leak' | 'validator-refused'
+  expect: 'lands' | 'overlap' | 'coverage-drop' | 'leak' | 'validator-refused' | 'leaned-on'
   /** the story state and request, in one breath — copied into the fixture */
   scenario: string
   prepare?: () => Promise<void>
@@ -138,6 +138,13 @@ export const SCENARIOS: Scenario[] = [
     scenario: 'the same story, with a craft plan the author settled, so the write stage runs on the second call; the answer binds a character canon does not hold, and the story\'s own validator refuses it',
     run: () => runDraft('ch.01-ninety-one-stairs', 'bring the inspector up the point', {
       moves: [{ move: 'structure', how: 'open on the arrival and let the watch come second' }],
+    }),
+  },
+  {
+    row: 'draft.scene.one-shot.write', name: 'leans-on-proposed', expect: 'leaned-on',
+    scenario: 'the author said "lean on the log" and settled a plan naming it; the answer validates, and its briefing rests the prose on obj.keepers-log and rel.ines-log, both proposed — the leaned-on gate refuses',
+    run: () => runDraft('ch.01-ninety-one-stairs', 'lean on the log', {
+      moves: [{ move: 'inventory', how: 'name the log and its six columns; let the entry be the last thing she does' }],
     }),
   },
   {

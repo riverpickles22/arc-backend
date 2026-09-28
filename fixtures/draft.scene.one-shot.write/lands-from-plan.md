@@ -1,13 +1,13 @@
 ---
 row: draft.scene.one-shot.write
 name: lands-from-plan
-fingerprint: 0146f9f9f98919e1
+fingerprint: c591d2882af8782e
 expect: lands
 scenario: >
   the author said "more dread", read the craft plan the reading returned, and
   settled it as it stood. The write stage is briefed with that craft and never
   with their line.
-because: "the handoff says which kind of unsettled ground it follows — a draft not yet accepted, or a scene accepted and not yet promoted — and owes what the graph's obligations() says is owed (A69-5 review)"
+because: "the leans-on rule covers what the file binds, and an aged state fact says it is given rather than rested on (A69-6 review)"
 ---
 ---
 scene: sc.01-2
@@ -54,3 +54,11 @@ The lamp is not explained. Nothing in it postdates 1911. The weather is work.
 **To verify.** The dip stick is invention — the record does not say how a
 keeper measures the reservoir, and the article on lighthouse keeping is where
 that would belong if it is worth keeping.
+
+**Leans on.**
+```leans-on
+char.ines
+char.wren
+place.whitcombe-light
+rel.ines-wren
+```

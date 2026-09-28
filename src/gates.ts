@@ -71,6 +71,14 @@ export interface ProseGateCtx {
    *  the verdict and the record. A row that names the `validator` gate and
    *  gives no way to run it is refused, never quietly passed. */
   validate?: (sceneFile: string) => { ok: boolean; output: string }
+  /** WHAT MAY BEAR WEIGHT (A69-6). The ids the record holds as `canon`, and
+   *  the ids it holds as `proposed` or as material — which a pass may mention
+   *  and may not rest on. The pass supplies both lists from the same record
+   *  it briefed the model with; the `leaned-on` gate reads the answer's
+   *  leans-on tail against them. A row that names the gate and gives no
+   *  lists is refused, never quietly passed. */
+  settled?: string[]
+  unsettled?: string[]
 }
 
 /** The answer, split by the row's answer shape, as the gates read it. */
@@ -91,6 +99,45 @@ export interface ParsedAnswer {
    *  length, which is the same for every answer */
   returned: number
   overlap: number | null
+  /** the ids the briefing's leans-on tail names; null when the tail is
+   *  absent — which the `leaned-on` gate refuses, because it cannot run */
+  leansOn: string[] | null
+}
+
+/** THE LEANS-ON TAIL (A69-6): one fenced block in the briefing, opening with
+ *  \`\`\`leans-on, one id per line. Read before the coverage tail, and cut
+ *  out of the briefing, because the coverage parser takes any fence at the
+ *  end of the briefing as its own and would count this one as an
+ *  unparseable claim. */
+export function parseLeansOn(briefing: string): { briefing: string; leansOn: string[] | null } {
+  const m = briefing.match(/```leans-on[ \t]*\r?\n([\s\S]*?)```/)
+  if (!m) return { briefing, leansOn: null }
+  const ids = m[1].split(/\r?\n/)
+    .map(l => l.trim().replace(/^[-*]\s+/, '').replace(/^`|`$/g, '').trim())
+    .filter(Boolean)
+  // The heading the rules ask for above the block goes with it.
+  const before = briefing.slice(0, m.index).trimEnd().replace(/(?:^|\r?\n)[ \t]*\*{0,2}leans on\.?\*{0,2}[ \t]*$/i, '').trimEnd()
+  const rest = (before + '\n' + briefing.slice(m.index! + m[0].length).trimStart()).trim()
+  return { briefing: rest, leansOn: ids }
+}
+
+/** The ids a scene file BINDS — its `facts` and `events` — read from the
+ *  frontmatter the answer opens with. Binding is resting: the rules say a
+ *  bound id is one the prose rests on, so the gate reads these beside the
+ *  tail and never trusts the tail alone. */
+export function boundIds(sceneFile: string): string[] {
+  const fm = sceneFile.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
+  if (!fm) return []
+  const ids: string[] = []
+  for (const key of ['facts', 'events']) {
+    const block = fm[1].match(new RegExp(`^${key}:[ \\t]*(\\[[^\\]]*\\]|(?:\\r?\\n[ \\t]+-[^\\n]*)+)`, 'm'))
+    if (!block) continue
+    const inner = block[1].startsWith('[')
+      ? block[1].slice(1, -1).split(',')
+      : block[1].split(/\r?\n/).map(l => l.replace(/^[ \t]+-/, ''))
+    ids.push(...inner.map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean))
+  }
+  return [...new Set(ids)]
 }
 
 type GateVerdict =
@@ -98,6 +145,9 @@ type GateVerdict =
   | { verdict: 'refused'; reason: string; record: Omit<GateRecord, 'gate' | 'attempt' | 'verdict'> }
 
 type GateFn = (ctx: ProseGateCtx, a: ParsedAnswer) => GateVerdict
+
+/** A scene-file answer is the one whose body opens with a binding. */
+const row_answer_is_scene_file = (a: ParsedAnswer): boolean => a.prose !== a.body
 
 const held = (record: Omit<GateRecord, 'gate' | 'attempt' | 'verdict'> = { stage: 'answer' }): GateVerdict => ({ verdict: 'held', record })
 /** The validator speaks in lines; the author gets the first one, which is
@@ -149,6 +199,49 @@ export function parseCraftPlan(text: string): CraftPlan | null {
 export const planSentence = (plan: CraftPlan): string => plan.moves.map(m => m.how).join('; ')
 
 export const GATES: Partial<Record<GateId, GateFn>> = {
+  /** WHAT THE PROSE RESTS ON MUST BE SETTLED (A69-6; §4, "The gates": "a
+   *  status check on any id the answer leans on as settled"). The briefing
+   *  names the ids the scene would fall without; a proposed fact or a piece
+   *  of material named there is a scene the author cannot decide against
+   *  without losing the scene — which is the back door this gate closes. An
+   *  id the record does not hold at all is refused too: the validator reads
+   *  the file's bindings, not the briefing, and a claim about a record that
+   *  is not there is not a claim arc can check. */
+  'leaned-on': (ctx, a) => {
+    const bar_from = "the record's status on each id (conventions §5)"
+    if (!ctx.settled || !ctx.unsettled) {
+      return refuse(
+        'arc could not check what that draft rests on, so nothing was written. Ask again.',
+        { stage: 'answer', bar_from: 'the row names the leaned-on gate and this pass supplied no record to check against' })
+    }
+    if (a.leansOn === null) {
+      return refuse(
+        'that draft did not say what it rests on, so arc cannot check it against your record. Nothing was written; ask again.',
+        { stage: 'answer', bar: 'a leans-on block in the briefing', bar_from: "the row's answer shape", measured: 'no block' })
+    }
+    const settled = new Set(ctx.settled), unsettled = new Set(ctx.unsettled)
+    // WHAT THE FILE BINDS COUNTS TOO. A model that binds a proposed id in
+    // `facts:` and leaves it out of its tail has rested on it all the same;
+    // the tail is the model's account, the binding is the file's.
+    const bound = row_answer_is_scene_file(a) ? boundIds(a.body) : []
+    const claimed = [...new Set([...a.leansOn, ...bound])]
+    const rested = claimed.filter(id => unsettled.has(id))
+    const unknown = a.leansOn.filter(id => !settled.has(id) && !unsettled.has(id))
+    // The offending ids are what is MEASURED, so the sentence the author
+    // reads names them; what the draft claimed is what it was measured
+    // against. The bar names which check failed, because there are two.
+    if (rested.length) {
+      return refuse(
+        `that draft rests on ${rested.join(', ')}, which you have not settled — a pass may mention it and may not build on it. Nothing was written; ask again.`,
+        { stage: 'answer', bar: 'what you have settled', bar_from, measured: rested.join(', '), measured_against: claimed })
+    }
+    if (unknown.length) {
+      return refuse(
+        `that draft says it rests on ${unknown.join(', ')}, which your record does not hold. Nothing was written; ask again.`,
+        { stage: 'answer', bar: 'what your record holds', bar_from, measured: unknown.join(', '), measured_against: claimed })
+    }
+    return held({ stage: 'answer', bar: 'what you have settled', bar_from, measured: 0, measured_against: claimed })
+  },
   /** THE VOCABULARY IS CLOSED (A69-4, Q11). A move outside the six is not a
    *  richer plan, it is a plan the gate cannot check and the style learner
    *  cannot count — and it is usually the pass restating the effect it was
@@ -278,7 +371,7 @@ export function runRowGates(row: LaunchSpec, ctx: ProseGateCtx, text: string, at
       return { ok: false, reason: 'arc could not read that plan, so nothing was written. Ask again.', gates, unreadable: true }
     }
     gates.push({ gate: 'shape', verdict: 'held', attempt, ...(launch ? { launch } : {}), stage: 'answer' })
-    const a: ParsedAnswer = { body: text, prose: '', briefing: '', coverage: null, dropped: [], returned: 0, overlap: null }
+    const a: ParsedAnswer = { body: text, prose: '', briefing: '', coverage: null, dropped: [], returned: 0, overlap: null, leansOn: null }
     for (const id of row.gates) {
       // The leak gate ran on the BRIEF, before the send — not here.
       if (id === 'leak') continue
@@ -300,10 +393,13 @@ export function runRowGates(row: LaunchSpec, ctx: ProseGateCtx, text: string, at
   }
   gates.push({ gate: 'shape', verdict: 'held', attempt, ...(launch ? { launch } : {}), stage: 'answer' })
 
+  // The leans-on tail first (A69-6): it is a fence in the briefing, and the
+  // coverage parser below takes any trailing fence as its own.
+  const leans = parseLeansOn(rawBriefing)
   // Evidence resolution before the gates read it: every claim is checked
   // against the destination this pass was given, and what does not resolve
   // is dropped and counted (§4).
-  const parsedTail = ctx.parseCoverageTail(rawBriefing)
+  const parsedTail = ctx.parseCoverageTail(leans.briefing)
   const resolved = ctx.resolveCoverage(ctx.destination, parsedTail.coverage, ctx.known)
   const dropped = [
     ...resolved.dropped,
@@ -313,6 +409,7 @@ export function runRowGates(row: LaunchSpec, ctx: ProseGateCtx, text: string, at
     body: body.trim(),
     prose: row.answer === 'scene-file' ? withoutFrontmatter(body.trim()) : body.trim(),
     briefing: parsedTail.briefing, coverage: resolved.coverage, dropped, returned: resolved.returned, overlap: null,
+    leansOn: leans.leansOn,
   }
 
   for (const id of row.gates) {

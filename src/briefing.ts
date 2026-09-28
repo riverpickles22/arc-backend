@@ -9,7 +9,7 @@
 // lengths. An obligation is "due" only because the chapter order places its
 // window over the current chapter — a proven fact, not a judgement.
 import { loadGraph } from 'arc-canon-graph'
-import type { BriefingResponse, CanonDoc } from 'arc-canon-graph'
+import type { BriefingResponse, CanonDoc, MaterialItem, ProseScene } from 'arc-canon-graph'
 import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
 import { annotations } from './annotations'
 import { canonJson } from './canon'
@@ -111,6 +111,27 @@ export function dueIn(
   return out.sort((a, b) => a.id.localeCompare(b.id))
 }
 
+/** WHAT IS DUE, with who claims it (A69-6). One pipeline for the briefing
+ *  panel and the writing slice, so the pass is never told a different debt
+ *  than the author: the graph's obligations, filed by class, windowed to the
+ *  chapter, each row keeping its satisfiers. */
+export function dueRows(
+  canon: CanonDoc, chapter: string, material: MaterialItem[], scenes: ProseScene[],
+): (NonNullable<BriefingResponse['due']>[number] & { satisfiers: string[] })[] {
+  const order = new Map((canon.chapters ?? []).map(c => [c.id, c.order ?? 0]))
+  const obl = loadGraph(canon).obligations(
+    material,
+    scenes.map(s => ({ scene: s.scene, chapter: s.chapter, satisfies: s.contract?.satisfies })),
+  )
+  const rows = [
+    ...obl.unowned.map(o => ({ ...o, klass: 'unowned' as const })),
+    ...obl.unwritten.map(o => ({ ...o, klass: 'unwritten' as const })),
+    ...obl.overdue.map(o => ({ ...o, klass: 'overdue' as const })),
+  ]
+  const satisfiers = new Map(rows.map(o => [o.id, o.satisfiers]))
+  return dueIn(chapter, order, rows).map(o => ({ ...o, satisfiers: satisfiers.get(o.id) ?? [] }))
+}
+
 export function briefing(): BriefingResponse {
   const draft = proseDraft()
   const canon = chapterOrder()
@@ -134,18 +155,7 @@ export function briefing(): BriefingResponse {
   let due: BriefingResponse['due'] = []
   if (accepted) {
     if (!canon) due = null
-    else {
-      const g = loadGraph(canon.doc)
-      const obl = g.obligations(
-        material,
-        proseScenes().map(s => ({ scene: s.scene, chapter: s.chapter, satisfies: s.contract?.satisfies })),
-      )
-      due = dueIn(accepted.chapter, canon.order, [
-        ...obl.unowned.map(o => ({ ...o, klass: 'unowned' as const })),
-        ...obl.unwritten.map(o => ({ ...o, klass: 'unwritten' as const })),
-        ...obl.overdue.map(o => ({ ...o, klass: 'overdue' as const })),
-      ])
-    }
+    else due = dueRows(canon.doc, accepted.chapter, material, proseScenes()).map(o => ({ id: o.id, body: o.body, klass: o.klass, window: o.window }))
   }
 
   return {

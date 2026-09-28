@@ -34,10 +34,12 @@
 import { HttpError } from './http'
 import type { CanonDoc, MaterialItem, ProseScene, ResolvedAnnotation, SceneContract } from 'arc-canon-graph'
 import { buildContextPack } from 'arc-canon-graph/context-pack-lib.ts'
-import { dateOf, diffCharacter, dk } from 'arc-canon-graph/canon-graph.ts'
+import { dateOf, diffCharacter, dk, stateAt, timeRefKey } from 'arc-canon-graph/canon-graph.ts'
+import type { TimeRef } from 'arc-canon-graph/canon-graph.ts'
 import { loadGraph } from 'arc-canon-graph'
 import { canonJson } from './canon'
 import { materialItems, proseDraft, proseScenes } from './story'
+import { dueRows } from './briefing'
 import { openNotesOn } from './annotations'
 import { locksOn } from './locks'
 import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
@@ -73,6 +75,19 @@ export interface SliceBlock {
   status: LayerStatus
   /** the rendered layer; empty unless `given` */
   text: string
+  /** the state facts given past the row's freshness distance (A69-6) */
+  leaned_on?: LeanedOn[]
+}
+
+/** A STATE FACT THE PROSE RESTS ON that the record has not looked at since
+ *  before the freshness distance (A69-6). Proven from the record by code:
+ *  the snapshot's own timeref against the scene's moment. */
+export interface LeanedOn {
+  id: string
+  /** the snapshot's timeref, as the record spells it */
+  as_of: string
+  /** how far past the freshness distance, in days of story time */
+  older_by_days: number
 }
 
 /** One line of the manifest the receipt shows. */
@@ -84,6 +99,8 @@ export interface LayerReading {
   because?: string
   /** what the rendering did, when it did something worth recording */
   note?: string
+  /** the state facts given past the row's freshness distance (A69-6) */
+  leaned_on?: LeanedOn[]
 }
 
 export interface WritingSlice {
@@ -99,8 +116,177 @@ export interface WritingSlice {
     included: string[]
     dropped_for_budget: string[]
     layers: LayerReading[]
+    /** every state fact given past the freshness distance, from the manifest */
+    leaned_on: LeanedOn[]
   }
 }
+
+/** WHAT MAY BEAR WEIGHT (§4, "Canon, with status"; conventions §5). Every
+ *  id the record holds, split by whether the author has ratified it: a
+ *  `canon` record may bear weight; a `proposed` one, a deprecated one, and
+ *  every piece of material may be mentioned and never rested on. A record
+ *  with no status stated is treated as proposed — the conservative reading,
+ *  and the one the tag says out loud. The gate that reads a draft's leans-on
+ *  tail measures against these same two lists. */
+export function weightOf(canon: CanonDoc, material: MaterialItem[]): { settled: string[]; unsettled: string[] } {
+  const settled: string[] = [], unsettled: string[] = []
+  const place = (id: string, status: string | undefined): void => { (status === 'canon' ? settled : unsettled).push(id) }
+  for (const e of Object.values(canon.entities ?? {})) place(e.id, e.status)
+  for (const e of Object.values(canon.events ?? {})) place(e.id, e.status)
+  for (const r of canon.relationships ?? []) place(r.id, (r as { status?: string }).status)
+  // The brief prints chapters, eras and themes by id too; a tail naming one
+  // is naming something the record holds. A chapter or theme carries its
+  // own status; an era is the timeline's, settled by being there.
+  for (const c of canon.chapters ?? []) place(c.id, c.status ?? 'canon')
+  for (const t of canon.themes ?? []) place(t.id, (t as { status?: string }).status ?? 'canon')
+  for (const e of canon.timeline?.eras ?? []) settled.push(e.id)
+  for (const m of material) unsettled.push(m.id)
+  return { settled: settled.sort(), unsettled: unsettled.sort() }
+}
+
+/** A status tag as the brief spells it. */
+function tagOf(status: string | undefined): string {
+  return status === 'canon' ? '[canon]'
+    : status === 'proposed' ? '[proposed — reference only]'
+      : status ? `[${status} — reference only]`
+        : '[status unstated — read as proposed, reference only]'
+}
+
+/** Days of story time between two date keys, approximately — a timeref's
+ *  own precision is coarser than any error here. */
+function daysBetween(a: number, b: number): number {
+  const days = (k: number): number => Math.floor(k / 10000) * 365 + (Math.floor(k / 100) % 100 - 1) * 30 + (k % 100)
+  return days(b) - days(a)
+}
+
+/** The timeref as the record spells it — the date, else the era, with the
+ *  precision when one is stated. */
+function asOf(at: TimeRef): string {
+  const p = (at as { precision?: string }).precision
+  return `${at.date ?? at.era}${p ? ` (${p} precision)` : ''}`
+}
+
+/** THE RECORD WITH ITS STATUS (A69-6; §4, "Canon, with status"). The pack
+ *  is the graph's own selection with the reason each item is here; this
+ *  says, on every item, whether it may bear weight — and on every state
+ *  fact, when the record last looked. The weight rule is stated once at the
+ *  head, because a tag the reader has not been told the meaning of is
+ *  decoration. Nothing here edits the pack's selection: constrain the
+ *  representation, never the record. */
+function canonWithStatus(
+  canon: CanonDoc, pack: string, T: number | undefined, freshness: number | undefined,
+): { text: string; leaned_on: LeanedOn[]; tagged: number } {
+  const eras = canon.timeline?.eras ?? []
+  const status = new Map<string, string | undefined>()
+  for (const e of Object.values(canon.entities ?? {})) status.set(e.id, e.status)
+  for (const e of Object.values(canon.events ?? {})) status.set(e.id, e.status)
+  for (const r of canon.relationships ?? []) status.set(r.id, (r as { status?: string }).status)
+
+  const leaned_on: LeanedOn[] = []
+  const seen = new Set<string>()
+  /** The lines that follow an entity's item: when its state was taken, and
+   *  whether that is past the distance the row allows. */
+  const stateLines = (id: string, indent: string): string[] => {
+    const ent = canon.entities?.[id]
+    if (!ent?.states?.length || seen.has(id)) return []
+    seen.add(id)
+    // No dated moment to measure from: the chapter's span names an era and
+    // no date, or nothing. The pack anchors at the end of time then, and an
+    // age measured from there is millions of days of nothing. Say so.
+    if (T === undefined) return [`${indent}  as of: the chapter states no dated span, so how current this state is cannot be measured`]
+    const st = stateAt(ent as { states: { at: TimeRef }[] }, T, eras)
+    if (!st) return [`${indent}  as of: no state at this moment — nothing the record says about them applies yet`]
+    const age = daysBetween(timeRefKey(st.at, eras), T)
+    const lines = [`${indent}  as of: ${asOf(st.at)}`]
+    if (freshness !== undefined && age > freshness) {
+      leaned_on.push({ id, as_of: asOf(st.at), older_by_days: age - freshness })
+      lines.push(`${indent}  AGED: this state is ${age} days of story time old, ${age - freshness} past what this pass may treat as current — it is given anyway, and the author is told so`)
+    }
+    return lines
+  }
+
+  let tagged = 0
+  const out: string[] = []
+  // The state lines follow the pack's own "— included:" line when there is
+  // one, so an item reads: what it is, why it is here, when it was last true.
+  let pending: string[] = []
+  // An object renders as a heading, then its one `- ` item, then that item's
+  // "— included:" line; the state lines wait for the last of those.
+  let afterHeading = false
+  for (const line of pack.split('\n')) {
+    const included = /^\s*— included:/.test(line)
+    const itemUnderHeading = afterHeading && /^- /.test(line)
+    if (pending.length && !included && !itemUnderHeading) { out.push(...pending); pending = []; afterHeading = false }
+    // An item: `- \`id\` …` — the id is the first thing on the line.
+    const item = line.match(/^(\s*- )`([^`]+)`(.*)$/)
+    if (item && status.has(item[2])) {
+      tagged++
+      out.push(`${item[1]}\`${item[2]}\` ${tagOf(status.get(item[2]))}${item[3]}`)
+      pending = stateLines(item[2], item[1].replace(/- $/, ''))
+      continue
+    }
+    // An object's own heading.
+    const head = line.match(/^(## Object: )`([^`]+)`(.*)$/)
+    if (head && status.has(head[2])) {
+      tagged++
+      out.push(`${head[1]}\`${head[2]}\` ${tagOf(status.get(head[2]))}${head[3]}`)
+      pending = stateLines(head[2], '')
+      afterHeading = true
+      continue
+    }
+    out.push(line)
+    if (pending.length && included) { out.push(...pending); pending = []; afterHeading = false }
+  }
+  out.push(...pending)
+  const rule = [
+    'WEIGHT. Every item below carries a tag. [canon] is settled and may bear weight.',
+    '[proposed] may be mentioned and must not be rested on — the author has not decided; a scene that would fall without it is a scene the author cannot decide against.',
+    'Material — the story\'s filed thoughts, listed under WHAT IS LIVE HERE — binds nothing.',
+    'A state fact says when the record last looked (as of); one marked AGED is older than this pass may treat as current.',
+  ].join('\n')
+  return { text: `${rule}\n\n${out.join('\n')}`, leaned_on, tagged }
+}
+
+/** WHAT IS LIVE HERE (A69-6; §4, "Dramatic condition"): how the people
+ *  present stand to each other at this moment, and what the story owes in
+ *  this chapter. Wants, fears and beliefs stay where the record layer already
+ *  renders them, on each person's line — said twice they cost the budget and
+ *  teach nothing. Fenced payoffs are the record layer's too. What was not
+ *  in any brief before this: every present person's stances, not only the
+ *  point of view's, and the obligations due here with the scene expected to
+ *  discharge each — the briefing's own WHAT'S DUE, handed to the pass. */
+function dramaticCondition(
+  canon: CanonDoc, T: number | undefined, chapterId: string, present: string[], material: MaterialItem[], scenes: ProseScene[],
+): { text: string; ids: string[]; because: string } {
+  const eras = canon.timeline?.eras ?? []
+  const ids: string[] = []
+  const stances: string[] = []
+  for (const id of present) {
+    const ent = canon.entities?.[id]
+    if (!ent?.states?.length || T === undefined) continue
+    const st = stateAt(ent as { states: { at: TimeRef; relationships?: { toward: string; stance: string }[] }[] }, T, eras)
+    const rel = st?.relationships ?? []
+    if (!rel.length) continue
+    ids.push(id)
+    stances.push(`${id} (as of ${asOf(st!.at)})\n${rel.map(r => `  → ${r.toward}: ${r.stance.trim()}`).join('\n')}`)
+  }
+
+  // Due here: the briefing's own WHAT'S DUE — one pipeline, so the pass is
+  // never told a different debt than the author's panel shows.
+  const owing = dueRows(canon, chapterId, material, scenes).map(o => {
+    ids.push(o.id)
+    const expected = o.satisfiers.length ? `expected in ${o.satisfiers.join(', ')}` : 'no scene claims it yet'
+    const window = o.window ? ` · window ${o.window.from ?? '…'} → ${o.window.to ?? '…'}` : ''
+    return `- ${o.id} — ${o.body.split('\n')[0]} · ${expected}${o.klass === 'overdue' ? ' · OVERDUE' : ''}${window}`
+  })
+
+  const parts: string[] = []
+  if (stances.length) parts.push(`HOW THEY STAND TO EACH OTHER\n${stances.join('\n')}`)
+  parts.push(`WHAT THE STORY OWES IN THIS CHAPTER\n${owing.length ? owing.join('\n') : 'nothing is due in this chapter'}`)
+  const because = 'nobody present has a stance on record at this moment, and nothing is due in this chapter'
+  return { text: stances.length || owing.length ? parts.join('\n\n') : '', ids, because }
+}
+
 
 /** The subject of a writing job. A revise names a scene that exists; a draft
  *  names the chapter and the id of the scene it is about to write, and has no
@@ -266,6 +452,23 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
   const pack = at
     ? buildContextPack(canon, { at, events: scene?.events ?? [], pov })
     : buildContextPack(canon, { chapter: subject.chapter })
+  // The scene's moment, as the pack anchors it: the end of the chapter's
+  // span — or nothing, when the span states no date.
+  const T = at ? dk(at, true) : undefined
+  const withStatus = canonWithStatus(canon, pack, T, row.slice.freshness)
+  // Who is here: the point of view, whoever the scene binds, and whoever
+  // takes part in or witnesses the events it depicts — the pack's own cast.
+  const present = [...new Set([
+    ...(pov ? [pov] : []),
+    ...(scene?.facts ?? []).filter(id => canon.entities?.[id]?.type === 'character'),
+    ...(scene?.events ?? []).flatMap(e => [
+      ...(canon.events?.[e]?.participants ?? []).map(p => p.entity),
+      ...(canon.events?.[e]?.witnesses ?? []),
+    ]),
+  ])]
+  // Read once, for every layer that wants them.
+  const material = materialItems()
+  const scenes = proseScenes()
 
   // ONLY THE AUTHOR'S NOTES REACH A WRITING PASS (§4, "Notes and key points,
   // `by: author` only"). A note arc wrote is arc's own reading, and handing
@@ -324,7 +527,6 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
       if (!(row.slice.layers as readonly string[]).includes('handoff')) {
         return { layer: 'handoff' as const, ids: [], reason, status: 'none' as const, text: '', because: 'not a layer of this reading' }
       }
-      const scenes = proseScenes()
       const prev = previousScene(canon, subject, scenes)
       if (!prev) {
         return {
@@ -360,19 +562,30 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
       return {
         layer: 'handoff' as const, ids: [prev.scene], reason,
         status: 'given' as const,
-        text: heading + handoffText(canon, prev, materialItems(), scenes),
+        text: heading + handoffText(canon, prev, material, scenes),
         ...(note ? { note } : {}),
       }
     })(),
 
-    { layer: 'dramatic-condition', ids: pov ? [pov] : [],
-      reason: 'what the people here want, fear and believe, and what is already promised',
-      status: 'deferred', text: '',
-      because: 'what each person wants and fears is inside the record layer today; what the story still owes is not read yet' },
+    (() => {
+      const live = dramaticCondition(canon, T, subject.chapter, present, material, scenes)
+      return b('dramatic-condition', live.ids,
+        'how the people here stand to each other, and what the story owes in this chapter',
+        live.text,
+        { because: live.because,
+          note: 'wants, fears and beliefs are on each person\'s line in the record layer; planted payoffs are fenced there too' })
+    })(),
 
-    b('canon', [...(scene?.facts ?? []), ...(scene?.events ?? [])],
-      'what is true at this moment, each fact with the reason it is here', pack,
-      { note: 'every fact is here; whether each one is settled, proposed or only material is not said yet' }),
+    {
+      ...b('canon', [...(scene?.facts ?? []), ...(scene?.events ?? [])],
+        'what is true at this moment, each fact tagged with whether it may bear weight, and the reason it is here',
+        withStatus.text,
+        { note: `${withStatus.tagged} item${withStatus.tagged === 1 ? '' : 's'} tagged with status` +
+          (withStatus.leaned_on.length
+            ? `; ${withStatus.leaned_on.length} state fact${withStatus.leaned_on.length === 1 ? '' : 's'} given past the freshness distance`
+            : '') }),
+      leaned_on: withStatus.leaned_on,
+    },
 
     { layer: 'position', ids: [], reason: 'where this scene sits in the book', status: 'deferred', text: '',
       because: 'arc does not read the neighbouring scenes or the chapter summaries yet' },
@@ -493,7 +706,7 @@ export function assembleWritingSlice(
   }
 
   const blocks = given.filter(c => keep.has(c.layer))
-    .map(({ layer, ids, reason, status, text }) => ({ layer, ids, reason, status, text }))
+    .map(({ layer, ids, reason, status, text, leaned_on }) => ({ layer, ids, reason, status, text, ...(leaned_on?.length ? { leaned_on } : {}) }))
 
   const manifest: LayerReading[] = declared.map(layer => {
     const c = byLayer.get(layer)!
@@ -508,6 +721,9 @@ export function assembleWritingSlice(
       // contract was abbreviated when it was never sent is worse than
       // saying nothing.
       ...(c.note && status === 'given' ? { note: c.note } : {}),
+      // And what was leaned on is only what was GIVEN: a state fact in a
+      // layer that dropped for room reached no pass.
+      ...(c.leaned_on?.length && status === 'given' ? { leaned_on: c.leaned_on.map(l => ({ ...l })) } : {}),
     }
   })
 
@@ -519,6 +735,9 @@ export function assembleWritingSlice(
       included: manifest.filter(l => l.status === 'given').map(l => l.layer),
       dropped_for_budget: manifest.filter(l => l.status === 'not shown').map(l => l.layer),
       layers: manifest.map(l => ({ ...l })),
+      // PROVEN FROM THE MANIFEST, never argued: the receipt's `leaned on` is
+      // what the canon layer marked aged, and nothing a model said.
+      leaned_on: manifest.flatMap(l => l.leaned_on ?? []).map(l => ({ ...l })),
     }),
   }
 }

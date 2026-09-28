@@ -1,11 +1,14 @@
 ---
 row: draft.scene.one-shot.write
-name: lands
-fingerprint: 2aa0aaffe3d23532
-expect: lands
+name: leans-on-proposed
+fingerprint: 705516105c77b477
+expect: leaned-on
 scenario: >
-  the worked example as shipped; draft the next scene of ch.01, no line said.
-  The answer is a scene file that validates against the example's canon.
+  the author said "lean on the log" and settled a plan that names the log;
+  the answer is a scene file that validates, whose briefing says the prose
+  RESTS ON obj.keepers-log and rel.ines-log — both proposed. The leaned-on
+  gate refuses it: a pass may mention an unratified fact and may not build
+  on it.
 because: "the leans-on rule covers what the file binds, and an aged state fact says it is given rather than rested on (A69-6 review)"
 ---
 ---
@@ -57,7 +60,6 @@ that would belong if it is worth keeping.
 **Leans on.**
 ```leans-on
 char.ines
-char.wren
-place.whitcombe-light
-rel.ines-wren
+obj.keepers-log
+rel.ines-log
 ```

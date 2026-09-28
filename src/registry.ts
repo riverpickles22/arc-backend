@@ -52,6 +52,14 @@ export interface SliceSpec {
   layers: readonly string[]
   dropOrder: readonly string[]
   floor: readonly string[]
+  /** THE FRESHNESS DISTANCE (A69-6; §4, "Canon, with status"): how old a
+   *  state fact may be, in days of STORY time, before the brief marks it as
+   *  aged and the receipt lists it under `leaned on`. A snapshot taken a
+   *  season before the scene is still the record's best word, and the pass
+   *  is still given it — what changes is that the author is told the prose
+   *  rests on something the record has not looked at since. Absent: nothing
+   *  is marked. */
+  freshness?: number
 }
 
 /** Envelope rule 1's fields, runtime-neutral. Every row declares project
@@ -93,6 +101,9 @@ export interface RecordAgentEnvelope extends EnvelopeBase {
 export type GateId =
   | 'locks' | 'lock-order' | 'withhold-literals' | 'and-chain' | 'sentence-length'
   | 'overlap' | 'coverage-tail' | 'validator' | 'leak' | 'plan-vocabulary'
+  /** the ids the briefing says the prose rests on: a proposed or material id
+   *  named there as settled is refused (A69-6) */
+  | 'leaned-on'
 
 /** How the answer is shaped, so a gate can read it without a model. */
 /** THE CRAFT MOVES (A69-4; §4, "The craft plan"). Q11, decided by the author
@@ -279,7 +290,7 @@ export const WRITING_INPUT_TOKENS = 40_000
  *  withheld from. Those gates arrive with U3, which rewrites a scene that is
  *  already there. What is left is the story's own validator and the two
  *  countable style rules. */
-export const DRAFT_GATES: readonly GateId[] = ['validator', 'and-chain', 'sentence-length']
+export const DRAFT_GATES: readonly GateId[] = ['validator', 'leaned-on', 'and-chain', 'sentence-length']
 
 export const WRITING_SLICE: SliceSpec = {
   id: 'writing',
@@ -289,6 +300,11 @@ export const WRITING_SLICE: SliceSpec = {
   ],
   dropOrder: ['research', 'position', 'intent', 'dramatic-condition', 'voice', 'notes', 'promoted-rules'],
   floor: ['contract', 'withholds', 'handoff', 'canon', 'locks'],
+  // A season. Provisional, like every other figure on this row: reset from
+  // the first ten receipts. The example's keeper has a year-precision
+  // snapshot against a November scene, so the first draft on the example
+  // leans on an aged fact and says so.
+  freshness: 90,
 }
 
 // ---- U4 · Explore · scene · one-shot, withholding -------------------------
@@ -487,7 +503,8 @@ file opens with its frontmatter fence:
   fails the story's own validator, the draft is refused, and nothing is
   written.
 - A fact marked \`proposed\` or \`material\` may be REFERENCED and may not be
-  rested on: the author has not ratified it.
+  rested on: the author has not ratified it. The record below tags every
+  item; the weight rule at its head is binding.
 
 THE PROSE (binding rules, in priority order):
 1. The style contract below is law. Run its pre-draft checklist before
@@ -516,6 +533,15 @@ judge, never verdicts):
 1. What the scene does, and the contract you drafted to.
 2. The style checklist, item by item: held, or knowingly bent and why.
 3. To verify — inventions and borderline claims a person should confirm.
+4. LEANS ON — the entity, event and relationship ids the prose RESTS ON as
+   settled, one per line, in a fenced block that opens with exactly
+   \`\`\`leans-on and closes with \`\`\`. Only an id tagged \`canon\` belongs
+   here, and so does every id in the file's own \`facts\` and \`events\` —
+   binding an id IS resting on it. An id tagged \`proposed\` or \`material\`
+   may be mentioned in the prose and must be neither bound nor listed: that
+   says the scene would fall if the author decided against it, and a gate
+   refuses the draft on it. The block is required; a briefing without it is
+   refused.
 `
 
 /** The craft-plan reading's rules. A cheap sealed pass that settles the
@@ -610,7 +636,7 @@ export const ROW_DRAFT_SCENE: StagedRow = {
       gates: DRAFT_GATES,
       answer: 'scene-file',
       budget: { outputTokens: ROUTE_OUTPUT_TOKENS, wallClockMs: ROUTE_WALL_CLOCK_MS, inputTokens: WRITING_INPUT_TOKENS },
-      fixtures: ['lands', 'lands-from-plan', 'validator-refused'],
+      fixtures: ['lands', 'lands-from-plan', 'validator-refused', 'leans-on-proposed'],
     },
   ],
 }

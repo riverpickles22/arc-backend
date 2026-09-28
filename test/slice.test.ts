@@ -158,10 +158,13 @@ test('a draft has no scene, and that is not a story without a contract or notes'
 test('a layer arc cannot build yet is deferred, never none — none means there is nothing', () => {
   const s = assembleWritingSlice(rowWith(40_000), subject())
   const by = (l: string) => s.manifest.find(m => m.layer === l)!
-  for (const layer of ['dramatic-condition', 'position', 'research']) {
+  for (const layer of ['position', 'research']) {
     assert.equal(by(layer).status, 'deferred',
       `${layer}: arc does not read this yet, and saying "none" would tell the author the book is empty here`)
   }
+  // `dramatic-condition` is built now (A69-6): the example's keeper has
+  // stances on record and the story owes one obligation in this chapter.
+  assert.equal(by('dramatic-condition').status, 'given')
   // `handoff` is built now (A69-5) and this scene is the first of the book,
   // so it is honestly `none` — see the test below that proves the difference.
   assert.equal(by('handoff').status, 'none')
@@ -437,3 +440,110 @@ test('the handoff is floor: a budget that cannot hold it refuses before a token'
     () => assembleWritingSlice(rowWith(60), { chapter: scene().chapter, sceneId: 'sc.01-2' }),
     /does not fit in one pass/)
 })
+
+// ---- canon with status, freshness, and what is live here (A69-6) --------
+
+const draftOf = () => assembleWritingSlice(rowWith(40_000), { chapter: scene().chapter, sceneId: 'sc.01-2' })
+
+test('every fact in the record layer is tagged with whether it may bear weight, and the rule is stated once', () => {
+  const text = draftOf().blocks.find(b => b.layer === 'canon')!.text
+  assert.ok(text.startsWith('WEIGHT.'), 'the weight rule heads the layer')
+  assert.equal((text.match(/^WEIGHT\./gm) ?? []).length, 1, 'stated once')
+  assert.match(text, /`char\.ines` \[canon\]/)
+  assert.match(text, /`obj\.keepers-log` \[proposed — reference only\]/, 'the log the author has not decided on')
+  assert.match(text, /`rel\.ines-log` \[proposed — reference only\]/, 'and the edge that hangs off it')
+})
+
+test('a state fact says when the record last looked, and one past the freshness distance is marked and listed', () => {
+  const s = draftOf()
+  const text = s.blocks.find(b => b.layer === 'canon')!.text
+  assert.match(text, /`char\.ines` \[canon\][^\n]*\n  — included: [^\n]*\n  as of: 1910 \(year precision\)\n  AGED: /,
+    'what it is, why it is here, when it was last true — in that order')
+  const leaned = s.forReceipt().leaned_on
+  assert.deepEqual(leaned.map(l => l.id), ['char.ines'], 'the keeper\'s year-precision snapshot against a November scene')
+  assert.equal(leaned[0].as_of, '1910 (year precision)')
+  assert.ok(leaned[0].older_by_days > 0)
+  assert.deepEqual(s.manifest.find(l => l.layer === 'canon')!.leaned_on, leaned, 'proven from the manifest, not argued')
+
+  // No freshness on the row: nothing is aged, nothing is listed.
+  const loose = assembleWritingSlice(
+    { ...rowWith(40_000), slice: { ...WRITING_SLICE, freshness: undefined } },
+    { chapter: scene().chapter, sceneId: 'sc.01-2' })
+  assert.ok(!/\n\s*AGED: /.test(loose.blocks.find(b => b.layer === 'canon')!.text), 'no state fact is marked aged')
+  assert.deepEqual(loose.forReceipt().leaned_on, [])
+})
+
+test('what is live here: every present stance, and what the story owes in this chapter with the scene expected to discharge it', () => {
+  const live = draftOf().blocks.find(b => b.layer === 'dramatic-condition')!
+  assert.equal(live.status, 'given')
+  assert.match(live.text, /HOW THEY STAND TO EACH OTHER\nchar\.ines \(as of 1910/)
+  assert.match(live.text, /  → char\.wren: /)
+  assert.match(live.text, /WHAT THE STORY OWES IN THIS CHAPTER\n- mat\.light-must-nearly-fail — [^\n]* · no scene claims it yet/)
+  assert.match(live.text, /window ch\.01-ninety-one-stairs → ch\.02-the-aurelia/)
+  assert.deepEqual(live.ids, ['char.ines', 'mat.light-must-nearly-fail'])
+
+  // Claimed by a scene the book does not have yet: still owed, and the pass
+  // is told where it is expected.
+  const claimed = path.join(STORY, 'material', 'mat-test-claimed.yaml')
+  fs.writeFileSync(claimed, ['id: mat.test-claimed', 'type: obligation', 'status: placed',
+    'body: the burn must be seen to heal', 'related: [char.ines]', 'satisfied_by: [sc.05-1]',
+    'window: { from: ch.01-ninety-one-stairs }'].join('\n') + '\n')
+  try {
+    assert.match(draftOf().blocks.find(b => b.layer === 'dramatic-condition')!.text, /- mat\.test-claimed — [^\n]* · expected in sc\.05-1/)
+  } finally {
+    fs.rmSync(claimed, { force: true })
+  }
+})
+
+test('what may bear weight: the record split by status, and material never settled', async () => {
+  const { weightOf } = await import('../src/slice.ts')
+  const { materialItems } = await import('../src/story.ts')
+  const canon = JSON.parse((await import('../src/canon.ts')).canonJson())
+  const w = weightOf(canon, materialItems())
+  assert.ok(w.settled.includes('char.ines'))
+  assert.ok(w.settled.includes('rel.ines-wren'))
+  for (const id of ['obj.keepers-log', 'rel.ines-log', 'mat.light-must-nearly-fail']) {
+    assert.ok(w.unsettled.includes(id), `${id} may be mentioned and not rested on`)
+    assert.ok(!w.settled.includes(id))
+  }
+})
+
+test('a chapter whose span states no date ages nothing, and says why', () => {
+  const chapters = path.join(STORY, 'canon', 'chapters.yaml')
+  const original = fs.readFileSync(chapters, 'utf8')
+  const dated = 'span: { start: "1910-11", end: "1910-12" }'
+  assert.ok(original.includes(dated), 'the example chapter states a dated span')
+  try {
+    fs.writeFileSync(chapters, original.replace(dated, 'span: { start: { era: era.keeping }, end: { era: era.keeping } }'))
+    const s = draftOf()
+    const text = s.blocks.find(b => b.layer === 'canon')!.text
+    assert.ok(!/\n\s*AGED: /.test(text), 'nothing is measured against the end of time')
+    assert.match(text, /as of: the chapter states no dated span/)
+    assert.deepEqual(s.forReceipt().leaned_on, [])
+  } finally {
+    fs.writeFileSync(chapters, original)
+  }
+})
+
+test('the record and what is live here agree on who is present: a witness is in both', () => {
+  // An event with a witness, bound by the scene being drafted through its
+  // chapter: the pack lists the witness under the cast, and the stances
+  // layer must too.
+  const eventsDir = path.join(STORY, 'canon', 'events')
+  const evFile = path.join(eventsDir, 'ev-test-witnessed.yaml')
+  fs.writeFileSync(evFile, ['id: event.test-witnessed', 'type: event', 'status: canon', 'title: A test', 'summary: a test event',
+    'when: { era: era.keeping, date: "1910-11-02" }', 'where: place.whitcombe-light', 'on_page: false',
+    'participants: [{ entity: char.ines, role: keeper }]', 'witnesses: [char.wren]'].join('\n') + '\n')
+  const sceneFile = path.join(STORY, scene().file)
+  const original = fs.readFileSync(sceneFile, 'utf8')
+  try {
+    fs.writeFileSync(sceneFile, original.replace('events: []', 'events: [event.test-witnessed]'))
+    const s = assembleWritingSlice(rowWith(40_000), subject())
+    const live = s.blocks.find(b => b.layer === 'dramatic-condition')!.text
+    assert.match(live, /char\.wren \(as of /, 'the witness has a stance on record, and it is here')
+  } finally {
+    fs.writeFileSync(sceneFile, original)
+    fs.rmSync(evFile, { force: true })
+  }
+})
+

@@ -25,11 +25,11 @@ import { canonJson, validateStory } from './canon'
 import { currentEngine } from './engine'
 import { styleContract } from './style'
 import { recordGenerated } from './ledger'
-import { proseScenes } from './story'
+import { materialItems, proseScenes } from './story'
 import { HttpError } from './http'
 import { resolveWithin } from './safe-path'
 import { resolveRequest, type ResolvedRequest } from './request'
-import { assembleWritingSlice } from './slice'
+import { assembleWritingSlice, weightOf } from './slice'
 import { runGates, parseCraftPlan, planSentence, type ProseGateCtx } from './gates'
 import { CRAFT_MOVES, stageRuns, type Stage, type StagedRow } from './registry'
 import { openRowRun, closeReceipt } from './rowrun'
@@ -221,6 +221,10 @@ export async function runDraft(chapterId: string, guidance?: string, given?: Cra
       known: [],
     }),
     validate,
+    // What may bear weight, from the record the model was briefed with, so
+    // the leans-on tail is measured against the same statuses the brief
+    // tagged (A69-6).
+    ...weightOf(canon, materialItems()),
   }
 
   let landed = false
@@ -283,8 +287,16 @@ export async function runDraft(chapterId: string, guidance?: string, given?: Cra
     recordGenerated(file, out.checked.body, { engine: currentEngine() ?? 'fixture', scene: sceneId, origin: 'draft', run: run.id })
     closeReceipt(ctx, 'landed')
     endRun(run.id, 'landed', { landed: [sceneId] })
+    // What the author is told at the landing: the draft is waiting, and —
+    // proven from the manifest — which state facts it was given past the
+    // freshness distance, so a season-old snapshot is not a surprise found
+    // in a receipt (A69-6).
+    const aged = receipt.slice?.leaned_on ?? []
+    const agedLine = aged.length
+      ? ` It leans on ${aged.map(l => `${l.id} as of ${l.as_of}`).join(', ')} — the record has not looked since.`
+      : ''
     return {
-      reply: `Drafted ${sceneId}. It is waiting in ${file} — read it, then accept or discard.`,
+      reply: `Drafted ${sceneId}. It is waiting in ${file} — read it, then accept or discard.${agedLine}`,
       actions: [{ tool: 'draft', path: file, ok: true }],
       file,
       run: run.id,

@@ -11,7 +11,7 @@
 // its own: a route returns alternatives, a draft returns a file, and neither
 // belongs here.
 import type { ResolvedRequest } from './request'
-import type { LayerReading } from './slice'
+import type { LayerReading, LeanedOn } from './slice'
 import type { Row } from './registry'
 import { jobFingerprint } from './registry'
 import { Run, emptyReceipt, writeWorkingReceipt, type Receipt } from './run'
@@ -31,6 +31,8 @@ export interface SliceUsed {
   read: { id: string; version: string }[]
   /** the layer reading, for a job whose slice the assembler built */
   layers?: LayerReading[]
+  /** the state facts given past the freshness distance (A69-6) */
+  leaned_on?: LeanedOn[]
 }
 
 /** Open the run and its receipt, before anything is sent.
@@ -53,6 +55,7 @@ export function openRowRun(request: ResolvedRequest, row: Row, slice: SliceUsed)
     dropped_for_budget: slice.dropped,
     runtime_added: [],
     ...(slice.layers ? { layers: slice.layers.map(l => ({ ...l })) } : {}),
+    ...(slice.leaned_on ? { leaned_on: slice.leaned_on.map(l => ({ ...l })) } : {}),
   }
   receipt.context_manifest = slice.read
   receipt.gates = []

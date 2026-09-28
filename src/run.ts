@@ -447,7 +447,12 @@ export interface SliceManifest {
     ids: string[]
     because?: string
     note?: string
+    leaned_on?: { id: string; as_of: string; older_by_days: number }[]
   }[]
+  /** LEANED ON (A69-6): every state fact the brief carried past the row's
+   *  freshness distance — the snapshot's timeref and how far past. Proven
+   *  by code from the manifest; a pass never writes it. */
+  leaned_on?: { id: string; as_of: string; older_by_days: number }[]
 }
 
 /** The envelope as the runtime reported it, with each field's proof class
@@ -541,6 +546,7 @@ const GATE_WORDS: Record<string, string> = {
   overlap: 'it reused too much of the original wording',
   'coverage-tail': 'the answer did not say where the beats land',
   validator: 'the answer did not validate',
+  'leaned-on': 'what the draft rests on did not check out',
 }
 
 /** WHAT A GATE CHECKS, as a name rather than as a failure. `GATE_WORDS` above
@@ -559,6 +565,7 @@ const GATE_NAMES: Record<string, string> = {
   overlap: 'wording reused from the scene',
   'coverage-tail': 'where the beats land',
   validator: 'the answer validates',
+  'leaned-on': 'what the prose rests on is settled',
   shape: 'the answer came back in two parts',
   engine: 'the pass ran',
 }
