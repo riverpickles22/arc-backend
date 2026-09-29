@@ -113,8 +113,10 @@ test('every reading pass runs tools-off on the CLI engine (A55-4)', () => {
   // The author's decision of 2026-09-11: a pass whose worth is reading the
   // record cold must not be able to open the working tree instead. Before
   // this, "read-only by construction" held on the SDK path and, on the CLI
-  // path, only because the prompt asked.
-  for (const pass of ['analyze', 'judge', 'suggest', 'intent', 'lenses', 'bootstrap'] as const) {
+  // path, only because the prompt asked. `suggest` left this list with
+  // A69-10: rephrase and synonyms carry their envelope on their own rows,
+  // where the type refuses a toolbelt rather than a pin forbidding one.
+  for (const pass of ['analyze', 'judge', 'intent', 'lenses', 'bootstrap'] as const) {
     assert.equal(PASS_REGISTRY[pass].withholding, true, `${pass} must be withholding`)
     const args = buildCliArgs({ pass })
     const i = args.indexOf('--tools')

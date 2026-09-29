@@ -953,7 +953,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     POST: async (req, res) => {
       const b = (await parsedBody(req)) as { kind?: unknown; selection?: unknown; paragraph?: unknown; file?: unknown }
       if (b.kind !== 'rephrase' && b.kind !== 'synonyms') throw new HttpError(400, "kind must be 'rephrase' or 'synonyms'")
-      if (typeof b.selection !== 'string' || !b.selection.trim()) throw new HttpError(400, 'selection required')
+      if (typeof b.selection !== 'string') throw new HttpError(400, 'selection must be a string')
       if (b.paragraph !== undefined && typeof b.paragraph !== 'string') throw new HttpError(400, 'paragraph must be a string')
       if (b.file !== undefined && typeof b.file !== 'string') throw new HttpError(400, 'file must be a string')
       json(res, 200, await runSuggest({ kind: b.kind, selection: b.selection, paragraph: b.paragraph, file: b.file }))

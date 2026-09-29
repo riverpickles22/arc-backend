@@ -33,6 +33,10 @@ const ALL_ROWS = [
   // pass is the standard register and the minimal revision the quick one
   // (A69-9; registry.ts says why depth is the axis).
   'revise.scene.one-shot', 'revise.selection.one-shot', 'revise.scene.one-shot.quick',
+  // And two at selection scope that write nothing: rephrase is the quick
+  // register of Revise over a passage, beside the clean pass's standard one
+  // (A69-10); synonyms explores and collides with nobody.
+  'revise.selection.one-shot.quick', 'explore.selection.one-shot',
 ]
 
 test('U4 and U5 are the first rows: sealed, withholding, keyed by their cell', () => {
@@ -55,9 +59,17 @@ test('U4 and U5 are the first rows: sealed, withholding, keyed by their cell', (
 test('the budgets are Q3\'s, decided 2026-09-13 for this row only', () => {
   assert.equal(ROUTE_WALL_CLOCK_MS, 20 * 60 * 1000, 'twenty minutes per call — the one evidence-based number')
   assert.equal(ROUTE_OUTPUT_TOKENS, 12_000, 'about four times the novel\'s longest scene')
-  for (const row of ROWS) {
-    assert.equal(row.budget.outputTokens, 12_000)
-    assert.equal(row.budget.wallClockMs, 20 * 60 * 1000)
+  // Every row that writes prose, or offers a whole one. The writer's menu
+  // answers with a handful of wordings and is priced for that (A69-10): a
+  // row that spends a scene's budget on five alternatives is a row nobody
+  // costed.
+  for (const row of ROWS.filter(r => r.answer !== 'options')) {
+    assert.equal(row.budget.outputTokens, 12_000, rowKey(row))
+    assert.equal(row.budget.wallClockMs, 20 * 60 * 1000, rowKey(row))
+  }
+  for (const row of ROWS.filter(r => r.answer === 'options')) {
+    assert.equal(row.budget.outputTokens, 1_500, rowKey(row))
+    assert.equal(row.budget.wallClockMs, 5 * 60 * 1000, rowKey(row))
   }
   // The writing rows carry a third ceiling the route rows do not: the
   // assembled brief (A69-2, Q3 for these rows, decided 2026-09-24).

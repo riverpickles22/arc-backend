@@ -32,6 +32,7 @@ const { runReroute, runRevise, addRouteNote } = await import('../src/reroute.ts'
 const { runDraft } = await import('../src/draft.ts')
 const { runRedraft } = await import('../src/redraft.ts')
 const { runWorkNotes } = await import('../src/work-notes.ts')
+const { runSuggest } = await import('../src/suggest.ts')
 const { createAnnotation } = await import('../src/annotations.ts')
 const { ROWS, rowKey } = await import('../src/registry.ts')
 const { observeBriefs } = await import('../src/fixtures.ts')
@@ -227,6 +228,26 @@ export const SCENARIOS: Scenario[] = [
     prepare: async () => { opposedNotes() },
     run: () => runWorkNotes({ scene: SCENE }),
   },
+  {
+    row: 'revise.selection.one-shot.quick', name: 'lands', expect: 'lands',
+    scenario: 'the author selected one sentence of sc.01-1 and asked for other wordings of it. The pass is shown their style contract, the scene\'s line and the paragraph the selection sits in — never the rest of the book — and answers with a list it writes nothing from',
+    run: () => runSuggest({
+      kind: 'rephrase',
+      selection: 'The eighty-fourth was loose.',
+      paragraph: 'The eighty-fourth was loose. It had been loose when she came and it would be loose when she left.',
+      file: 'prose/ch-01/scene-01.md',
+    }),
+  },
+  {
+    row: 'explore.selection.one-shot', name: 'lands', expect: 'lands',
+    scenario: 'the author selected one word of sc.01-1 and asked what else it could be. The pass answers with replacements, each carrying a clause of nuance, and nothing is written',
+    run: () => runSuggest({
+      kind: 'synonyms',
+      selection: 'loose',
+      paragraph: 'The eighty-fourth was loose.',
+      file: 'prose/ch-01/scene-01.md',
+    }),
+  },
   rewrite('leak', 'leak',
     `the landed explore.scene.one-shot/lands route with one note on the whole route that quotes the manuscript — "${QUOTED_SENTENCE}" — so the brief would carry a sentence of the withheld prose. The leak gate refuses before the send.`,
     `the book has "${QUOTED_SENTENCE}"; get that pressure in without the sentence`, null),
@@ -251,8 +272,15 @@ for (const s of SCENARIOS) {
 
 /** Run one scenario from a clean story, watching every brief that reaches
  *  the fixture engine. `seen[0]` is the scenario's own brief; a refusal's
- *  repair attempt, when the pass makes one, is `seen[1]`. */
-export async function renderScenario(s: Scenario): Promise<{ seen: BriefSeen[]; result: unknown }> {
+ *  repair attempt, when the pass makes one, is `seen[1]`.
+ *
+ *  A PASS THAT THROWS STILL RENDERED ITS BRIEF, and the brief is what this
+ *  function is for. Most passes report a refusal by returning one, but a
+ *  pass with nothing to return reports it as an error the route hands the
+ *  author — the writer's menu has no half-answer to give (A69-10). Recording
+ *  its fixture must not depend on which of the two it does, so the throw is
+ *  caught and handed back as the result for the caller to read. */
+export async function renderScenario(s: Scenario): Promise<{ seen: BriefSeen[]; result: unknown; threw?: unknown }> {
   reset()
   await s.prepare?.()
   const seen: BriefSeen[] = []
@@ -260,6 +288,8 @@ export async function renderScenario(s: Scenario): Promise<{ seen: BriefSeen[]; 
   try {
     const result = await s.run()
     return { seen, result }
+  } catch (e) {
+    return { seen, result: undefined, threw: e }
   } finally {
     stop()
   }

@@ -487,9 +487,17 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
     ? styleForPassRead({ scene: scene.scene, file: scene.file, body: scene.body })
     : { text: styleContract(), abbreviated: 0 }
 
-  const pack = at
-    ? buildContextPack(canon, { at, events: scene?.events ?? [], pov })
-    : buildContextPack(canon, { chapter: subject.chapter })
+  // THE RECORD, FOR A SLICE THAT ASKS FOR IT. A reading that declares
+  // neither the record nor what is live here is not paying for the pack:
+  // building one needs a chapter or a moment to anchor to, and a pass whose
+  // subject is a handful of words the author highlighted has neither
+  // (A69-10, the same rule the handoff, position and voice layers follow).
+  const wantsRecord = (row.slice.layers as readonly string[]).some(l => l === 'canon' || l === 'dramatic-condition')
+  const pack = !wantsRecord
+    ? ''
+    : at
+      ? buildContextPack(canon, { at, events: scene?.events ?? [], pov })
+      : buildContextPack(canon, { chapter: subject.chapter })
   // The scene's moment, as the pack anchors it: the end of the chapter's
   // span — or nothing, when the span states no date.
   const T = at ? dk(at, true) : undefined
@@ -504,9 +512,14 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
       ...(canon.events?.[e]?.witnesses ?? []),
     ]),
   ])]
-  // Read once, for every layer that wants them.
-  const material = materialItems()
-  const scenes = proseScenes()
+  // Read once, for every layer that wants them — and only if one does. Both
+  // are uncached reads of the whole story: every file under `prose/`, every
+  // `material/*.yaml`. A reading whose subject is a handful of words the
+  // author highlighted declares neither and must not pay for them (A69-10).
+  const declares = (l: string): boolean => (row.slice.layers as readonly string[]).includes(l)
+  const needsStory = ['handoff', 'position', 'voice', 'dramatic-condition'].some(declares)
+  const material = needsStory ? materialItems() : []
+  const scenes = needsStory ? proseScenes() : []
 
   // WHO IS HERE. A written scene names them; a scene arc is about to draft
   // names nobody, so the chapter's own cast stands in — the people its other
@@ -620,6 +633,15 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
     })(),
 
     (() => {
+      // Only a slice that declares it pays for it: this layer walks the
+      // obligation graph over every scene and every filed thought.
+      if (!declares('dramatic-condition')) {
+        return {
+          layer: 'dramatic-condition' as const, ids: [],
+          reason: 'how the people here stand to each other, and what the story owes in this chapter',
+          status: 'none' as const, text: '', because: 'not a layer of this reading',
+        }
+      }
       // A scene not yet written binds nobody, so who is HERE is read from
       // the chapter — as the voice layer does. Without it a draft's brief
       // carries the point of view's stances alone, and this layer's whole

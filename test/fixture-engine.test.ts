@@ -178,7 +178,9 @@ for (const s of SCENARIOS) {
     // paragraph — U4's whole premise. A drafting row is writing a scene that
     // does not exist; there is no current prose for it to be kept from, and
     // asserting otherwise would be testing the harness's memory of slice 1.
-    if (s.row.startsWith('explore.')) {
+    // The synonym row explores too, and withholds nothing: its subject is
+    // the words the author highlighted, so it has its own branch below.
+    if (s.row.startsWith('explore.') && s.row !== 'explore.selection.one-shot') {
       const paras = paragraphsOf(scene().body)
       paras.forEach((p, i) => {
         if (i === 1) assert.ok(rendered.brief.includes(p), 'the locked paragraph is in the brief, verbatim')
@@ -218,6 +220,25 @@ for (const s of SCENARIOS) {
         assert.match(draft.reply, /would not keep it|could not run|does not fit your record|did not check out/,
           'and the refusal says so in the author\'s words')
       }
+      return
+    }
+
+    // THE WRITER'S MENU (A69-10). Both rows answer with a list and write
+    // NOTHING — that is the whole of what they are, so the assertion that
+    // matters most is the one about the scene on disk.
+    if (s.row === 'revise.selection.one-shot.quick' || s.row === 'explore.selection.one-shot') {
+      const out = result as unknown as { suggestions: string[]; register: string; run?: string }
+      assert.ok(out.run, 'the response names the run that offered them')
+      assert.ok(out.suggestions.length >= 3 && out.suggestions.length <= 6, 'three to six wordings')
+      assert.equal(out.register, 'argued', 'a list the author picks from, never a verdict')
+      assert.deepEqual(paragraphsOf(proseScenes().find(x => x.scene === SCENE)!.body), PRISTINE,
+        'and the scene on disk is untouched — the menu writes nothing, ever')
+      // The pass is shown the author's contract and the words they pointed
+      // at, and nothing else of the book.
+      assert.match(rendered.brief, /THE SELECTION/)
+      assert.match(rendered.brief, /THE AUTHOR'S STYLE CONTRACT/)
+      assert.ok(!rendered.brief.includes('THE RECORD AT THIS MOMENT'), 'no canon')
+      assert.ok(!rendered.brief.includes(PRISTINE[0]), 'and not the scene it was selected from')
       return
     }
 

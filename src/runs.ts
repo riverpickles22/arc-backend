@@ -175,16 +175,20 @@ export function endRun(id: string, ending: RunEnding, detail?: unknown, state?: 
   // The first ending wins, here as in the record: a failure on the way out
   // of a run the author already stopped does not relabel it.
   if (OVER.has(e.state)) return summarise(e)
-  for (const l of e.launches) l.stop()
-  e.launches.clear()
   // THE STATE IS USUALLY THE ENDING'S, and sometimes the caller knows
   // better. A caller that overrides it owes the run a way OUT of the state
   // it names: `waiting for you` is left only by a decision on an outcome, so
   // a run parked there without one stays there for the life of the process.
-  e.state = state ?? stateOfEnding(ending)
-  if (e.state === 'waiting for you' && !e.outcome) {
+  // Checked BEFORE anything is stopped or set: a guard that fires halfway
+  // leaves the run's children killed, its state already moved and no
+  // `run.ended` on its record — worse than what it refuses.
+  const next = state ?? stateOfEnding(ending)
+  if (next === 'waiting for you' && !e.outcome) {
     throw new Error(`run ${id} was put in "waiting for you" with nothing to decide on — it could never leave that state`)
   }
+  for (const l of e.launches) l.stop()
+  e.launches.clear()
+  e.state = next
   e.run.end(ending, detail)
   return summarise(e)
 }

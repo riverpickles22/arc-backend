@@ -213,10 +213,27 @@ async function runMinimalRevision(
         : [...brief.blocks, { id: 'repair', text: refusal, cached: false }],
     })
 
-  const nothing = (ending: 'refused' | 'could not run' | 'cancelled' | 'unreadable', reply: string): WorkNotesResponse => {
+  /** The job stopped, and nothing more will be written. `already` is what
+   *  EARLIER clusters put in the draft layer before this one was refused:
+   *  writes are serial, so a refusal on the third cluster does not unwrite
+   *  the first two, and telling the author nothing moved while prose sits in
+   *  the draft layer and on the ledger is the one thing this must not say
+   *  (A69-10 review). */
+  const nothing = (
+    ending: 'refused' | 'could not run' | 'cancelled' | 'unreadable',
+    reply: string,
+    already: { wrote: boolean; file: string } = { wrote: false, file: scene.file },
+  ): WorkNotesResponse => {
     closeReceipt(ctx, ending)
-    endRun(run.id, ending, { refused: reply })
-    return { scene: t.scene, mode: 'revise', notes: ids, file: scene.file, changed: false, conflicts: [], reply, run: run.id }
+    endRun(run.id, ending, { refused: reply, ...(already.wrote ? { landed_before_refusal: already.file } : {}) })
+    return {
+      scene: t.scene, mode: 'revise', notes: ids,
+      file: already.file, changed: already.wrote, conflicts: [],
+      reply: already.wrote
+        ? `${reply} What arc had already worked into ${t.scene} before that is waiting in the manuscript — read it, then accept or discard.`
+        : reply,
+      run: run.id,
+    }
   }
 
   try {
@@ -338,20 +355,21 @@ async function runMinimalRevision(
         // word, so the countable style rules measure only what it wrote.
         gateCtx: { ...writeGateCtx(live, canon), validate, exemptUnchanged: true },
       })
+      const sofar = { wrote, file: lastFile }
       if (stateOf(run.id) === 'cancelled') {
-        return nothing('cancelled', outcomeSentence({ ending: 'cancelled', gates: receipt.gates }) ?? 'you stopped it before it landed.')
+        return nothing('cancelled', outcomeSentence({ ending: 'cancelled', gates: receipt.gates }) ?? 'you stopped it before it landed.', sofar)
       }
       if (!out.ok) {
         const ending = endingOf([{ kind: out.kind, gateRefused: out.gateRefused, unreadable: out.unreadable }], false)
         return nothing(ending as 'refused' | 'could not run' | 'unreadable',
-          outcomeSentence({ ending, gates: receipt.gates }) ?? out.reason)
+          outcomeSentence({ ending, gates: receipt.gates }) ?? out.reason, sofar)
       }
       const body = out.checked.body.trim()
       const next = fileOf(body)
       const check = writeValidated(live.file, next)
       if (!check.ok) {
         return nothing('could not run',
-          `arc could not write that revision into your story — ${check.output.split('\n')[0]}. Nothing was written.`)
+          `arc could not write that revision into your story — ${check.output.split('\n')[0]}. Nothing was written.`, sofar)
       }
       recordGenerated(live.file, next, {
         engine: currentEngine() ?? 'fixture', scene: live.scene, origin: 'revise',

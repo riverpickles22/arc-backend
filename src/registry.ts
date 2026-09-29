@@ -109,6 +109,8 @@ export type GateId =
    *  receipt says what is NOT yet checked (A69-9); it judges nothing until
    *  slice 3 builds it. */
   | 'blast-radius'
+  /** three to six drop-in strings, each with something in it (A69-10) */
+  | 'options-shape'
 
 /** How the answer is shaped, so a gate can read it without a model. */
 /** THE CRAFT MOVES (A69-4; §4, "The craft plan"). Q11, decided by the author
@@ -158,6 +160,11 @@ export type AnswerShape =
   /** the revised scene body alone: no frontmatter, no briefing, because a
    *  minimal revision answers instructions and has nothing to argue (A69-9) */
   | 'body-only'
+  /** one fenced JSON array of drop-in strings — three to six wordings the
+   *  author picks one of, or none. The pass writes nothing, so there is no
+   *  prose to gate and no briefing to argue: what the gates do here is drop
+   *  an option, never refuse the answer (A69-10) */
+  | 'options'
 
 /** What a withholding row withholds, declared on the ROW rather than known
  *  by the pass (§4, envelope rule 4; A67-7). The leak gate reads this to
@@ -901,13 +908,129 @@ export const ROW_REVISE_SCENE_STAGED: StagedRow = {
   ],
 }
 
+/** THE WRITER'S MENU (A69-10). Two passes that offer wordings and write
+ *  NOTHING: rephrase, which answers the author's own style contract, and
+ *  synonyms, which answers their book's period and register. Sealed, not
+ *  staged — a craft plan translates an effect into craft for a pass that is
+ *  about to write prose, and neither of these is; §4 names the craft plan on
+ *  U1-U6 and U15, and the menu is none of them.
+ *
+ *  Their rules moved here from suggest.ts, where the pass composed its own
+ *  brief and called the seam bare. Rewritten for the sealed passes they now
+ *  describe: no tools, the brief is everything.
+ */
+export const REPHRASE_RULES = `You are arc's REPHRASE pass. The author selected a passage of their novel
+and wants alternatives — in THEIR voice, not yours.
+
+THE CONTRACT BELOW IS BINDING. Every alternative must obey the author's own
+style rules; an alternative that "improves" the line by breaking a rule is
+worthless, and arc will drop it before the author ever sees it. Match the
+passage's tense and point of view. Keep roughly its length unless the rules
+demand tighter.
+
+YOU HAVE NO TOOLS. Nothing is fetched, nothing is read, nothing is written by
+you — not even the option the author picks, which is theirs to place. What
+you answer with is the whole of what arc receives.
+
+Offer 3 to 5 alternatives, each a complete drop-in replacement for the
+selection alone — never the surrounding text. No commentary, no ranking,
+no explanation.
+
+Answer with a JSON array of strings and nothing else.`
+
+export const SYNONYM_RULES = `You are arc's SYNONYM pass. The author selected a word or short phrase and
+wants alternatives, the way a thesaurus offers them — but one that knows
+their book.
+
+YOU HAVE NO TOOLS. Nothing is fetched, nothing is read, nothing is written by
+you. What you answer with is the whole of what arc receives.
+
+Offer 3 to 6 alternatives. Each entry is the replacement, then " — ", then
+ONE clause of nuance: what shade this choice carries. If a word would break
+the story's period or register (the scene context below tells you when and
+where the book lives), either omit it or say so in the nuance clause.
+
+The replacement before the " — " must be a drop-in for the selection: same
+part of speech, same case.
+
+Answer with a JSON array of strings and nothing else.`
+
+/** What the menu is shown: the author's ratified contract, and nothing else
+ *  of the record. The selection, the paragraph it sits in and the scene's
+ *  own line are the ASK — what the author pointed at a moment ago — and they
+ *  travel in the assignment, where a gesture belongs (A69-8's assignment
+ *  does the same with a passage and its seams). Nothing here drops: a menu
+ *  with no contract is a generic "improve this" button, which is the one
+ *  thing these passes exist not to be. */
+const MENU_SLICE: SliceSpec = { id: 'menu', layers: ['promoted-rules'], floor: ['promoted-rules'], dropOrder: [] }
+
+/** WHAT A REPHRASE'S OPTIONS ARE CHECKED AGAINST: that there are between
+ *  three and six of them with something in each, and then the two countable
+ *  rules the author ratified — run over EACH OPTION, so one that breaks a
+ *  rule is DROPPED and counted rather than refusing the whole menu. Five
+ *  wordings of which one runs long is four good wordings and a near miss,
+ *  and throwing the four away to punish the one helps nobody.
+ *
+ *  Synonyms carry the shape gate alone: a replacement word plus a clause of
+ *  nuance is not a sentence of the book, and measuring it against a sentence
+ *  rule would drop every entry the moment a contract states one. */
+const REPHRASE_GATES: readonly GateId[] = ['options-shape', 'and-chain', 'sentence-length']
+const SYNONYM_GATES: readonly GateId[] = ['options-shape']
+
+/** Three to six wordings, cheap and fast: the author is waiting with a
+ *  selection highlighted, and nothing is written whatever comes back. */
+const MENU_BUDGET = { outputTokens: 1_500, wallClockMs: 5 * 60 * 1000, inputTokens: 16_000 }
+
+/** U-the-menu's two rows (A69-10). Sealed, not withholding: the pass is
+ *  handed the very words it is rephrasing, so there is nothing to withhold
+ *  and nothing to abbreviate in the contract (A69-2's rule).
+ *
+ *  WHY `depth: 'quick'` ON REPHRASE, AND WHY THAT IS A QUESTION FOR THE
+ *  AUTHOR. `revise · selection · one-shot · standard` is already U3's clean
+ *  pass over a passage (A69-8), and rephrase is the same job at the same
+ *  scope in the same mode. Depth is the only axis left, and A69-9 met the
+ *  same collision between U2 and U3 and answered it the same way: the
+ *  lighter register is the QUICK pass and the rebuild is the STANDARD one.
+ *  So the three registers of Revise over a passage now read as one ladder —
+ *  offer me wordings, work my notes, rebuild it — which is how an author
+ *  would rank them. What it leans on is that "quick" means LIGHTER rather
+ *  than FASTER; a rephrase is both, but A69-9's minimal revision is only the
+ *  first. Recorded on A69-10 for the author, beside A69-9's. Synonyms need
+ *  none of this: `explore · selection · one-shot` collides with nothing. */
+export const ROW_REPHRASE: SealedRow = {
+  job: 'revise', scope: 'selection', mode: 'one-shot', depth: 'quick', stage: null,
+  pattern: 'sealed',
+  withholding: false,
+  slice: MENU_SLICE,
+  envelope: ROUTE_ENVELOPE,
+  gates: REPHRASE_GATES,
+  answer: 'options',
+  budget: MENU_BUDGET,
+  rules: REPHRASE_RULES,
+  fixtures: ['lands'],
+}
+
+export const ROW_SYNONYMS: SealedRow = {
+  job: 'explore', scope: 'selection', mode: 'one-shot', depth: 'standard', stage: null,
+  pattern: 'sealed',
+  withholding: false,
+  slice: MENU_SLICE,
+  envelope: ROUTE_ENVELOPE,
+  gates: SYNONYM_GATES,
+  answer: 'options',
+  budget: MENU_BUDGET,
+  rules: SYNONYM_RULES,
+  fixtures: ['lands'],
+}
+
 // ---- the table ---------------------------------------------------------------
 
 export const ROWS: readonly Row[] = [
   ROW_EXPLORE_SCENE, ROW_EXPLORE_ROUTE, ROW_DRAFT_SCENE,
   // The clean pass first, so a gesture that says nothing about depth gets
-  // the standard register rather than the minimal one.
-  ROW_REVISE_SCENE, ROW_REVISE_SELECTION, ROW_REVISE_SCENE_STAGED,
+  // the standard register rather than a lighter one.
+  ROW_REVISE_SCENE, ROW_REVISE_SELECTION, ROW_REVISE_SCENE_STAGED, ROW_REPHRASE,
+  ROW_SYNONYMS,
 ]
 
 /** The row for a cell, or nothing: a job × scope × mode the rows do not

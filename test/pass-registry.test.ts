@@ -75,7 +75,7 @@ test('every launch in src names a pass or carries a row, and every pass it names
   // stopped matching anything, which would make every assertion below pass
   // vacuously. It falls with the ratchet — nine bare launches and the gate
   // runner's one rowed one — so a migration lowers both in the same change.
-  assert.ok(sites.length >= 9, `expected the backend's launch sites, found ${sites.length}`)
+  assert.ok(sites.length >= 8, `expected the backend's launch sites, found ${sites.length}`)
 
   const silent = sites.filter(s => s.pass === null && !s.rowed)
   assert.deepEqual(silent, [],
@@ -88,12 +88,13 @@ test('every launch in src names a pass or carries a row, and every pass it names
 
 /** THE RATCHET (A67-1; agent-workflows §11, "drift protection starts with
  *  the first row"). Seam launches that carry no registry row — a pass named
- *  by string, with the interim PASS_REGISTRY deciding its tools. Eight
- *  today, across eight passes: draft took its row in A69-3 and its two sites
- *  went with it, redraft in A69-8 and revise in A69-9, as reroute's did in
- *  slice 1. The count may only fall — a migration lowers this number in the
- *  same change, and a new bare launch fails here. */
-const BARE_SEAM_CALLS = 8
+ *  by string, with the interim PASS_REGISTRY deciding its tools. Seven
+ *  today, across seven passes: draft took its row in A69-3 and its two sites
+ *  went with it, redraft in A69-8, revise in A69-9 and suggest in A69-10 —
+ *  which gave rephrase and synonyms a row each — as reroute's did in slice
+ *  1. The count may only fall — a migration lowers this number in the same
+ *  change, and a new bare launch fails here. */
+const BARE_SEAM_CALLS = 7
 
 test(`the ratchet: ${BARE_SEAM_CALLS} seam launches carry no row, and the count may only fall`, () => {
   const bare = launchSites().filter(s => !s.rowed)
@@ -102,7 +103,7 @@ test(`the ratchet: ${BARE_SEAM_CALLS} seam launches carry no row, and the count 
     `${bare.length} launches carry no row, more than the ${BARE_SEAM_CALLS} recorded — a new launch must take a registry row, never a pass name: ${where}`)
   assert.equal(bare.length, BARE_SEAM_CALLS,
     `${bare.length} launches carry no row, fewer than the ${BARE_SEAM_CALLS} recorded — a pass migrated; lower BARE_SEAM_CALLS in the same change: ${where}`)
-  assert.equal(new Set(bare.map(s => s.file)).size, 8, 'across eight passes')
+  assert.equal(new Set(bare.map(s => s.file)).size, 7, 'across seven passes')
   const rowed = launchSites().filter(s => s.rowed)
   assert.deepEqual(rowed.map(s => s.file), ['gates.ts'], 'the one rowed launch is the gate runner\'s, and it serves every rowed pass')
 })
@@ -125,11 +126,13 @@ const recorded = (): string[][] =>
   fs.readFileSync(argvFile, 'utf8').trim().split('\n').map(l => JSON.parse(l) as string[])
 
 test('every reading pass really launches with an empty toolbelt, argv recorded from the spawn', async () => {
-  // The six the author pinned on 2026-09-11. The point is the whole path —
-  // call site to registry to builder to spawn — not the builder alone, which
-  // invocation.test.ts covers. Read from the child's own argv, so a change
-  // anywhere along that path shows up here.
-  for (const pass of ['analyze', 'judge', 'suggest', 'intent', 'lenses', 'bootstrap'] as const) {
+  // What is left of the six the author pinned on 2026-09-11: `suggest` went
+  // with A69-10, which gave rephrase and synonyms a row each, and a rowed
+  // pass carries its envelope on the row rather than a pin here. The point
+  // is the whole path — call site to registry to builder to spawn — not the
+  // builder alone, which invocation.test.ts covers. Read from the child's
+  // own argv, so a change anywhere along that path shows up here.
+  for (const pass of ['analyze', 'judge', 'intent', 'lenses', 'bootstrap'] as const) {
     await runCliPrompt('read this', { pass })
     const argv = recorded().at(-1)!
     const i = argv.indexOf('--tools')

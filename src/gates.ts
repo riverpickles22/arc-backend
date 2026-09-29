@@ -163,6 +163,27 @@ export function boundIds(sceneFile: string): string[] {
   return [...new Set(ids)]
 }
 
+/** THE WORDINGS A MENU PASS OFFERED, or `null` when there is no list to
+ *  read (A69-10). Told apart the way A69-9 tells an empty conflict list from
+ *  an unreadable one: `[]` would mean the pass looked and had nothing to
+ *  offer, which is not an answer to "give me three to six wordings", so the
+ *  shape gate refuses that too — but the author's sentence differs, and the
+ *  receipt should say which happened. Junk entries are dropped, as the
+ *  tolerant parse this file already uses everywhere does. */
+export function parseOptions(text: string): string[] | null {
+  const raw = stripFences(text)
+  const start = raw.indexOf('[')
+  const end = raw.lastIndexOf(']')
+  if (start < 0 || end < start) return null
+  try {
+    const parsed: unknown = JSON.parse(raw.slice(start, end + 1))
+    if (!Array.isArray(parsed)) return null
+    return parsed.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map(x => x.trim())
+  } catch {
+    return null
+  }
+}
+
 /** What the countable style gates do not measure: the locked paragraphs
  *  always, and — for a row whose register returns prose unchanged — every
  *  paragraph the answer handed back exactly as it found it. A rule the
@@ -326,6 +347,23 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
   // nothing to check", and there is: "minimal" is the claim the row makes
   // loudest. `could not judge` reaches the author as NOT CHECKED, never as
   // passed, and the bar_from line says why.
+  /** THREE TO SIX WORDINGS, EACH WITH SOMETHING IN IT. The menu passes
+   *  answer with a list and write nothing, so this is the whole of what a
+   *  gate can prove about the answer's shape (A69-10). Fewer than three is
+   *  not a menu; more than six is a pass avoiding a decision. */
+  'options-shape': (_ctx, a) => {
+    const options = parseOptions(a.body)
+    if (options === null) {
+      return refuse('arc could not read those wordings, so it has none to show you. Ask again.',
+        { stage: 'answer', bar: 'a json array of 3 to 6 wordings', bar_from: "the row's answer shape" })
+    }
+    if (options.length < 3 || options.length > 6) {
+      return refuse(
+        `that pass offered ${options.length} wording${options.length === 1 ? '' : 's'} where arc asks for 3 to 6 — ask again.`,
+        { stage: 'answer', bar: '3 to 6', measured: options.length, bar_from: "the row's answer shape" })
+    }
+    return held({ stage: 'answer', bar: '3 to 6', measured: options.length, bar_from: "the row's answer shape" })
+  },
   'blast-radius': () => ({
     verdict: 'could not judge',
     record: { stage: 'answer', bar: 'no paragraph changes that no handed note anchors to', bar_from: 'designed, slice 3 — arc does not check this yet' },
@@ -421,6 +459,56 @@ export function runRowGates(row: LaunchSpec, ctx: ProseGateCtx, text: string, at
     }
     gates.push({ gate: 'shape', verdict: 'held', attempt, ...(launch ? { launch } : {}), stage: 'answer' })
     return { ok: true, body: text, briefing: '', coverage: null, dropped: [], returned: 0, overlap: null, gates }
+  }
+  // A MENU IS NOT A DRAFT, so a rule it breaks costs it an OPTION and never
+  // the answer (A69-10). The shape gate runs on the list; every other gate
+  // the row names runs once per wording, and a wording that breaks one is
+  // dropped and counted on the receipt. Five wordings of which one runs long
+  // are four good wordings, and throwing the four away helps nobody.
+  if (row.answer === 'options') {
+    const shaped: ParsedAnswer = { body: text, prose: '', briefing: '', coverage: null, dropped: [], returned: 0, overlap: null, leansOn: null }
+    const shape = GATES['options-shape']!(ctx, shaped)
+    gates.push({ gate: 'options-shape', verdict: shape.verdict, attempt, ...(launch ? { launch } : {}), ...shape.record })
+    if (shape.verdict === 'refused') {
+      return { ok: false, reason: shape.reason, gates, unreadable: parseOptions(text) === null }
+    }
+    const offered = parseOptions(text) ?? []
+    let kept = offered
+    for (const id of row.gates) {
+      if (id === 'leak' || id === 'options-shape') continue
+      const fn = GATES[id]
+      if (!fn) {
+        gates.push({ gate: id, verdict: 'could not judge', attempt, ...(launch ? { launch } : {}), stage: 'answer', bar_from: 'this arc has no implementation for that gate' })
+        return { ok: false, reason: `arc could not check ${id} on those wordings, so it has none to show you. Ask again.`, gates }
+      }
+      const verdicts = kept.map(option => ({ option, v: fn(ctx, { ...shaped, body: option, prose: option }) }))
+      const dropped = verdicts.filter(x => x.v.verdict === 'refused')
+      kept = verdicts.filter(x => x.v.verdict !== 'refused').map(x => x.option)
+      gates.push({
+        gate: id,
+        // A DROP IS NOT A REFUSAL while anything survives: the gate did its
+        // work and the answer stands, lighter. When it takes the LAST
+        // wording there is no answer left, and the receipt must say the gate
+        // refused — `outcomeSentence` reads the refused record to tell the
+        // author which rule cost them the menu (A69-10 review).
+        verdict: !kept.length && verdicts.length ? 'refused'
+          : dropped.length ? 'held'
+            : verdicts.length ? verdicts[0].v.verdict : 'not applicable',
+        attempt, ...(launch ? { launch } : {}), stage: 'answer',
+        ...(verdicts[0]?.v.record.bar !== undefined ? { bar: verdicts[0].v.record.bar } : {}),
+        ...(verdicts[0]?.v.record.bar_from ? { bar_from: verdicts[0].v.record.bar_from } : {}),
+        measured: `${dropped.length} of ${verdicts.length} dropped`,
+        ...(dropped.length ? { measured_against: dropped.map(x => x.option) } : {}),
+      })
+    }
+    if (!kept.length) {
+      return {
+        ok: false,
+        reason: 'every wording that pass offered breaks a rule you ratified, so arc has none to show you. Ask again.',
+        gates,
+      }
+    }
+    return { ok: true, body: JSON.stringify(kept), briefing: '', coverage: null, dropped: [], returned: 0, overlap: null, gates }
   }
   if (row.answer === 'craft-plan') {
     const plan = parseCraftPlan(text)

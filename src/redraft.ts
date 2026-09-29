@@ -37,7 +37,7 @@ import type { CanonDoc } from 'arc-canon-graph'
 import { STORY } from './config'
 import { openNotesOn } from './annotations'
 import { canonJson } from './canon'
-import { cellOf, planFirst, writeValidated } from './draft'
+import { cellOf, leansOnSentence, planFirst, writeValidated } from './draft'
 import { currentEngine } from './engine'
 import { runGates, type ProseGateCtx } from './gates'
 import { HttpError } from './http'
@@ -356,10 +356,7 @@ export async function runRedraft(t: RedraftTarget, given?: CraftPlanned | null):
     closeReceipt(ctx, 'landed')
     endRun(run.id, 'landed', { landed: [t.scene] })
 
-    const aged = receipt.slice?.leaned_on ?? []
-    const agedLine = aged.length
-      ? ` It leans on ${aged.map(l => `${l.id} as of ${l.as_of}`).join(', ')} — the record has not looked since.`
-      : ''
+    const agedLine = leansOnSentence(receipt.slice?.leaned_on)
     const where = range ? `¶${range.from + 1}–¶${range.to + 1} of ${t.scene}` : t.scene
     return {
       reply: [
