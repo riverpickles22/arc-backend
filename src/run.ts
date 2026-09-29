@@ -560,6 +560,9 @@ const GATE_WORDS: Record<string, string> = {
   'coverage-tail': 'the answer did not say where the beats land',
   validator: 'the answer did not validate',
   'leaned-on': 'what the draft rests on did not check out',
+  'options-shape': 'the wordings did not come back as a list arc could read',
+  'blast-radius': 'the revision changed prose no note asked about',
+  'plan-vocabulary': 'the craft it came back with is not something arc can ask a writing pass for',
 }
 
 /** WHAT A GATE CHECKS, as a name rather than as a failure. `GATE_WORDS` above
@@ -581,6 +584,12 @@ const GATE_NAMES: Record<string, string> = {
   'leaned-on': 'what the prose rests on is settled',
   shape: 'the answer came back in two parts',
   engine: 'the pass ran',
+  'options-shape': 'a readable list of wordings',
+  'plan-vocabulary': 'the craft is something arc can ask for',
+  // Declared by U2's row and not built until slice 3, so the receipt can say
+  // what is NOT yet checked. A name it can be listed under is the whole
+  // point of declaring it early (A69-9).
+  'blast-radius': 'the revision stayed where the notes are',
 }
 export const gateName = (gate: string): string => GATE_NAMES[gate] ?? `the ${gate} check`
 

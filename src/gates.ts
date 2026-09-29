@@ -500,6 +500,12 @@ export function runRowGates(row: LaunchSpec, ctx: ProseGateCtx, text: string, at
         measured: `${dropped.length} of ${verdicts.length} dropped`,
         ...(dropped.length ? { measured_against: dropped.map(x => x.option) } : {}),
       })
+      // ONCE THE MENU IS EMPTY THE WALK IS OVER. Running on would push a
+      // record for every later gate reading `not applicable · 0 of 0`, which
+      // says the rule was checked and did not apply when it was never run —
+      // and the receipt is the one place that must not overstate what arc
+      // looked at (A69-12 review).
+      if (!kept.length) break
     }
     if (!kept.length) {
       return {

@@ -187,6 +187,16 @@ async function runMinimalRevision(
     assembleWritingSlice({ ...row, slice: stage.slice, budget: stage.budget }, subject,
       { stage: stage.id === 'craft-plan' ? 'craft-plan' : 'write', intent: intent ?? {} })
 
+  // AND NO ENGINE AT ALL IS A FREE REFUSAL, here rather than only at the
+  // route: the terminal is a first-class caller and reaches the same
+  // operations the viewer does. Without it the pass mints a run, writes a
+  // receipt and assembles the whole brief before failing in the seam, and
+  // the author gets `could not run` where they could have had a sentence
+  // naming the one thing to do (A69-12 review).
+  if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
+    throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+  }
+
   // The run opens on the CONFLICT stage's slice, because that is the first
   // thing sent. Later stages add their own briefs to the same receipt.
   const first = sliceFor(conflictStage)
@@ -195,7 +205,7 @@ async function runMinimalRevision(
     withheld: [],
     dropped: first.forReceipt().dropped_for_budget,
     read: [{ id: `slice:${t.scene}:conflict`, version: sha16(first.render()) }],
-  })
+  }, t.source ?? 'ui')
   const { run, receipt } = ctx
   receipt.notes_handed = handed.map(n => ({ id: n.id, by: (n.by ?? 'author') as 'author' | 'agent' }))
   receipt.intent = { said: said || null, plan: null, ...(said ? {} : { note: 'nothing to translate' }) }

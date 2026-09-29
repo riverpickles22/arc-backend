@@ -221,6 +221,16 @@ export async function runRedraft(t: RedraftTarget, given?: CraftPlanned | null):
       'Log in with  claude  and ask again, or remove ANTHROPIC_API_KEY from arc-backend/.env.')
   }
 
+  // AND NO ENGINE AT ALL IS A FREE REFUSAL, here rather than only at the
+  // route: the terminal is a first-class caller and reaches the same
+  // operations the viewer does. Without it the pass mints a run, writes a
+  // receipt and assembles the whole brief before failing in the seam, and
+  // the author gets `could not run` where they could have had a sentence
+  // naming the one thing to do (A69-12 review).
+  if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
+    throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+  }
+
   const said = t.guidance?.trim() ?? ''
   const subject = { chapter: scene.chapter, scene, ...(range ? { range: [range.from, range.to] as [number, number] } : {}) }
 

@@ -14,7 +14,7 @@ import type { ResolvedRequest } from './request'
 import type { LayerReading, LeanedOn } from './slice'
 import type { Row } from './registry'
 import { jobFingerprint } from './registry'
-import { Run, emptyReceipt, writeWorkingReceipt, type Receipt } from './run'
+import { Run, emptyReceipt, writeWorkingReceipt, type Receipt, type Source } from './run'
 import { arcRevision } from './records'
 import { registerRun } from './runs'
 import type { RunEnding } from 'arc-canon-graph'
@@ -42,8 +42,12 @@ export interface SliceUsed {
  *  to, what produced it, what the slice held and what it read. A receipt that
  *  only appears when a pass succeeds cannot describe the passes that did not,
  *  and those are the ones the author most needs described. */
-export function openRowRun(request: ResolvedRequest, row: Row, slice: SliceUsed): RunCtx {
-  const run = new Run('ui', request.gesture, { subject: request.subject })
+export function openRowRun(request: ResolvedRequest, row: Row, slice: SliceUsed, source: Source = 'ui'): RunCtx {
+  // WHO ASKED, carried rather than assumed. The terminal and a Claude Code
+  // session reach the same operations the viewer does, and a run that says
+  // `ui` about all of them makes "who asked" wrong wherever the briefing,
+  // `/api/runs` and `arc doctor` show it (A69-12 review).
+  const run = new Run(source, request.gesture, { subject: request.subject })
   registerRun(run)
   const receipt = emptyReceipt(run)
   receipt.request = { gesture: request.gesture, cell: request.cell, subject: request.subject }

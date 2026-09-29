@@ -1459,8 +1459,14 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
   // own right.
   if (reissue && alternatives.length) {
     const byId = new Map(listAlternatives(t.scene).map(a => [a.id, a]))
+    // A VERSION CHAIN IS DATA ON DISK, so it is walked as data: a file whose
+    // `revises` points at itself, or two that point at each other, would
+    // otherwise spin here for ever with the request held open. The prune
+    // below guards the same walk the same way.
+    const walked = new Set<string>()
     let cur: RouteAlternative | undefined = byId.get(reissue.id)
-    while (cur) {
+    while (cur && !walked.has(cur.id)) {
+      walked.add(cur.id)
       const parent: RouteAlternative | undefined = cur.revises ? byId.get(cur.revises) : undefined
       removeAlternative(cur, 'superseded', `asked again — replaced by ${alternatives[0].id}`)
       cur = parent
