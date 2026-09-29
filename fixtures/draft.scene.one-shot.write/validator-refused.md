@@ -1,12 +1,12 @@
 ---
 row: draft.scene.one-shot.write
 name: validator-refused
-fingerprint: 90fee10df69af57f
+fingerprint: 9ad849feae301fa1
 expect: validator-refused
 scenario: >
   the same brief; the answer binds `char.the-inspector`, whom canon does not
   hold. The story's own validator refuses it and the file is put back.
-because: "the position layer marks the point of view's present state and places era-only states by the record's time; the ladder orders siblings by file order (A69-7 review)"
+because: "a state is aged from the last moment its precision covers, the dramatic condition carries everyone the chapter has on the page, and a passage is told only about the locks it must carry (A69-8 review)"
 ---
 ---
 scene: sc.01-2

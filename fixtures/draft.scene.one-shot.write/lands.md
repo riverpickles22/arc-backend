@@ -1,12 +1,12 @@
 ---
 row: draft.scene.one-shot.write
 name: lands
-fingerprint: caac4519615d18db
+fingerprint: b8e73495c854a559
 expect: lands
 scenario: >
   the worked example as shipped; draft the next scene of ch.01, no line said.
   The answer is a scene file that validates against the example's canon.
-because: "the position layer marks the point of view's present state and places era-only states by the record's time; the ladder orders siblings by file order (A69-7 review)"
+because: "a state is aged from the last moment its precision covers, the dramatic condition carries everyone the chapter has on the page, and a passage is told only about the locks it must carry (A69-8 review)"
 ---
 ---
 scene: sc.01-2

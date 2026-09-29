@@ -32,9 +32,9 @@
 // without, and the manifest says how many passages that cost. Constrain the
 // representation, never the record.
 import { HttpError } from './http'
-import type { CanonDoc, MaterialItem, ProseScene, ResolvedAnnotation, SceneContract } from 'arc-canon-graph'
+import type { CanonDoc, EraLike, MaterialItem, ProseScene, ResolvedAnnotation, SceneContract } from 'arc-canon-graph'
 import { buildContextPack } from 'arc-canon-graph/context-pack-lib.ts'
-import { dateOf, diffCharacter, dk, stateAt, timeRefKey } from 'arc-canon-graph/canon-graph.ts'
+import { dateOf, diffCharacter, dk, eraSpanKeys, stateAt, timeRefKey } from 'arc-canon-graph/canon-graph.ts'
 import type { TimeRef } from 'arc-canon-graph/canon-graph.ts'
 import { loadGraph } from 'arc-canon-graph'
 import { canonJson } from './canon'
@@ -176,6 +176,19 @@ function daysBetween(a: number, b: number): number {
   return days(b) - days(a)
 }
 
+/** THE LAST MOMENT A TIMEREF STILL COVERS. A state recorded `1910` with
+ *  year precision is a claim about the whole of 1910, so a scene in that
+ *  November is INSIDE it, not 360 days after its first instant. `timeRefKey`
+ *  collapses a timeref to its earliest moment, which is right for ordering
+ *  and wrong for age: measured from there, every year-precision state in a
+ *  late chapter reads as stale, and the author is told the record has not
+ *  looked since — a proven count that is not true. */
+function coversUntil(at: TimeRef, eras: EraLike[]): number {
+  if (at.date) return dk(at.date, true)
+  const era = eras.find(e => e.id === (at as { era?: string }).era)
+  return era ? eraSpanKeys(era)[1] : timeRefKey(at, eras)
+}
+
 /** The timeref as the record spells it — the date, else the era, with the
  *  precision when one is stated. */
 function asOf(at: TimeRef): string {
@@ -213,7 +226,8 @@ function canonWithStatus(
     if (T === undefined) return [`${indent}  as of: the chapter states no dated span, so how current this state is cannot be measured`]
     const st = stateAt(ent as { states: { at: TimeRef }[] }, T, eras)
     if (!st) return [`${indent}  as of: no state at this moment — nothing the record says about them applies yet`]
-    const age = daysBetween(timeRefKey(st.at, eras), T)
+    // Aged from the last moment the state still covers, not the first.
+    const age = daysBetween(coversUntil(st.at, eras), T)
     const lines = [`${indent}  as of: ${asOf(st.at)}`]
     if (freshness !== undefined && age > freshness) {
       leaned_on.push({ id, as_of: asOf(st.at), older_by_days: age - freshness })
@@ -314,6 +328,9 @@ export interface WritingSubject {
   scene?: ProseScene
   /** the id being written, for a draft whose scene does not exist yet */
   sceneId?: string
+  /** the paragraph range at selection scope, inclusive — what the pass is
+   *  asked to rebuild, and the only part of the scene it may answer with */
+  range?: [number, number]
 }
 
 /** Which stage of the job is being briefed. The craft plan is the one stage
@@ -479,7 +496,7 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
   const withStatus = canonWithStatus(canon, pack, T, row.slice.freshness)
   // Who is here: the point of view, whoever the scene binds, and whoever
   // takes part in or witnesses the events it depicts — the pack's own cast.
-  const present = [...new Set([
+  const present: string[] = [...new Set([
     ...(pov ? [pov] : []),
     ...(scene?.facts ?? []).filter(id => canon.entities?.[id]?.type === 'character'),
     ...(scene?.events ?? []).flatMap(e => [
@@ -490,6 +507,11 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
   // Read once, for every layer that wants them.
   const material = materialItems()
   const scenes = proseScenes()
+
+  // WHO IS HERE. A written scene names them; a scene arc is about to draft
+  // names nobody, so the chapter's own cast stands in — the people its other
+  // scenes bind and its events name. One list, for every layer that asks.
+  const here = scene ? present : [...new Set([...present, ...chapterCast(canon, subject.chapter, scenes)])]
 
   // ONLY THE AUTHOR'S NOTES REACH A WRITING PASS (§4, "Notes and key points,
   // `by: author` only"). A note arc wrote is arc's own reading, and handing
@@ -505,8 +527,19 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
 
   const literals = literalWithholds(scene?.contract?.must_withhold)
   const paras = scene ? paragraphsOf(scene.body) : []
+  // LOCKS THE ANSWER WILL HAVE TO CARRY. At scene scope that is every
+  // settled paragraph: the pass rebuilds the whole body and reproduces them
+  // in place. At SELECTION scope the pass answers with the passage alone
+  // (the rules say so), and everything outside the range is preserved by
+  // splicing — so a lock outside the range is not the pass's to reproduce,
+  // and telling it to would make it emit a paragraph that then lands twice
+  // and is refused by the very gate the notice exists to satisfy.
+  const inRange = (p: number): boolean =>
+    !subject.range || (p >= subject.range[0] && p <= subject.range[1])
   const locks = scene
-    ? locksOn(scene.scene, scene.body).filter(l => l.scope === 'paragraph' && l.resolution.paragraph !== null)
+    ? locksOn(scene.scene, scene.body)
+      .filter(l => l.scope === 'paragraph' && l.resolution.paragraph !== null)
+      .filter(l => inRange(l.resolution.paragraph as number))
     : []
   const b = (
     layer: WritingLayer, ids: string[], reason: string, text: string,
@@ -587,7 +620,11 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
     })(),
 
     (() => {
-      const live = dramaticCondition(canon, T, subject.chapter, present, material, scenes)
+      // A scene not yet written binds nobody, so who is HERE is read from
+      // the chapter — as the voice layer does. Without it a draft's brief
+      // carries the point of view's stances alone, and this layer's whole
+      // claim is every present person's.
+      const live = dramaticCondition(canon, T, subject.chapter, here, material, scenes)
       return b('dramatic-condition', live.ids,
         'how the people here stand to each other, and what the story owes in this chapter',
         live.text,
@@ -612,7 +649,7 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
     // chapter — the characters its other scenes bind and its events name —
     // so the voices of the people the draft will most likely meet are in the
     // brief, and a gap in the record is shown before the pass fills it.
-    voiceCandidate(row, canon, pov, scene ? present : [...present, ...chapterCast(canon, subject.chapter, scenes)], !scene),
+    voiceCandidate(row, canon, pov, here, !scene),
 
     // Q16 is open and this is the honest answer until it is settled.
     { layer: 'research', ids: [], reason: 'what the bound records cite', status: 'deferred', text: '',

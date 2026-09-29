@@ -14,7 +14,8 @@ process.env.ARC_STORY_PATH = makeStory()
 process.env.ARC_DRAFT_ENGINE = 'none'
 
 const {
-  ROWS, ROW_EXPLORE_SCENE, ROW_EXPLORE_ROUTE, ROW_DRAFT_SCENE, ROUTE_WALL_CLOCK_MS, ROUTE_OUTPUT_TOKENS,
+  ROWS, ROW_EXPLORE_SCENE, ROW_EXPLORE_ROUTE, ROW_DRAFT_SCENE, ROW_REVISE_SCENE, ROW_REVISE_SELECTION,
+  ROUTE_WALL_CLOCK_MS, ROUTE_OUTPUT_TOKENS,
   findRow, rowKey, jobFingerprint, rowStatus, readStatusReceipts, fixturesRecorded, registryStatus,
 } = await import('../src/registry.ts')
 const { PASS_REGISTRY } = await import('../src/invocation.ts')
@@ -22,8 +23,16 @@ const { buildReroutePrompt, buildRevisePrompt } = await import('../src/reroute.t
 const { loadFixtures } = await import('../src/fixtures.ts')
 const RECORDED = loadFixtures()
 
+/** Every row the table admits, in the order it lists them. One list, read by
+ *  the three tests that care, so a row added in one place cannot be missing
+ *  from another. */
+const ALL_ROWS = [
+  'explore.scene.one-shot', 'explore.route.one-shot', 'draft.scene.one-shot',
+  'revise.scene.one-shot', 'revise.selection.one-shot',
+]
+
 test('U4 and U5 are the first rows: sealed, withholding, keyed by their cell', () => {
-  assert.deepEqual(ROWS.map(rowKey), ['explore.scene.one-shot', 'explore.route.one-shot', 'draft.scene.one-shot'])
+  assert.deepEqual(ROWS.map(rowKey), ALL_ROWS)
   for (const row of [ROW_EXPLORE_SCENE, ROW_EXPLORE_ROUTE]) {
     assert.equal(row.pattern, 'sealed')
     assert.equal(row.withholding, true)
@@ -75,6 +84,12 @@ test('findRow answers a listed cell and nothing else — never a neighbour', () 
   assert.equal(findRow({ job: 'explore', scope: 'scene', mode: 'one-shot', depth: 'quick' }), undefined, 'a depth the rows do not carry is not mapped to standard')
   assert.equal(findRow({ job: 'draft', scope: 'scene', mode: 'one-shot' }), ROW_DRAFT_SCENE, 'draft took its row in A69-3')
   assert.equal(findRow({ job: 'draft', scope: 'chapter', mode: 'one-shot' }), undefined, 'and only at scene scope')
+  // U3 took two rows in A69-8: the clean pass over a scene, and over a
+  // selection of one. Scope is what tells them apart, and it is resolved
+  // from the gesture — a paragraph range is a selection.
+  assert.equal(findRow({ job: 'revise', scope: 'scene', mode: 'one-shot' }), ROW_REVISE_SCENE)
+  assert.equal(findRow({ job: 'revise', scope: 'selection', mode: 'one-shot' }), ROW_REVISE_SELECTION)
+  assert.equal(findRow({ job: 'revise', scope: 'chapter', mode: 'one-shot' }), undefined, 'and at no other scope')
 })
 
 test('the job fingerprint moves with the rules, the slice, the gates and the budget — not with the fixture list', () => {
@@ -151,7 +166,7 @@ test('receipts are read from history/, and one that does not parse attends nothi
 
 test('registryStatus reads the story\'s history and reports every row', () => {
   const status = registryStatus()
-  assert.deepEqual(status.map(s => s.key), ['explore.scene.one-shot', 'explore.route.one-shot', 'draft.scene.one-shot'])
-  assert.deepEqual(status.map(s => s.status), ['built', 'built', 'built'], 'no receipt in this story yet')
+  assert.deepEqual(status.map(s => s.key), ALL_ROWS)
+  assert.deepEqual(status.map(s => s.status), ALL_ROWS.map(() => 'built'), 'no receipt in this story yet')
   assert.equal(status[0].fingerprint, fp)
 })

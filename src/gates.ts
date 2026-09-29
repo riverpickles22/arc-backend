@@ -23,6 +23,7 @@
 // A gate never repairs; it refuses and says why. `could not judge` is not a
 // pass: the author reads it as *not checked*.
 import type { ResolvedLock } from 'arc-canon-graph'
+import { load as yamlLoad } from 'js-yaml'
 import type { DroppedClaim, RouteCoverage } from 'arc-canon-graph/api-types.ts'
 import { lockViolations } from 'arc-canon-graph/annotations.ts'
 import { EngineError, askRow, engineResumes, isDry, recordedEnvelope, stripFences, type Brief, type EngineErrorKind } from './engine'
@@ -79,6 +80,13 @@ export interface ProseGateCtx {
    *  lists is refused, never quietly passed. */
   settled?: string[]
   unsettled?: string[]
+  /** HOW THE ANSWER BECOMES THE SCENE (A69-8). At selection scope the pass
+   *  answers with one passage and the scene is that passage spliced into
+   *  its range, the surroundings untouched by construction. The gates that
+   *  measure the SCENE — the locks, their order — read the assembled text;
+   *  the ones that measure the pass's own prose read the answer. Absent,
+   *  the answer is the scene. */
+  assembled?: (prose: string) => string
 }
 
 /** The answer, split by the row's answer shape, as the gates read it. */
@@ -128,14 +136,17 @@ export function parseLeansOn(briefing: string): { briefing: string; leansOn: str
 export function boundIds(sceneFile: string): string[] {
   const fm = sceneFile.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
   if (!fm) return []
+  // PARSED, NEVER PATTERN-MATCHED. A block sequence is valid YAML flush with
+  // its key — `facts:\n- char.ines` — and a pattern that insists on an indent
+  // reads it as no bindings at all, which is this gate holding on an answer
+  // it never looked at. The story's own validator parses; so does this.
+  let meta: Record<string, unknown>
+  try { meta = (yamlLoad(fm[1]) ?? {}) as Record<string, unknown> } catch { return [] }
   const ids: string[] = []
   for (const key of ['facts', 'events']) {
-    const block = fm[1].match(new RegExp(`^${key}:[ \\t]*(\\[[^\\]]*\\]|(?:\\r?\\n[ \\t]+-[^\\n]*)+)`, 'm'))
-    if (!block) continue
-    const inner = block[1].startsWith('[')
-      ? block[1].slice(1, -1).split(',')
-      : block[1].split(/\r?\n/).map(l => l.replace(/^[ \t]+-/, ''))
-    ids.push(...inner.map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean))
+    const v = meta[key]
+    if (Array.isArray(v)) ids.push(...v.map(x => String(x).trim()).filter(Boolean))
+    else if (typeof v === 'string' && v.trim()) ids.push(v.trim())
   }
   return [...new Set(ids)]
 }
@@ -280,7 +291,7 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
         { stage: 'answer', bar: 'the story validates', measured: firstLine(check.output), bar_from: "the story's own validator" })
   },
   locks: (ctx, a) => {
-    const violated = lockViolations(ctx.sceneBody, a.prose, ctx.sceneLocks)
+    const violated = lockViolations(ctx.sceneBody, ctx.assembled ? ctx.assembled(a.prose) : a.prose, ctx.sceneLocks)
     const record = { measured: violated.length, bar: 0, bar_from: 'locks/', measured_against: ctx.sceneLocks.map(l => l.id), stage: 'answer' as const }
     return violated.length
       ? refuse(`touched locked prose — ${describeViolation(ctx.sceneName, violated[0])}`, record)
@@ -288,7 +299,7 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
   },
   'lock-order': (ctx, a) => {
     const record = { measured_against: ctx.sceneLocks.map(l => l.id), stage: 'answer' as const }
-    return ctx.lockOrderViolation(a.prose, ctx.lockedTexts)
+    return ctx.lockOrderViolation(ctx.assembled ? ctx.assembled(a.prose) : a.prose, ctx.lockedTexts)
       ? refuse('the locked paragraphs came back out of their settled order', record)
       : held(record)
   },

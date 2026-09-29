@@ -30,6 +30,7 @@ delete process.env.ANTHROPIC_AUTH_TOKEN
 
 const { runReroute, runRevise, addRouteNote } = await import('../src/reroute.ts')
 const { runDraft } = await import('../src/draft.ts')
+const { runRedraft } = await import('../src/redraft.ts')
 const { ROWS, rowKey } = await import('../src/registry.ts')
 const { observeBriefs } = await import('../src/fixtures.ts')
 
@@ -53,7 +54,7 @@ export interface Scenario {
   /** what the fixture's `expect` field must say. `leak` is the one that
    *  never reaches the engine: the gate proves the brief and refuses before
    *  the send (A67-7), so the scenario carries no recorded answer. */
-  expect: 'lands' | 'overlap' | 'coverage-drop' | 'leak' | 'validator-refused' | 'leaned-on'
+  expect: 'lands' | 'overlap' | 'coverage-drop' | 'leak' | 'validator-refused' | 'leaned-on' | 'lock-touched'
   /** the story state and request, in one breath — copied into the fixture */
   scenario: string
   prepare?: () => Promise<void>
@@ -159,6 +160,33 @@ export const SCENARIOS: Scenario[] = [
       const first = await runDraft('ch.01-ninety-one-stairs', 'more dread')
       return runDraft('ch.01-ninety-one-stairs', 'more dread', first.plan!)
     },
+  },
+  {
+    row: 'revise.scene.one-shot.craft-plan', name: 'plan-dread', expect: 'lands',
+    scenario: 'the worked example; the author said "more dread" about sc.01-1 and asked for a clean pass, and the reading turns it into craft',
+    run: () => runRedraft({ scene: SCENE, guidance: 'more dread' }),
+  },
+  {
+    row: 'revise.scene.one-shot.write', name: 'lands', expect: 'lands',
+    scenario: 'the worked example as shipped; a clean pass over the whole of sc.01-1, no line said — the answer rebuilds around the settled paragraph and keeps it word for word',
+    run: () => runRedraft({ scene: SCENE }),
+  },
+  {
+    row: 'revise.scene.one-shot.write', name: 'lock-touched', expect: 'lock-touched',
+    scenario: 'a clean pass the author asked for with a line, whose plan they settled as it stood — and the answer rewrites the paragraph they had settled. The locks gate refuses it whole, and the one repair has no recorded answer',
+    run: () => runRedraft({ scene: SCENE, guidance: 'harder on the stair' }, {
+      moves: [{ move: 'structure', how: 'put the step that costs her something first, and let the order follow it' }],
+    }),
+  },
+  {
+    row: 'revise.selection.one-shot.craft-plan', name: 'plan-dread', expect: 'lands',
+    scenario: 'the same line — "more dread" — said over a paragraph range of sc.01-1, so the request is selection scope and the reading is the selection row\'s own',
+    run: () => runRedraft({ scene: SCENE, paragraphs: [2, 3], guidance: 'more dread' }),
+  },
+  {
+    row: 'revise.selection.one-shot.write', name: 'lands', expect: 'lands',
+    scenario: 'a clean pass over ¶3–¶4 of sc.01-1 — the lamp room and the drive weight — no line said; the answer is the passage alone and its two seams are handed over unchanged',
+    run: () => runRedraft({ scene: SCENE, paragraphs: [2, 3] }),
   },
   rewrite('leak', 'leak',
     `the landed explore.scene.one-shot/lands route with one note on the whole route that quotes the manuscript — "${QUOTED_SENTENCE}" — so the brief would carry a sentence of the withheld prose. The leak gate refuses before the send.`,

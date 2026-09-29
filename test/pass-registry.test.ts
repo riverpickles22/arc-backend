@@ -71,7 +71,11 @@ const ACCOUNTED: Record<string, string> = {
 
 test('every launch in src names a pass or carries a row, and every pass it names has a row', () => {
   const sites = launchSites()
-  assert.ok(sites.length >= 11, `expected the backend's launch sites, found ${sites.length}`)
+  // A FLOOR ON THE SCANNER, not on the passes: it catches a regex that has
+  // stopped matching anything, which would make every assertion below pass
+  // vacuously. It falls with the ratchet — nine bare launches and the gate
+  // runner's one rowed one — so a migration lowers both in the same change.
+  assert.ok(sites.length >= 10, `expected the backend's launch sites, found ${sites.length}`)
 
   const silent = sites.filter(s => s.pass === null && !s.rowed)
   assert.deepEqual(silent, [],
@@ -84,12 +88,12 @@ test('every launch in src names a pass or carries a row, and every pass it names
 
 /** THE RATCHET (A67-1; agent-workflows §11, "drift protection starts with
  *  the first row"). Seam launches that carry no registry row — a pass named
- *  by string, with the interim PASS_REGISTRY deciding its tools. Ten today,
- *  across ten passes: draft took its row in A69-3 and its two sites went
- *  with it, as reroute's did in slice 1. The count may only fall — a
- *  migration lowers this number in the same change, and a new bare launch
- *  fails here. */
-const BARE_SEAM_CALLS = 10
+ *  by string, with the interim PASS_REGISTRY deciding its tools. Nine today,
+ *  across nine passes: draft took its row in A69-3 and its two sites went
+ *  with it, redraft in A69-8, as reroute's did in slice 1. The count may
+ *  only fall — a migration lowers this number in the same change, and a new
+ *  bare launch fails here. */
+const BARE_SEAM_CALLS = 9
 
 test(`the ratchet: ${BARE_SEAM_CALLS} seam launches carry no row, and the count may only fall`, () => {
   const bare = launchSites().filter(s => !s.rowed)
@@ -98,7 +102,7 @@ test(`the ratchet: ${BARE_SEAM_CALLS} seam launches carry no row, and the count 
     `${bare.length} launches carry no row, more than the ${BARE_SEAM_CALLS} recorded — a new launch must take a registry row, never a pass name: ${where}`)
   assert.equal(bare.length, BARE_SEAM_CALLS,
     `${bare.length} launches carry no row, fewer than the ${BARE_SEAM_CALLS} recorded — a pass migrated; lower BARE_SEAM_CALLS in the same change: ${where}`)
-  assert.equal(new Set(bare.map(s => s.file)).size, 10, 'across ten passes')
+  assert.equal(new Set(bare.map(s => s.file)).size, 9, 'across nine passes')
   const rowed = launchSites().filter(s => s.rowed)
   assert.deepEqual(rowed.map(s => s.file), ['gates.ts'], 'the one rowed launch is the gate runner\'s, and it serves every rowed pass')
 })
@@ -135,8 +139,9 @@ test('every reading pass really launches with an empty toolbelt, argv recorded f
 })
 
 test('a pass the author did not pin keeps its tools, so the pin is a decision and not a blanket', async () => {
-  // `redraft` since A69-3 — draft left PASS_REGISTRY with its row, and an
-  // unpinned pass is what this is about, not which one.
-  await runCliPrompt('write this', { pass: 'redraft' })
+  // `material` since A69-8 — draft, then redraft, left PASS_REGISTRY with
+  // their rows, and an UNPINNED pass is what this is about, not which one.
+  // material is the last unpinned one the migration reaches (U13, slices 7+).
+  await runCliPrompt('write this', { pass: 'material' })
   assert.ok(!recorded().at(-1)!.includes('--tools'))
 })

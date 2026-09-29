@@ -29,7 +29,7 @@ import { materialItems, proseScenes } from './story'
 import { HttpError } from './http'
 import { resolveWithin } from './safe-path'
 import { resolveRequest, type ResolvedRequest } from './request'
-import { assembleWritingSlice, weightOf } from './slice'
+import { assembleWritingSlice, weightOf, type WritingSubject } from './slice'
 import { runGates, parseCraftPlan, planSentence, type ProseGateCtx } from './gates'
 import { CRAFT_MOVES, stageRuns, type Stage, type StagedRow } from './registry'
 import { openRowRun, closeReceipt } from './rowrun'
@@ -86,6 +86,18 @@ export function writeValidated(rel: string, content: string): { ok: boolean; out
 
 
 /** THE ASSIGNMENT — the brief's fifth slot, the ask. Pure, for tests. */
+
+/** WHAT THE AUTHOR IS TOLD AT THE LANDING about the age of what the pass
+ *  was given — proven from the manifest, never argued (A69-6). A season-old
+ *  snapshot belongs where they are already reading, not in a receipt they
+ *  have to open. Nothing stale, nothing said: a sentence that fires on every
+ *  draft teaches the author to skip it.
+ *
+ *  Pure, so both halves of the claim can be held by a test. */
+export function leansOnSentence(aged: { id: string; as_of: string }[] | undefined): string {
+  if (!aged?.length) return ''
+  return ` It leans on ${aged.map(l => `${l.id} as of ${l.as_of}`).join(', ')} — the record has not looked since.`
+}
 
 /** Run the drafting pass for a chapter, as a governed run.
  *
@@ -287,16 +299,8 @@ export async function runDraft(chapterId: string, guidance?: string, given?: Cra
     recordGenerated(file, out.checked.body, { engine: currentEngine() ?? 'fixture', scene: sceneId, origin: 'draft', run: run.id })
     closeReceipt(ctx, 'landed')
     endRun(run.id, 'landed', { landed: [sceneId] })
-    // What the author is told at the landing: the draft is waiting, and —
-    // proven from the manifest — which state facts it was given past the
-    // freshness distance, so a season-old snapshot is not a surprise found
-    // in a receipt (A69-6).
-    const aged = receipt.slice?.leaned_on ?? []
-    const agedLine = aged.length
-      ? ` It leans on ${aged.map(l => `${l.id} as of ${l.as_of}`).join(', ')} — the record has not looked since.`
-      : ''
     return {
-      reply: `Drafted ${sceneId}. It is waiting in ${file} — read it, then accept or discard.${agedLine}`,
+      reply: `Drafted ${sceneId}. It is waiting in ${file} — read it, then accept or discard.${leansOnSentence(receipt.slice?.leaned_on)}`,
       actions: [{ tool: 'draft', path: file, ok: true }],
       file,
       run: run.id,
@@ -314,26 +318,29 @@ export async function runDraft(chapterId: string, guidance?: string, given?: Cra
   }
 }
 
-/** THE FIRST HALF OF A DRAFT THE AUTHOR GAVE A LINE TO: the reading alone.
+/** THE FIRST HALF OF A WRITING JOB THE AUTHOR GAVE A LINE TO: the reading
+ *  alone. Every writing row stages it in front of its write (§4), so the
+ *  draft and the clean pass share this one (A69-8).
  *
  *  Its own run, because it is its own launch with its own brief, its own
  *  gates and its own receipt — and because the author may never come back,
  *  in which case what is on record is a reading that happened and a draft
  *  that did not. Nothing is written here and nothing can be: the stage has
  *  no validator, no file and no ledger. */
-async function planFirst(
+export async function planFirst(
   request: ResolvedRequest, row: StagedRow, planStage: Stage,
-  subject: { chapter: string; sceneId: string }, said: string,
+  subject: WritingSubject, said: string,
 ): Promise<DraftSceneResponse> {
   const slice = assembleWritingSlice(
     { ...row, slice: planStage.slice, budget: planStage.budget }, subject,
     { stage: 'craft-plan', intent: { line: said } })
 
+  const about = subject.scene?.scene ?? subject.sceneId ?? subject.chapter
   const ctx = openRowRun(request, row, {
     ...slice.forReceipt(),
     withheld: [],
     dropped: slice.forReceipt().dropped_for_budget,
-    read: [{ id: `slice:${subject.sceneId}:craft-plan`, version: sha16(slice.render()) }],
+    read: [{ id: `slice:${about}:craft-plan`, version: sha16(slice.render()) }],
   })
   const { run, receipt } = ctx
   receipt.intent = { said, plan: null }
@@ -393,7 +400,7 @@ const planGateCtx = (): ProseGateCtx => gateCtxOf({
   andCap: null, wordCap: null, destination: [], known: [],
 })
 
-const cellOf = (row: StagedRow, stage: string) => ({ job: row.job, scope: row.scope, mode: row.mode, depth: row.depth, stage })
+export const cellOf = (row: StagedRow, stage: string) => ({ job: row.job, scope: row.scope, mode: row.mode, depth: row.depth, stage })
 
 /** Every markdown file under `prose/`, parsed or not. */
 export function proseFiles(): string[] {

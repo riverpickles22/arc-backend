@@ -45,8 +45,15 @@ async function main(): Promise<void> {
   if (!scene) { console.error('a scene id is required'); process.exit(1) }
 
   console.log(describeConfig())
-  const out = await runRedraft({ scene, paragraphs, guidance })
-  console.log(`\nwrote  ${out.file}\n`)
+  // A line said with --guidance becomes a craft plan first (A69-4); the
+  // terminal has no way to hand it back edited, so it is shown and taken as
+  // it stands, and the receipt records both.
+  let out = await runRedraft({ scene, paragraphs, guidance })
+  if (out.plan && out.file === null && !out.actions.length) {
+    console.log(`\n${out.reply}\n`)
+    out = await runRedraft({ scene, paragraphs, guidance }, out.plan)
+  }
+  if (out.file) console.log(`\nwrote  ${out.file}\n`)
   console.log(out.reply)
 }
 

@@ -30,7 +30,15 @@ process.env.STUB_LOG = LOG
 process.env.PATH = `${installStubCli({
   name: 'work-notes',
   before: "const n = require('node:fs').readdirSync(process.env.STUB_LOG).length; require('node:fs').writeFileSync(require('node:path').join(process.env.STUB_LOG, String(n).padStart(3, '0') + '.txt'), prompt)",
-  answer: "prompt.includes('Answer with the JSON array') ? '[]' : (prompt.includes('REDRAFT pass') ? 'A rebuilt first paragraph.\\n\\nA rebuilt second paragraph.\\n\\n=== BRIEFING ===\\nchecklist held' : 'A revised first paragraph.\\n\\nA revised second paragraph.')",
+  // Three shapes, because three passes reach this stub: the conflict
+  // reading's JSON array, the craft-plan reading's fenced plan (A69-4 — the
+  // clean pass stages one in front of its write when a line is said), and
+  // prose for the writing passes. The clean pass owes a briefing with its
+  // leans-on block (A69-8); revise answers prose alone.
+  answer: "prompt.includes('Answer with the JSON array') ? '[]'"
+    + " : prompt.includes('CRAFT PLAN pass') ? '```json\\n{\"moves\":[{\"move\":\"structure\",\"how\":\"cut every beat that repeats one already made\"}]}\\n```'"
+    + " : prompt.includes('CLEAN PASS') ? 'A rebuilt first paragraph.\\n\\nA rebuilt second paragraph.\\n\\n=== BRIEFING ===\\nchecklist held\\n\\n```leans-on\\nchar.ines\\n```'"
+    + " : 'A revised first paragraph.\\n\\nA revised second paragraph.'",
 })}${path.delimiter}${process.env.PATH}`
 
 const { runWorkNotes, describeOutcome, nothingToWork } = await import('../src/work-notes.ts')
@@ -100,11 +108,21 @@ test('the clean pass answers the same notes and records them under its own origi
   const out = await runWorkNotes({ scene: 'sc.02-1', mode: 'redraft', guidance: 'keep it short' })
   assert.equal(out.mode, 'redraft')
   assert.deepEqual(out.notes, [n2.id, n1.id])
-  assert.equal(out.run, null)
+  // The clean pass is rowed now (A69-8), so it mints a run before its first
+  // token and this surface names it. It was null while the pass called the
+  // seam bare and had no run to name.
+  assert.match(out.run!, /^run\./)
+  // Two launches, and neither is a conflict pass — the rebuild reads the
+  // notes itself. They are the clean pass's own stages (A69-8): the
+  // craft-plan reading the author's line becomes, then the write briefed
+  // with the craft. On this legacy surface there is nowhere to show the
+  // author the plan, so it is taken as it stands; U2's own row is A69-9's.
   const seen = prompts()
-  assert.equal(seen.length, 1, 'no conflict pass — the rebuild reads the notes itself')
-  assert.ok(seen[0].includes("THE AUTHOR'S OPEN NOTES ON THIS SCENE") && seen[0].includes('more heat'))
-  assert.ok(seen[0].includes("AUTHOR'S GUIDANCE (binding): keep it short"))
+  assert.equal(seen.length, 2, 'the craft-plan reading, then the write — no conflict pass')
+  assert.ok(seen[0].includes('keep it short'), 'the reading is shown the line; translating it is its whole job')
+  assert.ok(!seen[0].includes("THE AUTHOR'S OPEN NOTES ON THIS SCENE"), 'and nothing of the story')
+  const write = seen[1]
+  assert.ok(write.includes("THE AUTHOR'S OPEN NOTES ON THIS SCENE") && write.includes('more heat'))
   const gen = generatedFor('prose/ch-02/scene-01.md')
   assert.equal(gen?.entry.origin, 'redraft')
   assert.deepEqual(gen?.entry.notes, [n2.id, n1.id])

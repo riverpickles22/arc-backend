@@ -1,6 +1,8 @@
-// The redraft pass: a rebuild whose refusals are deterministic and whose
-// opinions are argued. The engine never runs here — the properties under
-// test are the ones that hold whatever a model answers.
+// The clean pass's pure parts, and its refusals at intake: the properties
+// that hold whatever a model answers. The engine never runs here; the row's
+// path under the fixture engine — the brief it renders, what lands, and what
+// the locks gate refuses — is fixture-engine.test.ts, over the
+// revise.scene.one-shot and revise.selection.one-shot scenarios (A69-8).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -10,10 +12,12 @@ import { git, makeStory, writeScene } from './fixture.ts'
 const story = makeStory()
 process.env.ARC_STORY_PATH = story
 process.env.ARC_DRAFT_ENGINE = 'none'
-const { contractBlock, literalWithholds, withholdViolations, spliceRange, splitBriefing, buildRedraftPrompt } =
+const { contractBlock, literalWithholds, withholdViolations, spliceRange, splitBriefing, redraftAssignment } =
   await import('../src/redraft.ts')
 const { runRedraft } = await import('../src/redraft.ts')
 const { HttpError } = await import('../src/http.ts')
+const { REDRAFT_RULES } = await import('../src/registry.ts')
+const { notesAnswerable } = await import('../src/redraft.ts')
 
 const reset = () => { git(story, 'checkout', 'HEAD', '--', '.'); git(story, 'clean', '-fdq') }
 
@@ -71,52 +75,61 @@ test('the briefing splits off the prose, and a missing marker is all prose', () 
   assert.equal(one.briefing, '', 'never the other way round — prose must not vanish into a briefing')
 })
 
-// ---- the prompt: rebuild licence, seams, and what rides along ------------
+// ---- the assignment: the attempt, or the passage with its seams -----------
 
-const sceneFixture = {
-  scene: 'sc.01-1', chapter: 'ch.01', status: 'proposed', pov: null,
-  events: ['event.landing'], facts: [], contract: null,
-  file: 'prose/ch-01/scene-01.md', body: 'First paragraph.\n\nSecond paragraph.\n\nThird paragraph.',
-}
+const sceneFixture = { scene: 'sc.01-1', body: 'First paragraph.\n\nSecond paragraph.\n\nThird paragraph.' }
+const paras = ['First paragraph.', 'Second paragraph.', 'Third paragraph.']
 
-test('a whole-scene prompt licenses the rebuild and shows the attempt', () => {
-  const p = buildRedraftPrompt({
-    scene: sceneFixture, pack: '(pack)', style: '(style)', siblings: '', notes: [], lockNotice: '',
-  })
-  assert.match(p, /ONE ATTEMPT, NOT A FLOOR/)
-  assert.match(p, /THE SCENE AS IT STANDS/)
+test('a whole-scene assignment shows the attempt as one attempt, and asks for the two parts', () => {
+  const p = redraftAssignment(sceneFixture)
+  assert.match(p, /THE SCENE AS IT STANDS \(sc\.01-1; one attempt, not a floor\)/)
   assert.match(p, /First paragraph\./)
-  assert.match(p, /=== BRIEFING ===/, 'the argued half is asked for by name')
-  assert.doesNotMatch(p, /Change as little/, 'this is not revise')
+  assert.match(p, /Answer in the two parts/)
+  // The rules — the rebuild licence, the briefing marker — are the row's now.
+  assert.match(REDRAFT_RULES, /ONE ATTEMPT, NOT A\s+FLOOR/)
+  assert.match(REDRAFT_RULES, /=== BRIEFING ===/, 'the argued half is asked for by name')
+  assert.match(REDRAFT_RULES, /YOU HAVE NO TOOLS/, 'a sealed pass')
+  assert.doesNotMatch(REDRAFT_RULES, /Change as little/, 'this is not revise')
 })
 
-test('a passage prompt shows the seams and forbids answering with them', () => {
-  const p = buildRedraftPrompt({
-    scene: sceneFixture, pack: '(pack)', style: '(style)', siblings: '', notes: [], lockNotice: '',
-    range: { from: 1, to: 1, passage: 'Second paragraph.', above: 'First paragraph.', below: 'Third paragraph.' },
-  })
+test('a passage assignment shows the seams and forbids answering with them', () => {
+  const p = redraftAssignment(sceneFixture, { from: 1, to: 1, paras })
   assert.match(p, /THE PASSAGE TO REDRAFT \(¶2–¶2/)
   assert.match(p, /ABOVE ends the ground/)
   assert.match(p, /BELOW is where your passage must land/)
   assert.match(p, /never the seams/)
+  assert.doesNotMatch(p, /THE SCENE AS IT STANDS/, 'the passage, not the scene')
 })
 
-test('at the scene edges the prompt says open or close, not a missing seam', () => {
-  const p = buildRedraftPrompt({
-    scene: sceneFixture, pack: '(pack)', style: '(style)', siblings: '', notes: [], lockNotice: '',
-    range: { from: 0, to: 0, passage: 'First paragraph.', above: null, below: 'Second paragraph.' },
-  })
-  assert.match(p, /OPENS the scene/)
+test('at the scene edges the assignment says open or close, not a missing seam', () => {
+  assert.match(redraftAssignment(sceneFixture, { from: 0, to: 0, paras }), /OPENS the scene/)
+  assert.match(redraftAssignment(sceneFixture, { from: 2, to: 2, paras }), /CLOSES the scene/)
 })
 
 // ---- refusals, before any engine is reached ------------------------------
+
+test('a passage answers only the notes inside it, and never arc\'s own', () => {
+  const n = (id: string, paragraph: number | null, by?: string) =>
+    ({ id, ...(by ? { by } : {}), resolution: { paragraph } })
+  const notes = [n('note.1', 0), n('note.2', 3), n('note.3', 4), n('note.4', 3, 'agent'), n('note.5', null)]
+  // A whole-scene pass could have answered every note the author wrote.
+  assert.deepEqual(notesAnswerable(notes).map(x => x.id), ['note.1', 'note.2', 'note.3', 'note.5'],
+    'arc\'s own is not a request, whatever it says')
+  // A passage could not: outside its range nothing changed, so accepting it
+  // must not resolve a note nobody acted on.
+  assert.deepEqual(notesAnswerable(notes, { from: 3, to: 4 }).map(x => x.id), ['note.2', 'note.3'])
+  assert.deepEqual(notesAnswerable(notes, { from: 1, to: 2 }).map(x => x.id), [],
+    'a range with nothing in it answers nothing')
+  assert.deepEqual(notesAnswerable(notes, { from: 0, to: 9 }).map(x => x.id), ['note.1', 'note.2', 'note.3'],
+    'and a note about the whole scene anchors to no paragraph, so no passage claims it')
+})
 
 test('an unknown scene and a bad range are refused with the reason', async () => {
   reset()
   await assert.rejects(() => runRedraft({ scene: 'sc.99-9' }), (e: unknown) => e instanceof HttpError && e.status === 400)
   await assert.rejects(
     () => runRedraft({ scene: 'sc.01-1', paragraphs: [0, 99] }),
-    (e: unknown) => (e as { message: string }).message.includes('existing range'))
+    (e: unknown) => e instanceof HttpError && e.status === 400 && /is not in sc\.01-1 — it has 2 paragraphs/.test(e.message))
   reset()
 })
 

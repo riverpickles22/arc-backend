@@ -16,19 +16,19 @@ test('a call that names no pass is refused — the registry decides a posture, n
 const BASE = ['-p', '--output-format', 'stream-json', '--verbose']   // streamed, always (A67-2)
 
 test('a non-withholding pass builds exactly the argv engine.ts always built', () => {
-  assert.deepEqual(buildCliArgs({ pass: 'redraft' }), BASE)
-  assert.deepEqual(buildCliArgs({ pass: 'redraft', noTools: true }), [...BASE, '--tools', ''])
-  assert.deepEqual(buildCliArgs({ pass: 'redraft', resume: 'abc' }), [...BASE, '--resume', 'abc'])
+  assert.deepEqual(buildCliArgs({ pass: 'revise' }), BASE)
+  assert.deepEqual(buildCliArgs({ pass: 'revise', noTools: true }), [...BASE, '--tools', ''])
+  assert.deepEqual(buildCliArgs({ pass: 'revise', resume: 'abc' }), [...BASE, '--resume', 'abc'])
   // Both together, in the historical order — the exact sequence the old
   // inline construction emitted (tools before resume).
-  assert.deepEqual(buildCliArgs({ pass: 'redraft', noTools: true, resume: 'abc' }),
+  assert.deepEqual(buildCliArgs({ pass: 'revise', noTools: true, resume: 'abc' }),
     [...BASE, '--tools', '', '--resume', 'abc'])
 })
 
 test('a circular settings object gets the curated refusal, not a raw TypeError', () => {
   const circular: Record<string, unknown> = {}
   circular.self = circular
-  assert.throws(() => buildCliArgs({ pass: 'redraft', settings: circular }), /could not be serialized/)
+  assert.throws(() => buildCliArgs({ pass: 'revise', settings: circular }), /could not be serialized/)
 })
 
 test('a withholding pass gets --tools "" even when the caller says otherwise', () => {
@@ -41,8 +41,8 @@ test('a withholding pass gets --tools "" even when the caller says otherwise', (
 })
 
 test('a non-withholding pass keeps tools unless the caller turns them off', () => {
-  assert.ok(!buildCliArgs({ pass: 'redraft' }).includes('--tools'))
-  assert.ok(buildCliArgs({ pass: 'redraft', noTools: true }).includes('--tools'))
+  assert.ok(!buildCliArgs({ pass: 'revise' }).includes('--tools'))
+  assert.ok(buildCliArgs({ pass: 'revise', noTools: true }).includes('--tools'))
 })
 
 test('an unregistered pass throws instead of launching with an undeclared posture', () => {
@@ -54,7 +54,7 @@ test('sessions are refused for withholding passes, in code', () => {
   assert.throws(() => assertSessionAllowed('analyze'), /cannot unsee/)
   // material is the non-withholding row whose own answer is still no
   assert.throws(() => assertSessionAllowed('material'), /does not allow/)
-  assert.doesNotThrow(() => assertSessionAllowed('redraft'))
+  assert.doesNotThrow(() => assertSessionAllowed('revise'))
   assert.doesNotThrow(() => assertSessionAllowed('revise'))
 })
 
@@ -65,10 +65,10 @@ test('every registry row that allows sessions is a non-withholding iterative ver
 })
 
 test('invalid settings JSON throws before any spawn — print mode would ignore it silently', () => {
-  assert.throws(() => buildCliArgs({ pass: 'redraft', settings: '{not json' }), /silently ignore/)
-  const args = buildCliArgs({ pass: 'redraft', settings: { hooks: {} } })
+  assert.throws(() => buildCliArgs({ pass: 'revise', settings: '{not json' }), /silently ignore/)
+  const args = buildCliArgs({ pass: 'revise', settings: { hooks: {} } })
   assert.equal(args[args.indexOf('--settings') + 1], '{"hooks":{}}')
-  const passthrough = buildCliArgs({ pass: 'redraft', settings: '{"a":1}' })
+  const passthrough = buildCliArgs({ pass: 'revise', settings: '{"a":1}' })
   assert.equal(passthrough[passthrough.indexOf('--settings') + 1], '{"a":1}')
 })
 
@@ -90,7 +90,7 @@ test('a sealed row\'s launch cannot resume a session, whatever the caller hands 
 })
 
 test('--json-schema and --session-id become first-class flags', () => {
-  const args = buildCliArgs({ pass: 'redraft', jsonSchema: { type: 'object' }, sessionId: 'f2f2f2f2-0000-4000-8000-000000000000' })
+  const args = buildCliArgs({ pass: 'revise', jsonSchema: { type: 'object' }, sessionId: 'f2f2f2f2-0000-4000-8000-000000000000' })
   assert.equal(args[args.indexOf('--json-schema') + 1], '{"type":"object"}')
   assert.equal(args[args.indexOf('--session-id') + 1], 'f2f2f2f2-0000-4000-8000-000000000000')
 })
@@ -113,7 +113,7 @@ test('the prose-writing passes and the record workers are deliberately not pinne
   // Their envelope is slice 2's and slice 4's business; draft and revise are
   // the iterative verbs a scene session would serve, and a session cannot
   // coexist with a withheld set.
-  for (const pass of ['redraft', 'revise', 'material', 'learn-style'] as const) {
+  for (const pass of ['revise', 'material', 'learn-style'] as const) {
     assert.equal(PASS_REGISTRY[pass].withholding, false, `${pass} must not be pinned here`)
   }
 })

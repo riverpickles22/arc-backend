@@ -36,6 +36,13 @@ process.env.PATH = `${installStubCli({
 })}${path.delimiter}${process.env.PATH}`
 
 const { runCliPrompt, currentEngine } = await import('../src/engine.ts')
+
+/** ANY still-unrowed pass: this file is about the seam's async property, not
+ *  about whose brief it carries. `material` is the one that outlives the
+ *  migration longest (U13, slices 7+), so the name here does not have to move
+ *  every time a pass takes its row — it moved off `redraft` when A69-8 rowed
+ *  it, and off `draft` before that. */
+const SOME_UNROWED_PASS = 'material' as const
 const { runLensFanOut } = await import('../src/lenses.ts')
 const { Run } = await import('../src/run.ts')
 const { createArcServer } = await import('../src/server.ts')
@@ -61,7 +68,7 @@ test('the engine really is claude-cli here — otherwise this file proves nothin
 
 test('one CLI turn does NOT block the event loop', async () => {
   const stop = watchEventLoop()
-  const { text, sessionId } = await runCliPrompt('hello', { pass: 'redraft' })
+  const { text, sessionId } = await runCliPrompt('hello', { pass: SOME_UNROWED_PASS })
   const { ticks, elapsed } = stop()
 
   assert.match(text, /a stub claim/, 'the production parse path ran')
@@ -75,7 +82,7 @@ test('one CLI turn does NOT block the event loop', async () => {
 test('four concurrent turns cost about one, not four', async () => {
   const t0 = Date.now()
   const out = await Promise.all(Array.from({ length: 4 }, (_, i) =>
-    runCliPrompt(`turn ${i}`, { pass: 'redraft' })))
+    runCliPrompt(`turn ${i}`, { pass: SOME_UNROWED_PASS })))
   const wall = Date.now() - t0
 
   assert.equal(out.length, 4)
@@ -86,7 +93,7 @@ test('four concurrent turns cost about one, not four', async () => {
 test('a failing CLI still reports its exit code and stderr', async () => {
   process.env.STUB_FAIL = '1'
   try {
-    await assert.rejects(runCliPrompt('x', { pass: 'redraft' }), /claude CLI exited 3: stub refused/)
+    await assert.rejects(runCliPrompt('x', { pass: SOME_UNROWED_PASS }), /claude CLI exited 3: stub refused/)
   } finally {
     delete process.env.STUB_FAIL
   }

@@ -9,6 +9,19 @@ import path from 'node:path'
 import { SCENARIOS, STORY, renderScenario, reset } from './fixture-scenarios.ts'
 
 const { runDraft } = await import('../src/draft.ts')
+
+/** THE EXAMPLE HAS NOTHING STALE, and that is correct: the keeper's snapshot
+ *  is recorded `1910` at year precision and ch.01 runs inside that year, so
+ *  the record has not stopped looking. To see what a draft does with a fact
+ *  that IS behind it, one is moved back five years for the length of a test
+ *  and put straight back. */
+async function withAnAgedFact<T>(run: () => Promise<T>): Promise<T> {
+  const file = path.join(STORY, 'canon', 'entities', 'characters', 'ines.yaml')
+  const original = fs.readFileSync(file, 'utf8')
+  if (!original.includes('date: "1910", precision: year')) throw new Error('the example no longer dates the keeper by year')
+  fs.writeFileSync(file, original.replace('date: "1910", precision: year', 'date: "1905", precision: year'))
+  try { return await run() } finally { fs.writeFileSync(file, original) }
+}
 const { readWorkingReceipt } = await import('../src/run.ts')
 const { ROW_DRAFT_SCENE } = await import('../src/registry.ts')
 const { listRuns } = await import('../src/runs.ts')
@@ -167,11 +180,21 @@ test('a draft that rests on a fact the author has not settled is refused by the 
 
 test('the receipt lists under leaned on every state fact given past the freshness distance', async () => {
   reset()
-  const out = await runDraft(CHAPTER) as { run?: string }
-  const receipt = readWorkingReceipt(out.run!)!
-  assert.deepEqual(receipt.slice!.leaned_on!.map(l => l.id), ['char.ines'])
-  assert.equal(receipt.slice!.leaned_on![0].as_of, '1910 (year precision)')
-  assert.ok(receipt.slice!.leaned_on![0].older_by_days > 0)
+  const clean = await runDraft(CHAPTER) as { run?: string }
+  assert.deepEqual(readWorkingReceipt(clean.run!)!.slice!.leaned_on, [],
+    'the example is current, so the receipt claims nothing')
+
+  await withAnAgedFact(async () => {
+    // The brief moved, so the fixture store has no answer — what is under
+    // test is the receipt the slice writes before a token is spent, which
+    // is filled whatever the pass then does.
+    const out = await runDraft(CHAPTER).catch(() => null) as { run?: string } | null
+    const run = out?.run ?? listRuns()[0]?.id
+    const receipt = readWorkingReceipt(run!)!
+    assert.deepEqual(receipt.slice!.leaned_on!.map(l => l.id), ['char.ines'])
+    assert.equal(receipt.slice!.leaned_on![0].as_of, '1905 (year precision)')
+    assert.ok(receipt.slice!.leaned_on![0].older_by_days > 0)
+  })
 })
 
 test('the leans-on tail is read before the coverage tail, and a briefing without one is refused', async () => {
@@ -207,6 +230,16 @@ test('the gate reads what the file binds, not only what the tail admits', async 
   const { gateCtx } = await import('../src/reroute.ts')
   assert.deepEqual(boundIds('---\nscene: x\nfacts:\n  - char.ines\n  - obj.keepers-log\nevents: [event.the-wreck]\n---\nbody'),
     ['char.ines', 'obj.keepers-log', 'event.the-wreck'])
+  // A BLOCK SEQUENCE IS VALID YAML FLUSH WITH ITS KEY, and the story's own
+  // validator accepts it. Read by a pattern that insisted on an indent, this
+  // file bound nothing, the gate held on an answer it had not looked at, and
+  // a draft could rest on an unratified fact by writing its frontmatter one
+  // space to the left.
+  assert.deepEqual(boundIds('---\nscene: x\nfacts:\n- char.ines\n- obj.keepers-log\n---\nbody'),
+    ['char.ines', 'obj.keepers-log'], 'zero-indented, and still what the scene binds')
+  assert.deepEqual(boundIds('---\nscene: x\nfacts: char.ines\n---\nbody'), ['char.ines'], 'and a lone string is one id')
+  assert.deepEqual(boundIds('---\nscene: x\nfacts: [: :\n---\nbody'), [], 'frontmatter that is not YAML binds nothing')
+  assert.deepEqual(boundIds('no frontmatter at all'), [])
   const ctx = {
     ...gateCtx({ sceneName: 'sc.01-2', sceneBody: '', sceneLocks: [], lockedTexts: [], literals: [], andCap: null, wordCap: null, destination: [], known: [] }),
     settled: ['char.ines'], unsettled: ['obj.keepers-log'],
@@ -224,9 +257,20 @@ test('the gate reads what the file binds, not only what the tail admits', async 
   assert.ok(!ok.ok || !/leans on/i.test(ok.briefing), 'and the heading goes with the block')
 })
 
-test('the author is told at the landing what the draft leans on', async () => {
+test('the author is told at the landing what the draft leans on, and nothing when there is nothing', async () => {
   reset()
-  const out = await runDraft(CHAPTER) as { reply: string }
-  assert.match(out.reply, /It leans on char\.ines as of 1910 \(year precision\) — the record has not looked since\./)
+  const clean = await runDraft(CHAPTER) as { reply: string }
+  assert.match(clean.reply, /^Drafted sc\.01-2\./)
+  assert.ok(!clean.reply.includes('leans on'),
+    'no sentence about stale record when every fact the draft read is current')
+
+  // And when there is something behind the scene, it is said where the
+  // author is already reading — not left in a receipt they must open.
+  const { leansOnSentence } = await import('../src/draft.ts')
+  assert.equal(leansOnSentence([]), '')
+  assert.equal(leansOnSentence(undefined), '')
+  assert.equal(leansOnSentence([{ id: 'char.ines', as_of: '1905 (year precision)' }]),
+    ' It leans on char.ines as of 1905 (year precision) — the record has not looked since.')
+  assert.match(leansOnSentence([{ id: 'a', as_of: 'x' }, { id: 'b', as_of: 'y' }]), /a as of x, b as of y/)
 })
 

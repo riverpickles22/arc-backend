@@ -142,6 +142,10 @@ export type AnswerShape =
   | 'scene-file'
   /** one fenced JSON object: the craft moves chosen, each with one clause */
   | 'craft-plan'
+  /** prose alone, then `=== BRIEFING ===`, then the argued self-report with
+   *  its leans-on block — a rebuild of prose that already exists, so no
+   *  frontmatter and no coverage tail (A69-8) */
+  | 'body-and-briefing'
 
 /** What a withholding row withholds, declared on the ROW rather than known
  *  by the pass (§4, envelope rule 4; A67-7). The leak gate reads this to
@@ -641,9 +645,117 @@ export const ROW_DRAFT_SCENE: StagedRow = {
   ],
 }
 
+/** THE CLEAN PASS'S RULES (U3; A69-8). Moved here from redraft.ts, where the
+ *  pass composed its own brief and called the seam bare, and rewritten for
+ *  the sealed pass it now describes: no tools, the brief is everything, the
+ *  current prose is one attempt, the answer is two parts and the briefing
+ *  owes its leans-on block. The row is the job's one definition. */
+export const REDRAFT_RULES = `You are arc's CLEAN PASS. The author asked for a rebuild of prose of their
+own novel — a whole scene, or one passage of it. What you are shown under
+THE SCENE AS IT STANDS or THE PASSAGE TO REDRAFT is ONE ATTEMPT, NOT A
+FLOOR: order, images, paragraph boundaries and sentence architecture are all
+yours to rebuild. Keep what already earns its place; a redraft that preserves
+a weak structure out of politeness has failed, and so has one that discards a
+strong line to prove it was here.
+
+YOU HAVE NO TOOLS. Nothing is fetched, nothing is read, nothing is written by
+you. Everything you are allowed to know is in this brief, under the headings
+below, and what you answer with is the whole of what arc receives.
+
+WHAT MUST SURVIVE, exactly:
+1. The scene's meaning. Every event and fact the scene binds still happens
+   here; character state at this moment in the story is unchanged.
+2. The scene contract — purpose, must_establish, must_withhold, motifs,
+   constraints. Withholding is deliberate: do not "fix" it.
+3. The style contract. It is the author's voice and it is law; run its
+   pre-draft checklist before answering.
+4. POV, tense, and the anachronism boundary.
+5. Locked paragraphs, VERBATIM, word for word and in their order, wherever
+   the brief marks them. A locked paragraph is the author's settled prose;
+   an answer that touches one is refused whole.
+6. Canon is truth. The record below tags every item; a fact tagged
+   \`proposed\` or \`material\` may be mentioned and may not be rested on.
+   Never invent a fact the record would have to carry — a new person, date
+   or place is a proposal for the author, named in your briefing, never made
+   in the prose.
+7. A passage's seams. When you are handed a passage, answer with the passage
+   alone — never the paragraphs above or below it, which you may not change.
+
+ANSWER IN TWO PARTS, separated by a line that is exactly:
+=== BRIEFING ===
+Part one: the rebuilt prose alone — no frontmatter, no commentary, no
+fences. Part two, the briefing, in the ARGUED register (claims for the author
+to judge, never verdicts):
+1. The style checklist item by item: held, or knowingly bent and why.
+2. Whether each must_establish lands and where; motifs carried; POV and
+   tense held; anything withheld that risks leaking by implication.
+3. To verify — any fact you needed that canon does not hold.
+4. LEANS ON — the entity, event and relationship ids the prose RESTS ON as
+   settled, one per line, in a fenced block that opens with exactly
+   \`\`\`leans-on and closes with \`\`\`. Only an id tagged \`canon\` belongs
+   here; an id tagged \`proposed\` or \`material\` may be mentioned in the
+   prose and must not be listed. The block is required; a briefing without
+   it is refused.
+`
+
+/** What a clean pass's answer is checked against: the locks, because the
+ *  scene exists and the author may have settled parts of it; the story's
+ *  own validator over the rebuilt file; the contract's quoted withholds; the
+ *  ids the prose rests on; and the two countable style rules. No overlap
+ *  gate — a rebuild is allowed to keep every line that earns its place — and
+ *  no coverage tail, because there is no route. */
+export const CLEAN_PASS_GATES: readonly GateId[] = [
+  'locks', 'lock-order', 'validator', 'withhold-literals', 'leaned-on', 'and-chain', 'sentence-length',
+]
+
+/** U3's two rows (A69-8): the clean pass over a scene, and over a selection
+ *  — a paragraph range whose surroundings are preserved byte for byte by
+ *  construction. Staged like the draft: the craft-plan reading first when
+ *  the author said a line, then the write. NOT withholding: the pass is
+ *  handed the prose it is rebuilding, as one attempt. */
+const cleanPassRow = (scope: 'scene' | 'selection'): StagedRow => ({
+  job: 'revise', scope, mode: 'one-shot', depth: 'standard', stage: null,
+  pattern: 'staged',
+  withholding: false,
+  slice: WRITING_SLICE,
+  envelope: ROUTE_ENVELOPE,
+  gates: CLEAN_PASS_GATES,
+  answer: 'body-and-briefing',
+  budget: { outputTokens: ROUTE_OUTPUT_TOKENS, wallClockMs: ROUTE_WALL_CLOCK_MS, inputTokens: WRITING_INPUT_TOKENS },
+  rules: REDRAFT_RULES,
+  fixtures: [],
+  stages: [
+    {
+      id: 'craft-plan',
+      when: 'line-names-effect',
+      rules: CRAFT_PLAN_RULES,
+      slice: CRAFT_PLAN_SLICE,
+      gates: ['plan-vocabulary'],
+      answer: 'craft-plan',
+      budget: { outputTokens: 1_000, wallClockMs: 5 * 60 * 1000, inputTokens: 4_000 },
+      fixtures: ['plan-dread'],
+    },
+    {
+      id: 'write',
+      when: 'always',
+      rules: REDRAFT_RULES,
+      slice: WRITING_SLICE,
+      gates: CLEAN_PASS_GATES,
+      answer: 'body-and-briefing',
+      budget: { outputTokens: ROUTE_OUTPUT_TOKENS, wallClockMs: ROUTE_WALL_CLOCK_MS, inputTokens: WRITING_INPUT_TOKENS },
+      // The selection row's lock-touched case is refused at intake — a lock
+      // inside the range the author asked to rebuild — so it sends no brief
+      // and records no answer, as the leak scenario does (A69-8).
+      fixtures: scope === 'scene' ? ['lands', 'lock-touched'] : ['lands'],
+    },
+  ],
+})
+export const ROW_REVISE_SCENE: StagedRow = cleanPassRow('scene')
+export const ROW_REVISE_SELECTION: StagedRow = cleanPassRow('selection')
+
 // ---- the table ---------------------------------------------------------------
 
-export const ROWS: readonly Row[] = [ROW_EXPLORE_SCENE, ROW_EXPLORE_ROUTE, ROW_DRAFT_SCENE]
+export const ROWS: readonly Row[] = [ROW_EXPLORE_SCENE, ROW_EXPLORE_ROUTE, ROW_DRAFT_SCENE, ROW_REVISE_SCENE, ROW_REVISE_SELECTION]
 
 /** The row for a cell, or nothing: a job × scope × mode the rows do not
  *  list is refused at intake (invariant 10), never mapped to a neighbour. */

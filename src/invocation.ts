@@ -49,7 +49,6 @@ export interface PassSpec {
  *  iterative verbs a scene session would serve (`idea-scene-session`) — a
  *  session and a withheld set cannot coexist, by the rule below. */
 export const PASS_REGISTRY = {
-  redraft: { rung: 1, withholding: false, sessionAllowed: true },
   revise: { rung: 1, withholding: false, sessionAllowed: true },
   // Pinned 2026-09-11: rephrase reads a selection and offers wordings. It
   // loses its session with the pin, because a withholding pass may never
@@ -62,9 +61,9 @@ export const PASS_REGISTRY = {
   'learn-style': { rung: 1, withholding: false, sessionAllowed: false },
   lenses: { rung: 1, withholding: true, sessionAllowed: false },
   bootstrap: { rung: 1, withholding: true, sessionAllowed: false },
-  // reroute and reroute-revise are gone from here (A67-1), and draft with
-  // them (A69-3): their one definition is the row in registry.ts, and the
-  // launch takes the row.
+  // reroute and reroute-revise are gone from here (A67-1), draft with them
+  // (A69-3), and redraft (A69-8): their one definition is the row in
+  // registry.ts, and the launch takes the row.
   capture: { rung: 1, withholding: true, sessionAllowed: false },
 } as const satisfies Record<string, PassSpec>
 

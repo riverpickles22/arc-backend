@@ -1,7 +1,7 @@
 ---
 row: draft.scene.one-shot.write
 name: leans-on-proposed
-fingerprint: 3ae0f0224b4af608
+fingerprint: 32dbe95ed488b612
 expect: leaned-on
 scenario: >
   the author said "lean on the log" and settled a plan that names the log;
@@ -9,7 +9,7 @@ scenario: >
   RESTS ON obj.keepers-log and rel.ines-log — both proposed. The leaned-on
   gate refuses it: a pass may mention an unratified fact and may not build
   on it.
-because: "the position layer marks the point of view's present state and places era-only states by the record's time; the ladder orders siblings by file order (A69-7 review)"
+because: "a state is aged from the last moment its precision covers, the dramatic condition carries everyone the chapter has on the page, and a passage is told only about the locks it must carry (A69-8 review)"
 ---
 ---
 scene: sc.01-2

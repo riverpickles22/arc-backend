@@ -1,13 +1,13 @@
 ---
 row: draft.scene.one-shot.write
 name: lands-from-plan
-fingerprint: ceb3f0917b3dea97
+fingerprint: f527398a24ed7ccb
 expect: lands
 scenario: >
   the author said "more dread", read the craft plan the reading returned, and
   settled it as it stood. The write stage is briefed with that craft and never
   with their line.
-because: "the position layer marks the point of view's present state and places era-only states by the record's time; the ladder orders siblings by file order (A69-7 review)"
+because: "a state is aged from the last moment its precision covers, the dramatic condition carries everyone the chapter has on the page, and a passage is told only about the locks it must carry (A69-8 review)"
 ---
 ---
 scene: sc.01-2

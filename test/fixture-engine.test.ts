@@ -25,6 +25,7 @@ const { ROW_EXPLORE_SCENE } = await import('../src/registry.ts')
 const ROW_RULES_HEAD = ROW_EXPLORE_SCENE.rules.slice(0, 40)
 const { annotations } = await import('../src/annotations.ts')
 const { proseScenes } = await import('../src/story.ts')
+const { generatedFor } = await import('../src/ledger.ts')
 
 // ---- the engine ------------------------------------------------------------
 
@@ -96,6 +97,10 @@ test('U4 and U5 each ship the scenarios the slice needs: one that lands, one the
 
 const scene = () => proseScenes().find(s => s.scene === SCENE)!
 const lockedParagraph = () => paragraphsOf(scene().body)[1]
+/** The scene as the author left it, read once before any pass runs. A clean
+ *  pass writes the rebuilt scene into the draft layer, so `scene()` is what
+ *  is on disk NOW and cannot also be what was there before. */
+const PRISTINE = paragraphsOf(scene().body)
 
 test('the example scene carries what the slice has to prove against', () => {
   const s = scene()
@@ -205,6 +210,40 @@ for (const s of SCENARIOS) {
         assert.equal(draft.file, null, 'nothing was written')
         assert.match(draft.reply, /would not keep it|could not run|does not fit your record|did not check out/,
           'and the refusal says so in the author\'s words')
+      }
+      return
+    }
+
+    // THE CLEAN PASS answers with prose and a briefing, and what it does
+    // with the answer is written into the draft layer — never into the book
+    // (A69-8). A selection answer is spliced into its range, so everything
+    // outside it is byte-identical by construction.
+    if (s.row.startsWith('revise.')) {
+      const out = result as unknown as { file: string | null; run?: string; reply: string }
+      assert.ok(out.run, 'the response names the run that made it')
+      if (s.expect === 'lands') {
+        assert.equal(out.file, 'prose/ch-01/scene-01.md', 'the rebuilt scene is waiting in the draft layer')
+        const paras = paragraphsOf(scene().body)
+        assert.notDeepEqual(paras, PRISTINE, 'and it is not what was there')
+        assert.equal(paras[1], PRISTINE[1], 'the paragraph the author settled survives, word for word and in its place')
+        // THE NOTES THE LEDGER NAMES are the ones the pass could have
+        // answered, because accepting the draft resolves every one of them.
+        // The example's marks on this scene are KEYPOINTS — statements of
+        // what a passage must get across, never requests for change — so a
+        // clean pass over it is handed none and the ledger names none. The
+        // range rule itself is held by notesAnswerable's own test.
+        assert.deepEqual(generatedFor('prose/ch-01/scene-01.md')?.entry.notes ?? [], [],
+          'a keypoint is never handed to a pass as an instruction, so the accept resolves nothing')
+        if (s.row.startsWith('revise.selection.')) {
+          assert.deepEqual(paras.slice(0, 2), PRISTINE.slice(0, 2), 'everything above the range is byte-identical')
+          assert.deepEqual(paras.slice(4), PRISTINE.slice(4), 'and everything below it')
+        }
+      } else {
+        assert.equal(out.file, null, 'nothing was written')
+        assert.deepEqual(paragraphsOf(scene().body), PRISTINE, 'and the scene on disk is what the author left')
+        assert.match(out.reply, /settled|locked|would not keep it|could not run/,
+          'the refusal names what it refused, in the author\'s words')
+        assert.equal(seen.length, 2, 'one repair was attempted, and the store had no answer for it')
       }
       return
     }

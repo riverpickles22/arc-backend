@@ -499,6 +499,20 @@ test('the ladder lowers a rung at a time before the layer drops, and the manifes
   }
 })
 
+test('a draft is told what is live for everyone the chapter has on the page, not the point of view alone', () => {
+  // A scene not yet written binds nobody. Read from the scene alone this
+  // layer would carry the keeper's stances and no one else's, while the
+  // voice layer beside it named two people — one brief, two answers to
+  // "who is here".
+  const s = assembleWritingSlice(rowWith(40_000), { chapter: scene().chapter, sceneId: 'sc.01-2' })
+  const live = s.manifest.find(l => l.layer === 'dramatic-condition')!
+  assert.ok(live.ids.includes('char.wren'), 'the dog is on the page in this chapter, and his stance is live')
+  const voice = s.manifest.find(l => l.layer === 'voice')!
+  for (const id of voice.ids.filter(i => i.startsWith('char.'))) {
+    assert.ok(live.ids.includes(id), `${id} is in both layers, or the brief says two things about who is here`)
+  }
+})
+
 test('voice carries the point-of-view rule from §1 and every present voice by id', () => {
   const s = assembleWritingSlice(rowWith(40_000), { chapter: scene().chapter, sceneId: 'sc.01-2' })
   const voice = s.manifest.find(l => l.layer === 'voice')!
@@ -582,6 +596,24 @@ test('the point-of-view rule is read from §1 alone, one bullet or several, and 
   assert.equal(povRuleOf('## 2. Rhythm\n- **POV.** x\n'), '', 'no §1 at all')
 })
 
+test('a passage is told about the locks it has to carry, and about no others', () => {
+  const sceneScope = assembleWritingSlice(rowWith(40_000), subject())
+  assert.match(sceneScope.blocks.find(b => b.layer === 'locks')!.text, /eighty-fourth/,
+    'a whole-scene rebuild reproduces every settled paragraph in place')
+
+  // ¶3–¶4: the settled ¶2 is outside the range, preserved by splicing. A
+  // pass told to reproduce it would emit it inside its passage, the splice
+  // would land it twice, and the locks gate would refuse the answer.
+  const passage = assembleWritingSlice(rowWith(40_000), { ...subject(), range: [2, 3] })
+  const locks = passage.manifest.find(l => l.layer === 'locks')!
+  assert.equal(locks.status, 'none')
+  assert.ok(!passage.render().includes('eighty-fourth was loose'))
+
+  const over = assembleWritingSlice(rowWith(40_000), { ...subject(), range: [1, 2] })
+  assert.equal(over.manifest.find(l => l.layer === 'locks')!.status, 'given',
+    'and a range that does contain one is told about it')
+})
+
 test('the handoff is floor: a budget that cannot hold it refuses before a token', () => {
   assert.throws(
     () => assembleWritingSlice(rowWith(60), { chapter: scene().chapter, sceneId: 'sc.01-2' }),
@@ -601,23 +633,45 @@ test('every fact in the record layer is tagged with whether it may bear weight, 
   assert.match(text, /`rel\.ines-log` \[proposed — reference only\]/, 'and the edge that hangs off it')
 })
 
-test('a state fact says when the record last looked, and one past the freshness distance is marked and listed', () => {
+test('a state fact says when the record last looked, and is aged from the last moment its precision still covers', () => {
   const s = draftOf()
   const text = s.blocks.find(b => b.layer === 'canon')!.text
-  assert.match(text, /`char\.ines` \[canon\][^\n]*\n  — included: [^\n]*\n  as of: 1910 \(year precision\)\n  AGED: /,
+  assert.match(text, /`char\.ines` \[canon\][^\n]*\n  — included: [^\n]*\n  as of: 1910 \(year precision\)/,
     'what it is, why it is here, when it was last true — in that order')
-  const leaned = s.forReceipt().leaned_on
-  assert.deepEqual(leaned.map(l => l.id), ['char.ines'], 'the keeper\'s year-precision snapshot against a November scene')
-  assert.equal(leaned[0].as_of, '1910 (year precision)')
-  assert.ok(leaned[0].older_by_days > 0)
-  assert.deepEqual(s.manifest.find(l => l.layer === 'canon')!.leaned_on, leaned, 'proven from the manifest, not argued')
 
-  // No freshness on the row: nothing is aged, nothing is listed.
-  const loose = assembleWritingSlice(
-    { ...rowWith(40_000), slice: { ...WRITING_SLICE, freshness: undefined } },
-    { chapter: scene().chapter, sceneId: 'sc.01-2' })
-  assert.ok(!/\n\s*AGED: /.test(loose.blocks.find(b => b.layer === 'canon')!.text), 'no state fact is marked aged')
-  assert.deepEqual(loose.forReceipt().leaned_on, [])
+  // AND NOT AGED. The keeper's snapshot is recorded `1910` at YEAR
+  // precision; ch.01 runs to that December. The scene is inside the window
+  // the record claims, so the record has not stopped looking, and telling
+  // the author it had would be a proven count that is not true.
+  assert.ok(!/\n\s*AGED: /.test(text), 'a year-precision state contains a scene in that year')
+  assert.deepEqual(s.forReceipt().leaned_on, [], 'and nothing is listed as leaned on')
+
+  // A state that really is behind the scene: the light's, moved back five
+  // years. Its window closes long before the chapter, and then it is marked
+  // in the brief and listed on the receipt.
+  const file = path.join(STORY, 'canon', 'entities', 'characters', 'ines.yaml')
+  const original = fs.readFileSync(file, 'utf8')
+  assert.ok(original.includes('date: "1910", precision: year'))
+  try {
+    fs.writeFileSync(file, original.replace('date: "1910", precision: year', 'date: "1905", precision: year'))
+    const aged = draftOf()
+    assert.match(aged.blocks.find(b => b.layer === 'canon')!.text,
+      /as of: 1905 \(year precision\)\n  AGED: this state is \d+ days of story time old/)
+    const leaned = aged.forReceipt().leaned_on
+    assert.deepEqual(leaned.map(l => l.id), ['char.ines'])
+    assert.equal(leaned[0].as_of, '1905 (year precision)')
+    assert.ok(leaned[0].older_by_days > 0)
+    assert.deepEqual(aged.manifest.find(l => l.layer === 'canon')!.leaned_on, leaned, 'proven from the manifest, not argued')
+
+    // No freshness on the row: nothing is aged, nothing is listed.
+    const loose = assembleWritingSlice(
+      { ...rowWith(40_000), slice: { ...WRITING_SLICE, freshness: undefined } },
+      { chapter: scene().chapter, sceneId: 'sc.01-2' })
+    assert.ok(!/\n\s*AGED: /.test(loose.blocks.find(b => b.layer === 'canon')!.text), 'no state fact is marked aged')
+    assert.deepEqual(loose.forReceipt().leaned_on, [])
+  } finally {
+    fs.writeFileSync(file, original)
+  }
 })
 
 test('what is live here: every present stance, and what the story owes in this chapter with the scene expected to discharge it', () => {
@@ -627,7 +681,8 @@ test('what is live here: every present stance, and what the story owes in this c
   assert.match(live.text, /  → char\.wren: /)
   assert.match(live.text, /WHAT THE STORY OWES IN THIS CHAPTER\n- mat\.light-must-nearly-fail — [^\n]* · no scene claims it yet/)
   assert.match(live.text, /window ch\.01-ninety-one-stairs → ch\.02-the-aurelia/)
-  assert.deepEqual(live.ids, ['char.ines', 'mat.light-must-nearly-fail'])
+  assert.deepEqual(live.ids, ['char.ines', 'char.wren', 'mat.light-must-nearly-fail'],
+    'everyone the chapter has on the page, not the point of view alone')
 
   // Claimed by a scene the book does not have yet: still owed, and the pass
   // is told where it is expected.

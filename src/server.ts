@@ -768,7 +768,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
         throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
       }
-      const b = (await parsedBody(req)) as { scene?: unknown; paragraphs?: unknown; guidance?: unknown }
+      const b = (await parsedBody(req)) as { scene?: unknown; paragraphs?: unknown; guidance?: unknown; plan?: unknown }
       if (typeof b.scene !== 'string' || !b.scene) throw new HttpError(400, 'scene required')
       let paragraphs: [number, number] | undefined
       if (b.paragraphs !== undefined) {
@@ -777,11 +777,14 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         }
         paragraphs = b.paragraphs as [number, number]
       }
+      // The same three states as the draft's (A69-4, A69-8): absent, a
+      // settled plan, or null for a withdrawn line.
+      const plan = b.plan === null ? null : b.plan === undefined ? undefined : parsePlan(b.plan)
       json(res, 200, await runRedraft({
         scene: b.scene,
         paragraphs,
         guidance: typeof b.guidance === 'string' ? b.guidance : undefined,
-      }))
+      }, plan) satisfies DraftSceneResponse)
     },
   },
 

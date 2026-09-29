@@ -85,11 +85,23 @@ export async function runWorkNotes(t: WorkNotesTarget): Promise<WorkNotesRespons
     // The clean pass reads the same notes itself (openNotesOn) and records
     // them on the ledger; its refusals — locks, the validator, a quoted
     // withhold — surface as they are, in the author's words.
-    const out = await runRedraft({ scene: t.scene, guidance: t.guidance })
+    // The clean pass now stages a craft-plan reading in front of its write
+    // when a line is said (A69-8, A69-4), and this surface has no way to show
+    // the author that plan: it is the legacy notes-work view, and U2's own
+    // row is A69-9's. So a plan the reading returns is taken as it stands —
+    // the receipt records the line and the craft honestly — and the write
+    // runs on it. A refusal or a write that did not land is reported as one.
+    let out = await runRedraft({ scene: t.scene, guidance: t.guidance })
+    if (out.plan && out.file === null && !out.actions.length) {
+      out = await runRedraft({ scene: t.scene, guidance: t.guidance }, out.plan)
+    }
+    const changed = out.file !== null
     return {
-      scene: t.scene, mode, notes: ids, file: out.file, changed: true, conflicts: [],
-      reply: describeOutcome({ scene: t.scene, mode, notes: ids, changed: true, conflicts: [] }),
-      run: null,
+      scene: t.scene, mode, notes: ids, file: out.file, changed, conflicts: [],
+      reply: changed
+        ? describeOutcome({ scene: t.scene, mode, notes: ids, changed: true, conflicts: [] })
+        : out.reply,
+      run: out.run ?? null,
     }
   }
 
