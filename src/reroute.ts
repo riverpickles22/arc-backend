@@ -50,7 +50,7 @@ import { annotations, openNotesOn } from './annotations'
 import { canonJson } from './canon'
 import { currentEngine, renderBrief, type Brief, type EngineErrorKind } from './engine'
 import { runGates, stripQuotedSpans, type ProseGateCtx, type WithheldSet } from './gates'
-import { ROUTE_WITHHELD, ROW_EXPLORE_ROUTE, ROW_EXPLORE_SCENE, jobFingerprint, type SealedRow } from './registry'
+import { ROUTE_WITHHELD, ROW_EXPLORE_ROUTE, ROW_EXPLORE_SCENE, findRow, jobFingerprint, type SealedRow } from './registry'
 import type { ResolvedRequest } from './request'
 import { Run, emptyReceipt, gateName, outcomeSentence, readWorkingReceipt, writeReceipt, writeWorkingReceipt, type GateRecord, type Receipt } from './run'
 import { endRun, registerRun, stateOf } from './runs'
@@ -794,6 +794,65 @@ export function constrainingLocks(scene: string): RouteLockNotice[] {
  *  is the difference the reader shows rather than hides (criterion 6). A route
  *  whose run exists but whose receipt cannot be read is NOT that, and the
  *  difference is `alt.run`, which the reader reads for itself. */
+/** THE RECEIPT OF ANY RUN, in the shape the author reads (A69-11).
+ *
+ *  `routeReceipt` below is this, narrowed to one seed of a route. Every
+ *  other run — a draft, a clean pass, a minimal revision — has one whole
+ *  receipt and shows it under the same fold, so the same facts about two
+ *  different passes cannot be described two different ways.
+ *
+ *  Nothing here is a model's reading. Every field is copied from what arc
+ *  recorded about its own run, and a field arc did not record is absent
+ *  rather than invented. */
+export function runReceipt(runId: string): RouteReceipt | null {
+  const r = readWorkingReceipt(runId)
+  if (!r) return null
+  const intent = r.intent as { said?: string | null; plan?: { moves: { move: string; how: string }[] } | null; withdrawn?: boolean; note?: string } | null
+  return {
+    run: r.run_id,
+    ...(r.request ? { request: { gesture: r.request.gesture, cell: r.request.cell, ...(r.request.subject ? { subject: subjectWords(r.request.subject) } : {}) } } : {}),
+    given: r.slice?.included ?? [],
+    withheld_by_design: r.slice?.withheld_by_design ?? [],
+    dropped_for_budget: r.slice?.dropped_for_budget ?? [],
+    runtime_added: (r.slice?.runtime_added ?? []).map(addedWords),
+    gates: (r.gates ?? []).map(g => ({
+      gate: g.gate, says: gateName(g.gate), verdict: g.verdict, attempt: g.attempt,
+      bar: figure(g.bar), measured: figure(g.measured),
+    })),
+    // THE ENDING AS IT WAS RECORDED. The route reader hardcodes `landed`
+    // because a route the author can read is one that landed; every other
+    // run has an ending of its own and the fold says which.
+    ...(r.ending ? { ending: r.ending } : {}),
+    // The one sentence a run that did not land reaches the author by,
+    // rendered by code from the ending and the gate records — never phrased
+    // by a model, and null when it landed.
+    outcome: outcomeSentence({ ending: r.ending, gates: r.gates }),
+    ...(r.engine ? { engine: r.engine } : {}),
+    ...(typeof r.wall_clock_ms === 'number' ? { wall_clock_ms: r.wall_clock_ms } : {}),
+    started_at: r.started_at,
+    decided_at: r.decided_at,
+    ...(intent ? { intent: { said: intent.said ?? null, plan: intent.plan ?? null, ...(intent.withdrawn ? { withdrawn: true } : {}), ...(intent.note ? { note: intent.note } : {}) } } : {}),
+    ...(r.slice?.layers?.length ? { layers: r.slice.layers.map(l => ({ ...l })) } : {}),
+    ...(r.slice?.leaned_on?.length ? { leaned_on: r.slice.leaned_on.map(l => ({ ...l })) } : {}),
+    ...(r.notes_handed?.length ? { notes_handed: r.notes_handed.map(n => ({ ...n })) } : {}),
+    ...(olderArc(r) ? { older_arc: true } : {}),
+  }
+}
+
+/** HAS ARC CHANGED SINCE THIS RAN? The receipt records the fingerprint of
+ *  the job it ran under; the registry holds what that job is now. When they
+ *  differ, what arc would write today is not what it wrote then — and the
+ *  author is told so as a LABEL, never as a staleness that hides the work
+ *  (Q14, the author's decision). A run whose cell no longer has a row, or
+ *  that recorded no fingerprint, is not claimed either way. */
+function olderArc(r: { cell?: { job: string; scope: string; mode: string; depth: string; stage: string | null }; produced_by?: { job_fingerprint: string | null } }): boolean {
+  const was = r.produced_by?.job_fingerprint
+  if (!was || !r.cell) return false
+  const row = findRow(r.cell as never)
+  if (!row) return false
+  return jobFingerprint(row) !== was
+}
+
 export function routeReceipt(alt: RouteAlternative): RouteReceipt | null {
   if (!alt.run) return null
   const r = readWorkingReceipt(alt.run)

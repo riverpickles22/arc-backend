@@ -170,6 +170,25 @@ test('POST /api/annotations carries an absent paragraph through as absence', asy
     'a real paragraph 0 must not be mistaken for absence')
 })
 
+// WHAT ARC RECORDED ABOUT ONE RUN (A69-11). The fold under a draft opens
+// long after the response that made it is gone, so the receipt is read by
+// run id — and a run arc kept nothing for says so rather than answering
+// with an empty frame the author would read as "it was given nothing".
+test('GET /api/runs/:id/receipt answers 404 for a run arc kept nothing for', async () => {
+  const res = await get('/api/runs/run.9999/receipt')
+  assert.equal(res.status, 404)
+  const body = await res.json()
+  assert.match(body.error, /kept no receipt for run\.9999/)
+  assert.match(body.error, /before arc kept one, or what it kept has been cleared/,
+    'and says which, because the two are different facts about the draft')
+})
+
+test('a run id the route does not recognise is not a receipt request at all', async () => {
+  // The pattern admits `run.<digits>` only: a path that is not a run id must
+  // not reach the reader and come back as a 404 about a receipt.
+  assert.equal((await get('/api/runs/not-a-run/receipt')).status, 404)
+})
+
 // A keypoint is minted by the author's hand and by agent sessions alike, and
 // conventions §14 keeps the two apart by `by`. A note has one door and one
 // author; a keypoint that does not say who minted it would have to be

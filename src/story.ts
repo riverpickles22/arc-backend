@@ -266,6 +266,11 @@ export function proseDraft(): ProseDraft {
         if (!accepted) {
           change.origin = gen.entry.origin
           if (gen.entry.notes?.length) change.answers = [...gen.entry.notes]
+          // THE RUN IS THE ADDRESS OF THE RECEIPT (A69-11). Without it the
+          // fold under a draft has nothing to open, and a governed draft
+          // cannot be told from one an unrowed pass left in this same
+          // reading — which is what the trust boundary turns on (§11).
+          if (gen.entry.run) change.run = gen.entry.run
         }
       }
     }

@@ -38,6 +38,7 @@ import type {
   RunDecisionResponse,
   RunDetailResponse,
   RunResponse,
+  RunReceiptResponse,
   RunsResponse,
   StopRunResponse,
   StyleResponse,
@@ -101,7 +102,7 @@ import { proseChecks } from 'arc-canon-graph'
 import { runBootstrapStyle } from './bootstrap-style'
 import { runRedraft } from './redraft'
 import { runWorkNotes } from './work-notes'
-import { addRouteNote, adoptAlternative, clearAlternatives, deleteRouteNote, dropAlternative, listRoutes, routeCounts, runReroute, runRevise } from './reroute'
+import { addRouteNote, adoptAlternative, clearAlternatives, deleteRouteNote, dropAlternative, listRoutes, routeCounts, runReroute, runReceipt, runRevise } from './reroute'
 import { doctorRecords } from './doctor'
 import { generatedFor } from './ledger'
 import type { AdoptRouteResponse, DoctorRecordsResponse, RerouteResponse, RouteListResponse, WorkNotesMode, WorkNotesResponse } from 'arc-canon-graph/api-types.ts'
@@ -143,6 +144,22 @@ function registerRunParamRoutes(): void {
   paramRoutes.push({
     pattern: /^\/api\/runs\/(run\.\d+)\/stop$/,
     methods: { POST: (_req, res, id) => json(res, 200, { run: stopRun(id) } satisfies StopRunResponse) },
+  })
+  // WHAT ARC RECORDED ABOUT ONE RUN (A69-11). The fold under a draft opens
+  // days after the draft was made, so it cannot read the response that made
+  // it: the draft layer carries the run, and this is what the run says.
+  // Proven throughout — arc wrote every field about its own work.
+  paramRoutes.push({
+    pattern: /^\/api\/runs\/(run\.\d+)\/receipt$/,
+    methods: {
+      GET: (_req, res, id) => {
+        const receipt = runReceipt(id)
+        if (!receipt) {
+          throw new HttpError(404, `arc kept no receipt for ${id} — it was written before arc kept one, or what it kept has been cleared.`)
+        }
+        json(res, 200, { receipt } satisfies RunReceiptResponse)
+      },
+    },
   })
   // The transcripts a run's launches named, removed by id — after a run
   // that did not finish, or at the decision.
