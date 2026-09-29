@@ -448,6 +448,8 @@ export interface SliceManifest {
     because?: string
     note?: string
     leaned_on?: { id: string; as_of: string; older_by_days: number }[]
+    /** the rung each sibling scene reached the pass on (A69-7) */
+    rungs?: { scene: string; rung: string }[]
   }[]
   /** LEANED ON (A69-6): every state fact the brief carried past the row's
    *  freshness distance — the snapshot's timeref and how far past. Proven

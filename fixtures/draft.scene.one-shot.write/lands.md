@@ -1,12 +1,12 @@
 ---
 row: draft.scene.one-shot.write
 name: lands
-fingerprint: 2aa0aaffe3d23532
+fingerprint: caac4519615d18db
 expect: lands
 scenario: >
   the worked example as shipped; draft the next scene of ch.01, no line said.
   The answer is a scene file that validates against the example's canon.
-because: "the leans-on rule covers what the file binds, and an aged state fact says it is given rather than rested on (A69-6 review)"
+because: "the position layer marks the point of view's present state and places era-only states by the record's time; the ladder orders siblings by file order (A69-7 review)"
 ---
 ---
 scene: sc.01-2

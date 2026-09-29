@@ -59,6 +59,7 @@ import { HttpError } from './http'
 import { recordDisposition, type Disposition } from './evidence'
 import { recordGenerated } from './ledger'
 import { locksOn } from './locks'
+import { siblingLadder } from './ladder'
 import { contractBlock, literalWithholds, splitBriefing, withholdViolations } from './redraft'
 import { arcRevision, sha16, storyRevision } from './records'
 import { proseScenes, proseWrite } from './story'
@@ -178,7 +179,7 @@ export function fingerprintsAtWrite(scene: string): Fingerprints {
 /** The canon pack and the sibling scenes for one scene, built exactly once
  *  here so the reroute's brief and the staleness check can never drift into
  *  fingerprinting two different things. */
-function packAndSiblings(s: ProseScene): { pack: string; siblings: string } {
+export function packAndSiblings(s: ProseScene): { pack: string; siblings: string } {
   const canon = JSON.parse(canonJson()) as CanonDoc
   const chapter = (canon.chapters ?? []).find(c => c.id === s.chapter)
   const at = dateOf(chapter?.span?.end) ?? dateOf(chapter?.span?.start)
@@ -189,9 +190,11 @@ function packAndSiblings(s: ProseScene): { pack: string; siblings: string } {
   // contract does: two scenes of one chapter that share a sentence — a refrain,
   // a line that comes back — would otherwise hand the pass the very scene it is
   // meant to work without, through the neighbour rather than through itself.
+  // On the ladder the writing rows read (A69-7): the scene either side in
+  // full, the next at its contract, the rest as a line — one definition of
+  // "the chapter's other scenes" for every row that hands them over.
   const siblings = withoutSubjectProse(
-    proseScenes().filter(x => x.chapter === s.chapter && x.scene !== s.scene)
-      .map(x => `=== ${x.file} ===\n${x.body.trim()}`).join('\n\n'),
+    siblingLadder({ chapter: s.chapter, sceneId: s.scene }, proseScenes()).text(),
     { scene: s.scene, body: s.body },
   )
   return { pack, siblings }
@@ -372,8 +375,9 @@ const STYLE_FOR_PASS = new Map<string, { text: string; abbreviated: number }>()
  *  It is not only the style contract. ANY layer can carry the scene: a rule
  *  that quotes the paragraph it is about, and a sibling scene that shares a
  *  sentence with this one — two scenes of a chapter that repeat a line are a
- *  thing authors do on purpose, and the pass is handed its siblings in full.
- *  Whatever the layer, the fix is the same and it is applied in one place. */
+ *  thing authors do on purpose, and the pass is handed the scene either side
+ *  in full (the ladder, A69-7). Whatever the layer, the fix is the same and
+ *  it is applied in one place. */
 export function withoutSubjectProse(layer: string, target: { scene: string; body: string }, spanWords?: number): string {
   return withoutSubjectProseRead(layer, target, spanWords).text
 }

@@ -1,13 +1,13 @@
 ---
 row: draft.scene.one-shot.write
 name: lands-from-plan
-fingerprint: c591d2882af8782e
+fingerprint: ceb3f0917b3dea97
 expect: lands
 scenario: >
   the author said "more dread", read the craft plan the reading returned, and
   settled it as it stood. The write stage is briefed with that craft and never
   with their line.
-because: "the leans-on rule covers what the file binds, and an aged state fact says it is given rather than rested on (A69-6 review)"
+because: "the position layer marks the point of view's present state and places era-only states by the record's time; the ladder orders siblings by file order (A69-7 review)"
 ---
 ---
 scene: sc.01-2

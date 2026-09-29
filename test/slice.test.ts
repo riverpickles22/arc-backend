@@ -158,10 +158,13 @@ test('a draft has no scene, and that is not a story without a contract or notes'
 test('a layer arc cannot build yet is deferred, never none — none means there is nothing', () => {
   const s = assembleWritingSlice(rowWith(40_000), subject())
   const by = (l: string) => s.manifest.find(m => m.layer === l)!
-  for (const layer of ['position', 'research']) {
+  for (const layer of ['research']) {
     assert.equal(by(layer).status, 'deferred',
       `${layer}: arc does not read this yet, and saying "none" would tell the author the book is empty here`)
   }
+  // `position` and `voice` are built now (A69-7).
+  assert.equal(by('position').status, 'given')
+  assert.equal(by('voice').status, 'given')
   // `dramatic-condition` is built now (A69-6): the example's keeper has
   // stances on record and the story owes one obligation in this chapter.
   assert.equal(by('dramatic-condition').status, 'given')
@@ -228,7 +231,9 @@ test('layers drop in the row\'s order, and the style contract is the last to go'
     let s
     try { s = assembleWritingSlice(rowWith(budget), subject()) } catch { break }
     const gone = s.manifest.filter(l => l.status === 'not shown').map(l => l.layer)
-    assert.deepEqual(gone, droppableGiven.slice(0, gone.length).filter(l => gone.includes(l as never)),
+    // As sets: the manifest lists layers in the order a brief carries them,
+    // the drop order is the row's, and the claim is about membership.
+    assert.deepEqual([...gone].sort(), droppableGiven.slice(0, gone.length).sort(),
       `at ${budget} the layers gone are the first ${gone.length} of the row's order, not an arbitrary set`)
     assert.ok(gone.length >= previous, 'a tighter allowance never drops fewer')
     previous = gone.length
@@ -433,6 +438,148 @@ test('the draft layer keeps a scene whose file name is not ASCII', async () => {
   } finally {
     fs.rmSync(file, { force: true })
   }
+})
+
+// ---- position and voice (A69-7) --------------------------------------------
+
+test('position says where the scene sits: the chapter and the one before, the road here, the siblings on a ladder', () => {
+  const s = assembleWritingSlice(rowWith(40_000), { chapter: scene().chapter, sceneId: 'sc.01-2' })
+  const position = s.manifest.find(l => l.layer === 'position')!
+  assert.equal(position.status, 'given')
+  assert.deepEqual(position.ids, ['ch.01-ninety-one-stairs', 'char.ines', 'sc.01-1'])
+  assert.deepEqual(position.rungs, [{ scene: 'sc.01-1', rung: 'full' }], 'the scene before is on the full rung')
+  assert.match(position.note!, /sc\.01-1 at full/)
+  // And the receipt carries the rung, by name.
+  const onReceipt = s.forReceipt().layers.find(l => l.layer === 'position')!
+  assert.deepEqual(onReceipt.rungs, [{ scene: 'sc.01-1', rung: 'full' }])
+
+  const text = s.blocks.find(b => b.layer === 'position')!.text
+  assert.match(text, /CHAPTER 1 · Ninety-One Stairs — A month of nothing/, 'this chapter, with its summary')
+  assert.match(text, /THE CHAPTER BEFORE — none; this is the first chapter/)
+  assert.match(text, /ROAD HERE — char\.ines\n  as of 1910 \(year precision\) \(their state at this moment\)/, 'the trajectory, dated')
+  assert.match(text, /sc\.01-1 \(full\) — prose\/ch-01\/scene-01\.md\n/, 'and the sibling in full')
+  assert.ok(text.includes(scene().body.trim().slice(0, 60)))
+})
+
+test('across a chapter boundary the position names the chapter before, with its summary', () => {
+  const s = assembleWritingSlice(rowWith(40_000), { chapter: 'ch.02-the-aurelia', sceneId: 'sc.02-1' })
+  const text = s.blocks.find(b => b.layer === 'position')!.text
+  assert.match(text, /CHAPTER 2 · The Aurelia — The wreck and the six days after it/)
+  assert.match(text, /THE CHAPTER BEFORE — 1 · Ninety-One Stairs — A month of nothing/)
+  assert.match(text, /OTHER SCENES: none yet/)
+  assert.match(s.manifest.find(l => l.layer === 'position')!.note!, /no other scenes/)
+})
+
+test('the ladder lowers a rung at a time before the layer drops, and the manifest names each rung', () => {
+  const at = (budget: number) => {
+    const s = assembleWritingSlice(rowWith(budget), { chapter: scene().chapter, sceneId: 'sc.01-2' })
+    return { s, position: s.manifest.find(l => l.layer === 'position')!, text: s.blocks.find(b => b.layer === 'position')?.text ?? '' }
+  }
+  const full = at(40_000)
+  assert.deepEqual(full.position.rungs, [{ scene: 'sc.01-1', rung: 'full' }])
+
+  const contract = at(full.s.estimate - 5)
+  assert.equal(contract.position.status, 'given', 'too big by a hair: the sibling steps down, the layer stays')
+  assert.deepEqual(contract.position.rungs, [{ scene: 'sc.01-1', rung: 'contract' }])
+  assert.match(contract.position.note!, /sc\.01-1 at contract/)
+  assert.match(contract.text, /sc\.01-1 \(contract\)[^]*purpose: /)
+  assert.ok(!contract.text.includes(scene().body.trim().slice(0, 60)), 'the prose is gone from that rung')
+  assert.ok(contract.s.estimate < full.s.estimate)
+
+  const summary = at(contract.s.estimate - 5)
+  assert.deepEqual(summary.position.rungs, [{ scene: 'sc.01-1', rung: 'summary' }])
+  assert.match(summary.text, /sc\.01-1 \(summary\): Render one night of the watch/)
+
+  const gone = at(summary.s.estimate - 5)
+  assert.equal(gone.position.status, 'not shown', 'as small as it can be and still too big: now it drops')
+  assert.equal(gone.position.because, 'room ran out')
+  assert.equal(gone.position.rungs, undefined, 'a layer that was not sent names no rung')
+  for (const l of WRITING_SLICE.floor) {
+    assert.notEqual(gone.s.manifest.find(m => m.layer === l)!.status, 'not shown', `${l} is floor`)
+  }
+})
+
+test('voice carries the point-of-view rule from §1 and every present voice by id', () => {
+  const s = assembleWritingSlice(rowWith(40_000), { chapter: scene().chapter, sceneId: 'sc.01-2' })
+  const voice = s.manifest.find(l => l.layer === 'voice')!
+  assert.equal(voice.status, 'given')
+  assert.deepEqual(voice.ids, ['char.ines', 'char.wren'], 'the point of view first, then who the chapter has put on the page')
+  const text = s.blocks.find(b => b.layer === 'voice')!.text
+  assert.match(text, /THE POINT-OF-VIEW RULE \(your style contract, §1\)\n- \*\*POV\.\*\* Close third on Ines throughout/)
+  assert.match(text, /char\.ines \(point of view\) — Speaks aloud constantly/)
+  assert.match(text, /char\.wren — \(Behavioral signature\)/, 'the second voice, which no brief carried before')
+  assert.match(voice.note!, /2 voices on record/)
+  assert.match(voice.note!, /read from the chapter, since this scene is not written yet/)
+})
+
+test('a character with no voice recorded is listed as such — the gap is the author\'s to see', () => {
+  const file = path.join(STORY, 'canon', 'entities', 'characters', 'wren.yaml')
+  const original = fs.readFileSync(file, 'utf8')
+  assert.ok(/\nvoice: >\n/.test(original))
+  try {
+    fs.writeFileSync(file, original.replace(/\nvoice: >\n(?:  .*\n)+/, '\n'))
+    const s = assembleWritingSlice(rowWith(40_000), { chapter: scene().chapter, sceneId: 'sc.01-2' })
+    const text = s.blocks.find(b => b.layer === 'voice')!.text
+    assert.match(text, /char\.wren — no voice recorded/)
+    assert.match(s.manifest.find(l => l.layer === 'voice')!.note!, /no voice recorded for char\.wren/)
+  } finally {
+    fs.writeFileSync(file, original)
+  }
+})
+
+test('the point of view\'s road places era-only states by the record\'s own time, and marks the present only when it can', async () => {
+  const { povRoad } = await import('../src/slice.ts')
+  const { dk } = await import('arc-canon-graph/canon-graph.ts')
+  const canon = {
+    timeline: { eras: [
+      { id: 'era.before', span: { start: '1900', end: '1909' } },
+      { id: 'era.keeping', span: { start: '1910', end: '1911-01' } },
+      { id: 'era.after', span: { start: '1911-02', end: '1920' } },
+    ] },
+    entities: { 'char.x': { id: 'char.x', type: 'character', states: [
+      // File order is not time order, and none of these carries a date.
+      { at: { era: 'era.after' }, condition: 'spent' },
+      { at: { era: 'era.before' }, condition: 'young' },
+      { at: { era: 'era.keeping' }, condition: 'content' },
+    ] } },
+  } as never
+  const at1910 = povRoad(canon, 'char.x', dk('1910-11', true))
+  assert.match(at1910, /as of era\.before[^\n]*: young\n  as of era\.keeping[^\n]* \(their state at this moment\): content$/, 'in time order, the present marked, the later one absent')
+  assert.ok(!at1910.includes('spent'), 'a state from after this moment is not on the road')
+  const unplaced = povRoad(canon, 'char.x', undefined)
+  assert.match(unplaced, /cannot be placed/)
+  assert.ok(!unplaced.includes('at this moment'), 'no present is claimed when there is no moment to measure from')
+  assert.equal(unplaced.split('\n').length, 4, 'every state listed, in time order')
+})
+
+test('voice reads the point-of-view rule from this book\'s contract, never the author\'s constant layer', () => {
+  const authorLayer = process.env.ARC_AUTHOR_STYLE!
+  fs.writeFileSync(authorLayer, '# Me\n\n## 1. Always\n- **POV.** AUTHOR-LAYER-ONLY close third.\n')
+  try {
+    const s = assembleWritingSlice(rowWith(40_000), { chapter: scene().chapter, sceneId: 'sc.01-2' })
+    const text = s.blocks.find(b => b.layer === 'voice')!.text
+    assert.ok(!text.includes('AUTHOR-LAYER-ONLY'), 'the author layer\'s §1 is about every book, not this one')
+    assert.match(text, /Close third on Ines throughout/, 'the book\'s own §1 rule')
+  } finally {
+    fs.rmSync(authorLayer, { force: true })
+  }
+})
+
+test('the point-of-view rule is read from §1 alone, one bullet or several, and its absence is said', async () => {
+  const { povRuleOf } = await import('../src/slice.ts')
+  const two = povRuleOf([
+    '# Style', '', '## 1. The contract', '',
+    '- **Prologue POV.** Close external third on the man while', '  he is present.',
+    '- **POV elsewhere.** Carlos chapters: close third.',
+    '- **Tense.** Past.', '',
+    '## 2. Rhythm', '- **POV.** this is not §1 and must not be read',
+  ].join('\n'))
+  assert.equal(two, '- **Prologue POV.** Close external third on the man while he is present.\n- **POV elsewhere.** Carlos chapters: close third.')
+  // An indented bullet is a qualification of the rule above it, and travels with it.
+  assert.equal(povRuleOf('## 1. The contract\n- **POV.** Close third.\n  - never enter the dog\'s thoughts\n- **Tense.** Past.\n'),
+    '- **POV.** Close third. never enter the dog\'s thoughts')
+  assert.equal(povRuleOf('## 1. The contract\n- **Tense.** Past.\n'), '', 'a §1 with no such bullet')
+  assert.equal(povRuleOf('## 2. Rhythm\n- **POV.** x\n'), '', 'no §1 at all')
 })
 
 test('the handoff is floor: a budget that cannot hold it refuses before a token', () => {

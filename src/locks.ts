@@ -17,7 +17,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { dump as yamlDump, load as yamlLoad } from 'js-yaml'
-import type { LockLike, ResolvedLock } from 'arc-canon-graph'
+import type { LockLike, ProseScene, ResolvedLock } from 'arc-canon-graph'
 import { lockScope, lockViolations, resolveLocks } from 'arc-canon-graph/annotations.ts'
 import { STORY } from './config'
 import { HttpError } from './http'
@@ -69,6 +69,21 @@ export function locksOn(scene: string, body: string): ResolvedLock[] {
   const mine = activeLocks(readLocks()).filter(item =>
     item.anchor?.scene === scene || (chapter !== null && item.anchor?.chapter === chapter))
   return resolveLocks(mine, s => (s === scene ? body : null))
+}
+
+/** A reader over the locks as they stand NOW, read once, for a caller that
+ *  asks about many scenes — the sibling ladder — so the lock directory and
+ *  the prose tree are not re-read per question. Chapter membership comes
+ *  from the scenes the caller already holds. */
+export function lockResolver(scenes: ProseScene[]): (scene: string, body: string) => ResolvedLock[] {
+  const all = activeLocks(readLocks())
+  const chapterOf = new Map(scenes.map(s => [s.scene, s.chapter]))
+  return (scene, body) => {
+    const chapter = chapterOf.get(scene) ?? null
+    const mine = all.filter(item =>
+      item.anchor?.scene === scene || (chapter !== null && item.anchor?.chapter === chapter))
+    return resolveLocks(mine, s => (s === scene ? body : null))
+  }
 }
 
 /** The refusal, in the author's terms: a paragraph number where one applies,

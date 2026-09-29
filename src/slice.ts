@@ -47,6 +47,8 @@ import { literalWithholds } from './redraft'
 import { styleForPassRead } from './reroute'
 import { styleContract } from './style'
 import type { Row } from './registry'
+import { placeInChapter, siblingLadder, type Rung } from './ladder'
+import { loadStyleLayers } from './style'
 
 /** §4's eleven layers and the lock notice, in the order a brief carries them. The list is the
  *  checklist: a layer arc cannot assemble yet is still named, with the status
@@ -101,6 +103,21 @@ export interface LayerReading {
   note?: string
   /** the state facts given past the row's freshness distance (A69-6) */
   leaned_on?: LeanedOn[]
+  /** the rung each sibling scene reached the pass on (A69-7) */
+  rungs?: { scene: string; rung: Rung }[]
+}
+
+/** What a layer's builder hands the assembler: the block, plus why it is
+ *  not given, what the rendering did, and — for a layer that can shrink
+ *  before it drops — how to shrink it one step (A69-7). */
+type Candidate = SliceBlock & {
+  because?: string
+  note?: string
+  rungs?: { scene: string; rung: Rung }[]
+  /** Lower the layer one step in place — a sibling one rung — and say
+   *  whether anything moved. The drop loop calls this until the brief fits
+   *  or nothing is left to lower, and only then drops the layer. */
+  lower?: () => boolean
 }
 
 export interface WritingSlice {
@@ -342,17 +359,21 @@ function contractBlock(c: SceneContract | null | undefined, stage: SliceStage): 
  *  and a draft that begins one is exactly where the handoff matters most. */
 export function previousScene(canon: CanonDoc, subject: WritingSubject, scenes: ProseScene[]): ProseScene | null {
   const order = new Map((canon.chapters ?? []).map(c => [c.id, c.order]))
-  const num = (id: string): number => Number(id.split('-').pop()) || 0
   // A chapter the canon does not list, or lists without an `order`, ranks by
   // the number in its id — never as chapter zero. Ranked first, the scene
   // after it would read as "the first scene of the book": a false `none`,
   // the one status this file promises is honest.
   const chapterRank = (chapter: string): number => order.get(chapter) ?? Number(chapter.match(/\d+/)?.[0] ?? 0)
-  const rank = (chapter: string, scene: string): number => chapterRank(chapter) * 1000 + num(scene)
-  const mine = rank(subject.chapter, subject.scene?.scene ?? subject.sceneId ?? '')
+  // Within a chapter, file order (conventions §10) — the ladder's one
+  // definition of where a scene sits, so a scene whose id tail is not a
+  // number is still the scene before the one after it.
+  const sceneId = subject.scene?.scene ?? subject.sceneId
+  const mine = chapterRank(subject.chapter) * 1000 + placeInChapter({ chapter: subject.chapter, sceneId }, scenes).at
+  const rank = (s: ProseScene): number =>
+    chapterRank(s.chapter) * 1000 + placeInChapter({ chapter: s.chapter, sceneId: s.scene }, scenes).at
   return scenes
-    .filter(s => s.scene !== subject.scene?.scene)
-    .map(s => ({ s, r: rank(s.chapter, s.scene) }))
+    .filter(s => s.scene !== sceneId)
+    .map(s => ({ s, r: rank(s) }))
     .filter(x => x.r < mine)
     .sort((a, b) => b.r - a.r)[0]?.s ?? null
 }
@@ -429,7 +450,7 @@ function handoffText(canon: CanonDoc, prev: ProseScene, material: MaterialItem[]
  *  A layer that has no builder yet is here too, with the status that says so
  *  and the card that will build it — the manifest is the checklist, and a
  *  layer left off it is a gap nobody can see. */
-function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent: Intent): (SliceBlock & { because?: string; note?: string })[] {
+function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent: Intent): Candidate[] {
   const scene = subject.scene
   const canon = JSON.parse(canonJson()) as CanonDoc
   const chapter = (canon.chapters ?? []).find(c => c.id === subject.chapter)
@@ -487,12 +508,10 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
   const locks = scene
     ? locksOn(scene.scene, scene.body).filter(l => l.scope === 'paragraph' && l.resolution.paragraph !== null)
     : []
-  const povVoice = pov ? (canon.entities?.[pov]?.voice ?? '').trim() : ''
-
   const b = (
     layer: WritingLayer, ids: string[], reason: string, text: string,
     extra: { because?: string; note?: string } = {},
-  ): SliceBlock & { because?: string; note?: string } => ({
+  ): Candidate => ({
     layer, ids, reason, status: text.trim() ? 'given' : 'none', text: text.trim() ? text : '', ...extra,
   })
 
@@ -587,13 +606,13 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
       leaned_on: withStatus.leaned_on,
     },
 
-    { layer: 'position', ids: [], reason: 'where this scene sits in the book', status: 'deferred', text: '',
-      because: 'arc does not read the neighbouring scenes or the chapter summaries yet' },
+    positionCandidate(row, canon, subject, chapter, pov, T, scenes),
 
-    b('voice', pov ? [pov] : [], 'how the point-of-view character sounds',
-      povVoice ? `${pov}: ${povVoice}` : '',
-      { because: pov ? 'no voice is recorded for the point-of-view character' : 'this scene names no point of view',
-        note: 'the point-of-view character only; the others in the scene are not described yet' }),
+    // A scene not yet written binds nobody. Who is here is then read from the
+    // chapter — the characters its other scenes bind and its events name —
+    // so the voices of the people the draft will most likely meet are in the
+    // brief, and a gap in the record is shown before the pass fills it.
+    voiceCandidate(row, canon, pov, scene ? present : [...present, ...chapterCast(canon, subject.chapter, scenes)], !scene),
 
     // Q16 is open and this is the honest answer until it is settled.
     { layer: 'research', ids: [], reason: 'what the bound records cite', status: 'deferred', text: '',
@@ -619,6 +638,169 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
         : '',
       { because: 'nothing in this scene is locked' }),
   ]
+}
+
+/** WHERE THIS SCENE SITS (A69-7; §4, "Position"): the chapter and the one
+ *  before it as the record summarises them, the point of view's road to this
+ *  moment, and the chapter's other scenes on the ladder. The ladder is what
+ *  makes this layer shrink before it drops: `lower()` takes the farthest
+ *  sibling down a rung, and the manifest names where each one stood. */
+type ChapterRow = { id: string; order?: number; title?: string; summary?: string }
+
+function positionCandidate(
+  row: Row, canon: CanonDoc, subject: WritingSubject, chapterIn: { id: string; order?: number } | undefined,
+  pov: string | undefined, T: number | undefined, scenes: ProseScene[],
+): Candidate {
+  const reason = 'where this scene sits in the book'
+  // Only a slice that declares the layer pays for it (as the handoff): the
+  // ladder reads every sibling and the lock directory.
+  if (!(row.slice.layers as readonly string[]).includes('position')) {
+    return { layer: 'position', ids: [], reason, status: 'none', text: '', because: 'not a layer of this reading' }
+  }
+  const chapter = chapterIn as ChapterRow | undefined
+  if (!chapter) {
+    return { layer: 'position', ids: [], reason, status: 'none', text: '', because: `the record lists no chapter ${subject.chapter}` }
+  }
+  const chapters = [...((canon.chapters ?? []) as ChapterRow[])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+  const prev = [...chapters].reverse().find(c => (c.order ?? 0) < (chapter.order ?? 0))
+  const line = (c: ChapterRow, label: string): string =>
+    `${label} ${c.order ?? '?'} · ${c.title ?? c.id}${c.summary ? ` — ${oneLine(c.summary)}` : ' — no summary recorded'}`
+
+  const road = povRoad(canon, pov, T)
+
+  const ladder = siblingLadder({ chapter: subject.chapter, sceneId: subject.scene?.scene ?? subject.sceneId }, scenes)
+  const siblings = (): string => ladder.rungs.length
+    ? `THE CHAPTER'S OTHER SCENES (yours follows or precedes them; do not retell them)\n${ladder.text()}`
+    : "THE CHAPTER'S OTHER SCENES: none yet — this is the chapter's first"
+  const render = (): string => [
+    line(chapter, 'CHAPTER'),
+    prev ? line(prev, 'THE CHAPTER BEFORE —') : 'THE CHAPTER BEFORE — none; this is the first chapter',
+    road,
+    siblings(),
+  ].filter(Boolean).join('\n\n')
+  const noteOf = (): string => ladder.rungs.length ? ladder.note() : 'no other scenes in this chapter'
+
+  const c: Candidate = {
+    layer: 'position',
+    ids: [chapter.id, ...(prev ? [prev.id] : []), ...(pov ? [pov] : []), ...ladder.rungs.map(r => r.scene)],
+    reason, status: 'given', text: render(), note: noteOf(), rungs: ladder.rungs.map(r => ({ scene: r.scene, rung: r.rung })),
+    lower: () => {
+      if (!ladder.lower()) return false
+      c.text = render(); c.note = noteOf(); c.rungs = ladder.rungs.map(r => ({ scene: r.scene, rung: r.rung }))
+      return true
+    },
+  }
+  return c
+}
+
+const oneLine = (s: string | undefined): string => (s ?? '').replace(/\s+/g, ' ').trim()
+
+/** THE POINT OF VIEW'S ROAD HERE: every snapshot of the point-of-view
+ *  character up to this moment, in the record's own time — eras and dates
+ *  through one key, as the record layer places them — with the one that
+ *  holds at this moment marked. What each snapshot claims in full is the
+ *  record layer's; this is the shape of the road, not the ground. A chapter
+ *  whose span states no date has no moment to place the road against, and
+ *  the brief says so rather than marking a present it cannot know. */
+export function povRoad(canon: CanonDoc, pov: string | undefined, T: number | undefined): string {
+  if (!pov) return ''
+  const eras = canon.timeline?.eras ?? []
+  const entity = canon.entities?.[pov]
+  const all = ((entity?.states ?? []) as { at: TimeRef; location?: string; condition?: string; psychology?: string }[])
+    .map(s => ({ s, k: timeRefKey(s.at, eras) }))
+    .sort((a, b) => a.k - b.k)
+  if (!all.length) return `THE POINT OF VIEW'S ROAD HERE — ${pov}: no state history recorded`
+  const line = (x: (typeof all)[number], mark: string): string => {
+    const parts = [x.s.location && `at ${x.s.location}`, x.s.condition && oneLine(x.s.condition), x.s.psychology && oneLine(x.s.psychology)].filter(Boolean)
+    return `  as of ${asOf(x.s.at)}${mark}: ${parts.join('; ') || 'nothing recorded'}`
+  }
+  if (T === undefined) {
+    return [`THE POINT OF VIEW'S ROAD — ${pov} (the chapter states no dated span, so which of these holds at this scene cannot be placed)`,
+      ...all.map(x => line(x, ''))].join('\n')
+  }
+  const upTo = all.filter(x => x.k <= T)
+  if (!upTo.length) return `THE POINT OF VIEW'S ROAD HERE — ${pov}: no state at or before this moment — the record says nothing about them yet`
+  return [`THE POINT OF VIEW'S ROAD HERE — ${pov}`,
+    ...upTo.map((x, i) => line(x, i === upTo.length - 1 ? ' (their state at this moment)' : ''))].join('\n')
+}
+
+/** THE POINT-OF-VIEW RULE for the book, read out of §1 of THIS BOOK's style
+ *  contract — `docs/style.md`, never the author's constant layer, whose own
+ *  §1 is about every book — the bullets of that section that speak of point
+ *  of view, each with its indented qualifications. The contract is the
+ *  author's file and this is a reading of it, not an edit; which of several
+ *  rules is this chapter's is for the pass to see, since the record does not
+ *  say. Absent §1, or a §1 with no such bullet, the brief says so. */
+export function povRuleOf(contract: string): string {
+  const lines = contract.split('\n')
+  const start = lines.findIndex(l => /^##\s*1\b/.test(l))
+  if (start < 0) return ''
+  let end = lines.findIndex((l, i) => i > start && /^##\s/.test(l))
+  if (end < 0) end = lines.length
+  const bullets: string[] = []
+  for (const l of lines.slice(start + 1, end)) {
+    const m = l.match(/^(\s*)[-*]\s+(.*)$/)
+    // A bullet at the margin is a rule; an indented one is part of the rule
+    // above it — a qualification that must travel with what it qualifies.
+    if (m && (m[1].length === 0 || !bullets.length)) bullets.push(l.trim())
+    else if (m) bullets[bullets.length - 1] += ' ' + m[2].trim()
+    else if (bullets.length && /^\s+\S/.test(l)) bullets[bullets.length - 1] += ' ' + l.trim()
+  }
+  return bullets.filter(b => /\bPOV\b|point[- ]of[- ]view/i.test(b)).join('\n')
+}
+
+/** The characters a chapter has already put on the page: bound by its
+ *  scenes, or named by its events. */
+function chapterCast(canon: CanonDoc, chapterId: string, scenes: ProseScene[]): string[] {
+  const chapter = (canon.chapters ?? []).find(c => c.id === chapterId) as { events?: string[] } | undefined
+  return [...new Set([
+    ...scenes.filter(s => s.chapter === chapterId).flatMap(s => s.facts ?? []),
+    ...(chapter?.events ?? []).flatMap(e => [
+      ...(canon.events?.[e]?.participants ?? []).map(p => p.entity),
+      ...(canon.events?.[e]?.witnesses ?? []),
+    ]),
+  ])].filter(id => canon.entities?.[id]?.type === 'character')
+}
+
+/** VOICE (A69-7; §4, "Voice"): the point-of-view rule from the contract,
+ *  then how every character here sounds — the point of view, whoever the
+ *  scene binds, whoever its events name — each by id, and *no voice
+ *  recorded* where the record is silent, so the gap is the author's to see
+ *  rather than the model's to fill. */
+function voiceCandidate(row: Row, canon: CanonDoc, pov: string | undefined, present: string[], fromChapter = false): Candidate {
+  const reason = 'how the point of view is told, and how each person here sounds'
+  if (!(row.slice.layers as readonly string[]).includes('voice')) {
+    return { layer: 'voice', ids: [], reason, status: 'none', text: '', because: 'not a layer of this reading' }
+  }
+  const rule = povRuleOf(loadStyleLayers().story?.body ?? '')
+  const cast = [...new Set([...(pov ? [pov] : []), ...present])]
+    .filter(id => canon.entities?.[id]?.type === 'character')
+  const voices = cast.map(id => {
+    const v = (canon.entities?.[id]?.voice ?? '').trim()
+    return `${id}${id === pov ? ' (point of view)' : ''} — ${v ? oneLine(v) : 'no voice recorded'}`
+  })
+  const text = [
+    rule ? `THE POINT-OF-VIEW RULE (your style contract, §1)\n${rule}` : '',
+    voices.length ? `WHO IS HERE, AND HOW EACH SOUNDS\n${voices.join('\n')}` : '',
+  ].filter(Boolean).join('\n\n')
+  const silent = cast.filter(id => !(canon.entities?.[id]?.voice ?? '').trim())
+  // Why there is nothing, said for the gap that is actually there.
+  const because = [
+    !pov ? 'this scene names no point of view and nobody is on the page yet'
+      : canon.entities?.[pov]?.type !== 'character' ? `the point of view, ${pov}, is not a character the record knows — check the chapter's pov`
+        : '',
+    rule ? '' : 'your style contract states no point-of-view rule in §1',
+  ].filter(Boolean).join(', and ')
+  return {
+    layer: 'voice', ids: cast, reason,
+    status: text ? 'given' : 'none', text,
+    because,
+    note: [
+      rule ? 'the point-of-view rule is read from §1 of your contract' : 'your style contract states no point-of-view rule in §1',
+      silent.length ? `no voice recorded for ${silent.join(', ')}` : `${cast.length} voice${cast.length === 1 ? '' : 's'} on record`,
+      ...(fromChapter ? ['who is here is read from the chapter, since this scene is not written yet'] : []),
+    ].join('; '),
+  }
 }
 
 const HEADINGS: Record<WritingLayer, string> = {
@@ -693,6 +875,11 @@ export function assembleWritingSlice(
   for (const layer of row.slice.dropOrder as WritingLayer[]) {
     if (fits(keep) <= budget) break
     if (!keep.has(layer) || floor.has(layer)) continue
+    // A layer that can shrink shrinks first — a sibling a rung at a time —
+    // and drops only when it is as small as it can be and still too big.
+    const c = byLayer.get(layer)
+    while (fits(keep) > budget && c?.lower?.()) { /* one rung */ }
+    if (fits(keep) <= budget) break
     keep.delete(layer); dropped.push(layer)
   }
 
@@ -724,6 +911,8 @@ export function assembleWritingSlice(
       // And what was leaned on is only what was GIVEN: a state fact in a
       // layer that dropped for room reached no pass.
       ...(c.leaned_on?.length && status === 'given' ? { leaned_on: c.leaned_on.map(l => ({ ...l })) } : {}),
+      // And where each sibling stood, as it was when the brief was sent.
+      ...(c.rungs?.length && status === 'given' ? { rungs: c.rungs.map(r => ({ ...r })) } : {}),
     }
   })
 
