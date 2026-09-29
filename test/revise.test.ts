@@ -1,11 +1,14 @@
-// Write fan-out. The properties that matter are the ones that make writing
-// safe: conflicts surfaced BEFORE anything is written, overlapping write sets
-// serialised, staleness decided by fingerprint, and a worker that cannot
-// reach canon however much a note implies it should.
+// The shape of a notes revision: how notes cluster, what a worker may write,
+// what a reading of them parses to, and what the row's two rules texts say.
+// The RUNNING of it — the conflict reading, the craft plan, the write — is
+// work-notes.test.ts and the fixture engine (A69-9).
+//
+// The properties that matter are the ones that make writing safe: conflicts
+// surfaced BEFORE anything is written, overlapping write sets serialised,
+// staleness decided by fingerprint, and a worker that cannot reach canon
+// however much a note implies it should.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import fs from 'node:fs'
-import path from 'node:path'
 import type { ResolvedAnnotation } from 'arc-canon-graph'
 import { makeStory, writeScene } from './fixture.ts'
 
@@ -15,10 +18,8 @@ process.env.ARC_DRAFT_ENGINE = 'none'
 
 writeScene(STORY, 'prose/ch-01/scene-02.md', 'sc.01-2', 'A second scene, so two clusters can be disjoint.')
 
-const {
-  clusterNotes, planRevisionGraph, scheduleWaves, buildConflictPrompt, parseConflicts,
-  buildRevisePrompt, runRevisionFanOut,
-} = await import('../src/revise.ts')
+const { clusterNotes, planRevisionGraph, scheduleWaves, parseConflicts } = await import('../src/revise.ts')
+const { CONFLICT_RULES, REVISE_RULES, ROW_REVISE_SCENE_STAGED, MINIMAL_REVISION_GATES } = await import('../src/registry.ts')
 const { checkPathWrite, checkRecordWrite } = await import('../src/capability.ts')
 
 const note = (id: string, scene: string, body: string, over: Partial<ResolvedAnnotation> = {}): ResolvedAnnotation => ({
@@ -132,32 +133,30 @@ test('a node overlapping only one of several still gets its own wave', () => {
 
 // ---- conflicts: surfaced before anything is written ------------------------
 
-test('the conflict pass is told to surface tensions, never to resolve them', () => {
-  const p = buildConflictPrompt([
-    note('note.001', 'sc.01-1', 'Make Manuel seem more suspicious here.'),
-    note('note.007', 'sc.05-1', 'The Manuel reveal feels too obvious.'),
-  ])
-  assert.match(p, /note\.001/)
-  assert.match(p, /note\.007/)
-  assert.match(p, /NOT resolving/)
-  assert.match(p, /Do not suggest which note should win/)
+test('the conflict reading is told to surface tensions, never to resolve them', () => {
+  assert.match(CONFLICT_RULES, /NOT resolving/)
+  assert.match(CONFLICT_RULES, /Do not suggest which note should win/)
+  assert.match(CONFLICT_RULES, /An empty array is the common answer/)
+  // It is the row's FIRST stage, and it always runs: two notes that pull
+  // against each other are the author's decision, and a pass that wrote
+  // first would have made it for them.
+  const stage = ROW_REVISE_SCENE_STAGED.stages[0]
+  assert.equal(stage.id, 'conflict')
+  assert.equal(stage.when, 'always')
+  assert.equal(stage.answer, 'conflicts')
+  assert.equal(stage.rules, CONFLICT_RULES)
 })
 
 // A note about the whole scene has no passage to quote — often because it is
-// about what the scene does NOT say. Both prompts must name that scope rather
-// than quote an empty string, or the model is told the note is about nothing.
-test('a scene note tells the model it is about the section, not about ""', () => {
-  const sceneNote = note('note.009', 'sc.01-1', 'we never reference the tide in this section',
-    { anchor: { scene: 'sc.01-1' }, resolution: { state: 'resolved', paragraph: null } })
-
-  const conflict = buildConflictPrompt([sceneNote])
-  assert.match(conflict, /about the whole scene/)
-  assert.doesNotMatch(conflict, /at ""/)
-
-  const revise = buildRevisePrompt('sc.01-1', 'The morning smelled of coffee.', [sceneNote], 'STYLE')
-  assert.match(revise, /about the whole scene/)
-  assert.doesNotMatch(revise, /on ""/)
-  assert.match(revise, /we never reference the tide/)
+// about what the scene does NOT say. The ASSEMBLER's notes layer is the one
+// place notes are rendered for any pass now (A69-9), so that is where the
+// scope is named rather than quoted as an empty string; slice.test.ts holds
+// it. What this file holds is that the row reads that layer and no other.
+test('both stages read the author\'s notes from the slice, and nothing else does', () => {
+  const [conflict, , write] = ROW_REVISE_SCENE_STAGED.stages
+  assert.deepEqual([...conflict.slice.layers], ['notes'],
+    'the reading is shown the notes and nothing of the story')
+  assert.ok(write.slice.layers.includes('notes'), 'and the write is shown them in their place')
 })
 
 test('a conflict needs two notes and a stated tension, or it is not one', () => {
@@ -172,42 +171,95 @@ test('a conflict needs two notes and a stated tension, or it is not one', () => 
   assert.deepEqual(parseConflicts('the model wrote prose instead'), [])
 })
 
-test('NOTHING is written while a conflict stands', async () => {
-  const before = fs.readFileSync(path.join(STORY, 'prose/ch-01/scene-01.md'), 'utf8')
-  const { Run } = await import('../src/run.ts')
-
-  // Engine 'none' makes the conflict pass fail, which must be treated as
-  // "unchecked", never as "no conflicts" — a failed check is not a licence.
-  const report = await runRevisionFanOut([note('note.001', 'sc.01-1', 'x')], new Run('cli', 'revise'))
-
-  assert.ok(report.conflicts.length, 'it refused rather than guessed')
-  assert.match(report.conflicts[0].tension, /could not check/)
-  assert.deepEqual(report.revisions, [], 'no revision was attempted')
-  assert.deepEqual(report.scenes_changed, [])
-  assert.equal(fs.readFileSync(path.join(STORY, 'prose/ch-01/scene-01.md'), 'utf8'), before,
-    'the prose is byte-identical')
+test('an answer that could not be read is not "no conflicts" — the difference licenses a write', async () => {
+  const { readConflicts } = await import('../src/revise.ts')
+  // Looked, and found nothing. The common answer, and a good one.
+  assert.deepEqual(readConflicts('[]'), [])
+  assert.deepEqual(readConflicts('```json\n[]\n```'), [])
+  // Did not look. Each of these read as an empty list before, and an empty
+  // list is what lets the revision proceed (§5, P2 fails closed).
+  assert.equal(readConflicts(''), null, 'nothing at all')
+  assert.equal(readConflicts('I am sorry, I cannot help with that.'), null, 'an apology')
+  assert.equal(readConflicts('[{"between": ["note.001", "note.007"], "tension": "cut off'), null, 'a truncation')
+  // And the array is found wherever it sits: a model that wraps it in an
+  // object still looked, and answering tolerantly is the house rule.
+  assert.deepEqual(readConflicts('{"conflicts": []}'), [], 'wrapped, but an answer')
+  assert.equal(readConflicts(JSON.stringify([{ between: ['note.1'] }, { tension: 'x' }])), null,
+    'entries that are all unreadable: nothing was understood')
+  // One readable tension among malformed ones still stops the write, which
+  // is the safe direction.
+  assert.equal(readConflicts(JSON.stringify([
+    { between: ['note.1'] },
+    { between: ['note.2', 'note.3'], tension: 'a real one' },
+  ]))?.length, 1)
 })
 
-test('no open notes is a clean empty report, not an error', async () => {
-  const { Run } = await import('../src/run.ts')
-  const report = await runRevisionFanOut([], new Run('cli', 'revise nothing'))
-  assert.equal(report.clusters, 0)
-  assert.deepEqual(report.revisions, [])
-  assert.deepEqual(report.conflicts, [])
+test('the conflict reading refuses an answer it could not read, and never calls it quiet', async () => {
+  const { runRowGates } = await import('../src/gates.ts')
+  const { gateCtx } = await import('../src/reroute.ts')
+  const ctx = gateCtx({ sceneName: '', sceneBody: '', sceneLocks: [], lockedTexts: [], literals: [], andCap: null, wordCap: null, destination: [], known: [] })
+  const row = { gates: [], answer: 'conflicts' } as never
+  const quiet = runRowGates(row, ctx, '[]')
+  assert.equal(quiet.ok, true, 'an empty array is an answer')
+  const lost = runRowGates(row, ctx, 'I could not check those notes.')
+  assert.equal(lost.ok, false)
+  assert.equal(lost.ok ? false : lost.unreadable, true)
+  assert.match(lost.ok ? '' : lost.reason, /could not read that check of your notes, so nothing was written/)
+})
+
+test('a ratified rule binds what arc writes, never the prose the author already has', async () => {
+  const { runRowGates } = await import('../src/gates.ts')
+  const { gateCtx } = await import('../src/reroute.ts')
+  // The author's own scene breaks the author's own cap — their book, their
+  // call. A minimal revision is told to hand such a paragraph back word for
+  // word, and was then refused for doing it (A69-9 review).
+  const long = `A sentence that ${'runs on and '.repeat(9)}stops.`
+  const asked = 'The paragraph a note pointed at, rewritten.'
+  const before = `${long}\n\n${asked}`
+  const base = {
+    sceneName: 'sc.01-1', sceneBody: before, sceneLocks: [], lockedTexts: [],
+    literals: [], andCap: null, wordCap: 20, destination: [], known: [],
+  }
+  const row = { gates: ['sentence-length'], answer: 'body-only' } as never
+
+  const returned = `${long}\n\nSomething new and short.`
+  assert.equal(runRowGates(row, gateCtx(base), returned).ok, false,
+    'without the exemption the author\'s own paragraph refuses the answer')
+  const kind = runRowGates(row, { ...gateCtx(base), exemptUnchanged: true }, returned)
+  assert.equal(kind.ok, true, 'and with it, prose the pass returned is not prose the pass wrote')
+
+  // What the pass DID write is still measured.
+  const wrote = `${asked}\n\nA new sentence that ${'runs on and '.repeat(9)}stops.`
+  const caught = runRowGates(row, { ...gateCtx({ ...base, sceneBody: before }), exemptUnchanged: true }, wrote)
+  assert.equal(caught.ok, false, 'a long sentence the pass wrote is refused as it always was')
+  assert.match(caught.ok ? '' : caught.reason, /where the contract stops at 20/)
+})
+
+test('the row declares what "minimal" will be checked against, and says what is not checked yet', () => {
+  assert.deepEqual([...MINIMAL_REVISION_GATES], [
+    'locks', 'lock-order', 'validator', 'withhold-literals', 'blast-radius', 'and-chain', 'sentence-length',
+  ])
+  // blast-radius is DESIGNED, SLICE 3. It is on the row now so every receipt
+  // says this is not yet checked — "minimal" is the claim the row makes
+  // loudest, and a gate the author cannot see is one they cannot ask about.
+  assert.ok(MINIMAL_REVISION_GATES.includes('blast-radius'))
+  assert.equal(ROW_REVISE_SCENE_STAGED.gates, MINIMAL_REVISION_GATES)
+  // And no leans-on: a minimal revision answers instructions and argues
+  // nothing, so there is no briefing to carry the block.
+  assert.ok(!MINIMAL_REVISION_GATES.includes('leaned-on'))
+  assert.equal(ROW_REVISE_SCENE_STAGED.answer, 'body-only')
 })
 
 // ---- what the worker is told ----------------------------------------------
 
-test('the revision prompt binds the contract and forbids inventing canon', () => {
-  const p = buildRevisePrompt('sc.01-1', 'The morning smelled of coffee.', [
-    note('note.001', 'sc.01-1', 'Diego is furniture here.'),
-  ], 'THE NO-COMMENT LAW: never explain a feeling.')
-
-  assert.match(p, /NO-COMMENT LAW/, 'the author\'s own rules are the authority')
-  assert.match(p, /note\.001/, 'and the note is named, so the revision has provenance')
-  assert.match(p, /Never invent a fact about the world/)
-  assert.match(p, /Change as little as the notes require/)
-  assert.match(p, /The morning smelled of coffee/)
+test('the revision rules bind the contract, forbid inventing canon, and keep the register', () => {
+  assert.match(REVISE_RULES, /THE CONTRACT BELOW IS BINDING/, 'the author\'s own rules are the authority')
+  assert.match(REVISE_RULES, /Never invent a fact about the world/)
+  assert.match(REVISE_RULES, /CHANGE AS LITTLE AS THE NOTES REQUIRE/)
+  assert.match(REVISE_RULES, /YOU HAVE NO TOOLS/, 'a sealed pass')
+  assert.match(REVISE_RULES, /return unchanged, word for word/, 'and "minimal" is said, not implied')
+  assert.doesNotMatch(REVISE_RULES, /ONE ATTEMPT, NOT A/, 'this is not the clean pass')
+  assert.doesNotMatch(REVISE_RULES, /=== BRIEFING ===/, 'and it argues nothing')
 })
 
 test('every revision carries the notes that caused it', () => {

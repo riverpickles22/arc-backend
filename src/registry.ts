@@ -104,6 +104,11 @@ export type GateId =
   /** the ids the briefing says the prose rests on: a proposed or material id
    *  named there as settled is refused (A69-6) */
   | 'leaned-on'
+  /** designed, slice 3: a minimal revision that changed a paragraph no
+   *  handed note anchors to is refused. Declared on U2's row now so the
+   *  receipt says what is NOT yet checked (A69-9); it judges nothing until
+   *  slice 3 builds it. */
+  | 'blast-radius'
 
 /** How the answer is shaped, so a gate can read it without a model. */
 /** THE CRAFT MOVES (A69-4; §4, "The craft plan"). Q11, decided by the author
@@ -146,6 +151,13 @@ export type AnswerShape =
    *  its leans-on block — a rebuild of prose that already exists, so no
    *  frontmatter and no coverage tail (A69-8) */
   | 'body-and-briefing'
+  /** one fenced JSON array of the tensions between the author's notes —
+   *  a reading that writes nothing, and whose non-empty answer stops the
+   *  job so the author can decide (A69-9) */
+  | 'conflicts'
+  /** the revised scene body alone: no frontmatter, no briefing, because a
+   *  minimal revision answers instructions and has nothing to argue (A69-9) */
+  | 'body-only'
 
 /** What a withholding row withholds, declared on the ROW rather than known
  *  by the pass (§4, envelope rule 4; A67-7). The leak gate reads this to
@@ -253,10 +265,20 @@ export type LaunchSpec = Cell & Pick<SealedRow, 'withholding' | 'withheld' | 'ga
 
 export type Row = SealedRow | StagedRow | FanOutRow | InvestigationRow | RecordAgentRow
 
-/** The row's key: job.scope.mode, with the stage when it has one. Names
- *  its fixture directory and its line on the receipt. */
+/** The row's key: job.scope.mode, with the DEPTH when it is not the standard
+ *  one, and the stage when it has one. Names its fixture directory and its
+ *  line on the receipt.
+ *
+ *  Depth is in the key because two registers of one job are two rows (§3),
+ *  and two rows must not share a fixture directory: U2's minimal revision and
+ *  U3's clean pass are both `revise · scene · one-shot` and both have a
+ *  `write` stage, so without it one row's recorded answers would silently
+ *  stand in for the other's (A69-9). `standard` is left out so every key
+ *  written before this stays exactly what it was — the same rule
+ *  `resolveRequest` already uses when it names a cell for the author. */
 export type RowKey = string
-export const rowKey = (r: Cell): RowKey => `${r.job}.${r.scope}.${r.mode}${r.stage ? `.${r.stage}` : ''}`
+export const rowKey = (r: Cell): RowKey =>
+  `${r.job}.${r.scope}.${r.mode}${r.depth && r.depth !== 'standard' ? `.${r.depth}` : ''}${r.stage ? `.${r.stage}` : ''}`
 
 // ---- the writing slice (A69-2) --------------------------------------------
 
@@ -753,9 +775,140 @@ const cleanPassRow = (scope: 'scene' | 'selection'): StagedRow => ({
 export const ROW_REVISE_SCENE: StagedRow = cleanPassRow('scene')
 export const ROW_REVISE_SELECTION: StagedRow = cleanPassRow('selection')
 
+/** THE NOTE CONFLICT READING'S RULES (U2; A69-9). Moved here from revise.ts,
+ *  where the pass composed its own brief and called the seam bare. It is the
+ *  same shape as the craft plan and U15's contract stage (§4): a cheap
+ *  reading that settles the destination before the expensive pass. */
+export const CONFLICT_RULES = `You are arc's NOTE CONFLICT PASS. The author left these notes on their own
+manuscript at different times. Some may pull in opposite directions.
+
+Find only GENUINE tensions: two notes that cannot both be satisfied, or that
+ask for opposite movement on the same thing. "Make him seem more suspicious
+here" and "the reveal feels too obvious" are a real tension. Two notes about
+different characters are not, however near each other they sit.
+
+You are NOT resolving anything. You are telling the author what they will have
+to decide. Do not suggest which note should win.
+
+Answer with a JSON array and nothing else:
+  [{"between": ["note.001", "note.007"], "tension": "one sentence"}]
+An empty array is the common answer and a good one.`
+
+/** THE MINIMAL REVISION'S RULES (U2; A69-9). Moved here from revise.ts and
+ *  rewritten for the sealed pass it now describes: no tools, the brief is
+ *  everything, and the register is the whole point — the notes are
+ *  INSTRUCTIONS here, and prose nobody asked about does not move. */
+export const REVISE_RULES = `You are arc's REVISION WORKER. The author left notes on one scene of their
+own novel. Revise the prose so the notes are answered.
+
+THE CONTRACT BELOW IS BINDING — this is the author's book and their voice, and
+a revision that improves the prose by breaking a stated rule is a failure.
+
+YOU HAVE NO TOOLS. Nothing is fetched, nothing is read, nothing is written by
+you. Everything you are allowed to know is in this brief, and what you answer
+with is the whole of what arc receives.
+
+CHANGE AS LITTLE AS THE NOTES REQUIRE. You are not rewriting the scene; you
+are answering what was asked about it. Prose you were not asked about stays
+exactly as it is, to the character. A paragraph no note points at is a
+paragraph you return unchanged, word for word.
+
+Locked paragraphs survive VERBATIM, word for word and in their order,
+wherever the brief marks them. An answer that touches one is refused whole.
+
+Never invent a fact about the world. The record below tags every item; a fact
+tagged \`proposed\` or \`material\` may be mentioned and may not be rested on.
+If a note implies something the record would have to carry — a new person, a
+date, a place — do NOT write it in. Leave that passage alone; it is a
+proposal for the author, not yours to make.
+
+Answer with ONLY the revised scene body. No frontmatter, no commentary, no
+fences, no briefing.`
+
+/** What a minimal revision's answer is checked against. The clean pass's
+ *  list, less the two the register makes meaningless — there is no briefing,
+ *  so nothing owes a leans-on block — plus the one that defines "minimal".
+ *
+ *  `blast-radius` is DESIGNED, SLICE 3. It is declared here now so that
+ *  every receipt says what is not yet checked: a gate the author cannot see
+ *  is a gate the author cannot ask about, and "minimal" is the claim this
+ *  row makes loudest. It judges nothing until slice 3 builds it. */
+export const MINIMAL_REVISION_GATES: readonly GateId[] = [
+  'locks', 'lock-order', 'validator', 'withhold-literals', 'blast-radius', 'and-chain', 'sentence-length',
+]
+
+/** U2's row (A69-9): work the author's open notes into one scene, as little
+ *  as they require. Staged — the conflict reading FIRST, because two notes
+ *  that pull opposite ways are the author's decision and not a model's, then
+ *  the craft plan when a line is said, then one write per note cluster.
+ *
+ *  WHY `depth: 'quick'`, AND WHY THAT IS A QUESTION FOR THE AUTHOR. The
+ *  registry is keyed by (job, scope, mode) (§4), and U3's clean pass already
+ *  holds `revise · scene · one-shot · standard` (A69-8). U2 is the same job
+ *  at the same scope in the same mode — §3's own coverage table lists both
+ *  under one line — and the only axis left in the cell is depth, whose
+ *  governing sentence is that two registers of one job "must not resolve to
+ *  the same row". So the minimal revision is the QUICK pass over a scene and
+ *  the rebuild is the STANDARD one, which is also how an author would say
+ *  it. What this makes false is §3's aside that only Inspect is plural in
+ *  depth; the epic groomed two cards that both claimed this cell, and
+ *  nothing in §3 or §4 resolves it. Recorded on A69-9 for the author. */
+export const ROW_REVISE_SCENE_STAGED: StagedRow = {
+  job: 'revise', scope: 'scene', mode: 'one-shot', depth: 'quick', stage: null,
+  pattern: 'staged',
+  withholding: false,
+  slice: WRITING_SLICE,
+  envelope: ROUTE_ENVELOPE,
+  gates: MINIMAL_REVISION_GATES,
+  answer: 'body-only',
+  budget: { outputTokens: ROUTE_OUTPUT_TOKENS, wallClockMs: ROUTE_WALL_CLOCK_MS, inputTokens: WRITING_INPUT_TOKENS },
+  rules: REVISE_RULES,
+  fixtures: [],
+  stages: [
+    {
+      // BEFORE ANY WRITE, ALWAYS. A reading that finds a tension stops the
+      // job and hands the decision back; a reading that fails stops it too
+      // (P2 fails closed), and never becomes a licence to write blindly.
+      id: 'conflict',
+      when: 'always',
+      rules: CONFLICT_RULES,
+      slice: { id: 'conflict', layers: ['notes'], floor: ['notes'], dropOrder: [] },
+      gates: [],
+      answer: 'conflicts',
+      budget: { outputTokens: 1_000, wallClockMs: 5 * 60 * 1000, inputTokens: 8_000 },
+      fixtures: ['conflict-none', 'conflict-found'],
+    },
+    {
+      id: 'craft-plan',
+      when: 'line-names-effect',
+      rules: CRAFT_PLAN_RULES,
+      slice: CRAFT_PLAN_SLICE,
+      gates: ['plan-vocabulary'],
+      answer: 'craft-plan',
+      budget: { outputTokens: 1_000, wallClockMs: 5 * 60 * 1000, inputTokens: 4_000 },
+      fixtures: ['plan-dread'],
+    },
+    {
+      id: 'write',
+      when: 'always',
+      rules: REVISE_RULES,
+      slice: WRITING_SLICE,
+      gates: MINIMAL_REVISION_GATES,
+      answer: 'body-only',
+      budget: { outputTokens: ROUTE_OUTPUT_TOKENS, wallClockMs: ROUTE_WALL_CLOCK_MS, inputTokens: WRITING_INPUT_TOKENS },
+      fixtures: ['lands'],
+    },
+  ],
+}
+
 // ---- the table ---------------------------------------------------------------
 
-export const ROWS: readonly Row[] = [ROW_EXPLORE_SCENE, ROW_EXPLORE_ROUTE, ROW_DRAFT_SCENE, ROW_REVISE_SCENE, ROW_REVISE_SELECTION]
+export const ROWS: readonly Row[] = [
+  ROW_EXPLORE_SCENE, ROW_EXPLORE_ROUTE, ROW_DRAFT_SCENE,
+  // The clean pass first, so a gesture that says nothing about depth gets
+  // the standard register rather than the minimal one.
+  ROW_REVISE_SCENE, ROW_REVISE_SELECTION, ROW_REVISE_SCENE_STAGED,
+]
 
 /** The row for a cell, or nothing: a job × scope × mode the rows do not
  *  list is refused at intake (invariant 10), never mapped to a neighbour. */

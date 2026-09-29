@@ -15,6 +15,7 @@ process.env.ARC_DRAFT_ENGINE = 'none'
 
 const {
   ROWS, ROW_EXPLORE_SCENE, ROW_EXPLORE_ROUTE, ROW_DRAFT_SCENE, ROW_REVISE_SCENE, ROW_REVISE_SELECTION,
+  ROW_REVISE_SCENE_STAGED,
   ROUTE_WALL_CLOCK_MS, ROUTE_OUTPUT_TOKENS,
   findRow, rowKey, jobFingerprint, rowStatus, readStatusReceipts, fixturesRecorded, registryStatus,
 } = await import('../src/registry.ts')
@@ -28,7 +29,10 @@ const RECORDED = loadFixtures()
  *  from another. */
 const ALL_ROWS = [
   'explore.scene.one-shot', 'explore.route.one-shot', 'draft.scene.one-shot',
-  'revise.scene.one-shot', 'revise.selection.one-shot',
+  // Two rows at revise · scene · one-shot, told apart by depth: the clean
+  // pass is the standard register and the minimal revision the quick one
+  // (A69-9; registry.ts says why depth is the axis).
+  'revise.scene.one-shot', 'revise.selection.one-shot', 'revise.scene.one-shot.quick',
 ]
 
 test('U4 and U5 are the first rows: sealed, withholding, keyed by their cell', () => {
@@ -90,6 +94,11 @@ test('findRow answers a listed cell and nothing else — never a neighbour', () 
   assert.equal(findRow({ job: 'revise', scope: 'scene', mode: 'one-shot' }), ROW_REVISE_SCENE)
   assert.equal(findRow({ job: 'revise', scope: 'selection', mode: 'one-shot' }), ROW_REVISE_SELECTION)
   assert.equal(findRow({ job: 'revise', scope: 'chapter', mode: 'one-shot' }), undefined, 'and at no other scope')
+  // U2 and U3 share a cell and are told apart by DEPTH (A69-9): a gesture
+  // that says nothing about depth gets the standard register.
+  assert.equal(findRow({ job: 'revise', scope: 'scene', mode: 'one-shot', depth: 'quick' }), ROW_REVISE_SCENE_STAGED)
+  assert.equal(findRow({ job: 'revise', scope: 'scene', mode: 'one-shot', depth: 'standard' }), ROW_REVISE_SCENE)
+  assert.equal(findRow({ job: 'revise', scope: 'scene', mode: 'one-shot' }), ROW_REVISE_SCENE, 'no word said, the clean pass')
 })
 
 test('the job fingerprint moves with the rules, the slice, the gates and the budget — not with the fixture list', () => {

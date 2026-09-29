@@ -522,6 +522,10 @@ interface Receipt {
    *  its rules, its slice and its gates */
   produced_by?: { arc_commit: string | null; job_fingerprint: string | null }
 
+  /** THE NOTES THE PASS WAS HANDED, each with WHO WROTE IT (§4, U2). A
+   *  writing pass is handed the author's notes and never arc's, and the
+   *  receipt is where that claim is checkable rather than promised (A69-9). */
+  notes_handed?: { id: string; by: 'author' | 'agent' }[]
   /** what the author said and what it became (A69-4) */
   intent: IntentRecord | null
   claims: { node: string; kind: string; claim: Capability }[]

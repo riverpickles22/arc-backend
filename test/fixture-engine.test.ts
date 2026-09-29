@@ -26,6 +26,8 @@ const ROW_RULES_HEAD = ROW_EXPLORE_SCENE.rules.slice(0, 40)
 const { annotations } = await import('../src/annotations.ts')
 const { proseScenes } = await import('../src/story.ts')
 const { generatedFor } = await import('../src/ledger.ts')
+const { listRuns } = await import('../src/runs.ts')
+const { readWorkingReceipt } = await import('../src/run.ts')
 
 // ---- the engine ------------------------------------------------------------
 
@@ -187,7 +189,12 @@ for (const s of SCENARIOS) {
     // A READING ANSWERS WITH A PLAN. The craft-plan stage writes nothing and
     // returns one line for the author to read, edit or drop (A69-4) — and
     // the one thing it must never contain is the word they said.
-    if (s.row.endsWith('.craft-plan')) {
+    // U2's reading is a STAGE OF A RUN THAT CONTINUES (A69-9): the
+    // notes-work surface cannot show the author a plan, so the run carries
+    // straight on to the write rather than returning one. Its own branch
+    // below holds what that must mean; this one is for the passes that hand
+    // the plan back and wait.
+    if (s.row.endsWith('.craft-plan') && !s.row.startsWith('revise.scene.one-shot.quick')) {
       const out = result as unknown as { file: string | null; run?: string; reply: string; plan?: { moves: { move: string; how: string }[] } }
       assert.ok(out.run, 'the reading is a run of its own, with its own receipt')
       assert.equal(out.file, null, 'and it writes nothing')
@@ -210,6 +217,45 @@ for (const s of SCENARIOS) {
         assert.equal(draft.file, null, 'nothing was written')
         assert.match(draft.reply, /would not keep it|could not run|does not fit your record|did not check out/,
           'and the refusal says so in the author\'s words')
+      }
+      return
+    }
+
+    // U2, THE MINIMAL REVISION (A69-9). Its conflict reading writes nothing
+    // whatever it answers; its write stage answers with the body alone.
+    if (s.row.startsWith('revise.scene.one-shot.quick')) {
+      const out = result as unknown as { file: string; changed: boolean; conflicts: { between: string[]; tension: string }[]; reply: string; run: string | null }
+      assert.ok(out.run, 'the response names the run that made it')
+      if (s.row.endsWith('.craft-plan')) {
+        // THE READING IS SHOWN THE LINE AND NOTHING OF THE STORY, and the
+        // pass that writes never sees the effect the author named.
+        assert.match(rendered.brief, /more dread/, 'translating it is the reading\'s whole job')
+        assert.ok(!rendered.brief.includes('THE RECORD AT THIS MOMENT'), 'no canon')
+        assert.ok(!rendered.brief.includes("THE AUTHOR'S OPEN NOTES"), 'and not the notes either')
+        return
+      }
+      const now = paragraphsOf(proseScenes().find(x => x.scene === SCENE)!.body)
+      if (s.expect === 'conflict-found') {
+        assert.equal(out.conflicts.length, 1, 'the tension the author has to settle')
+        assert.equal(out.changed, false)
+        assert.deepEqual(now, PRISTINE, 'and the scene on disk is byte-equal — nothing was written')
+        assert.match(out.reply, /pull against each other, so nothing was written/)
+        assert.match(out.reply, /Decide which wins/, 'and the next move is the author\'s')
+        // ARC REFUSED TO WRITE, and said why: the reading found a real
+        // tension and the decision is the author's. The run is over — there
+        // is nothing to accept or reject — and what it was waiting on is on
+        // the receipt.
+        const summary = listRuns().find(r => r.id === out.run)
+        assert.equal(summary?.state, 'refused')
+        assert.equal(summary?.ending, 'refused')
+        assert.equal(readWorkingReceipt(out.run!)!.ending, 'refused')
+      } else {
+        assert.equal(out.conflicts.length, 0, 'one note cannot pull against itself')
+        assert.notDeepEqual(now, PRISTINE, 'the revision landed in the draft layer')
+        assert.equal(now[1], PRISTINE[1], 'and the paragraph the author settled is word for word')
+        // MINIMAL: the paragraphs no note pointed at come back unchanged.
+        assert.deepEqual(now.filter((_, i) => i !== 4), PRISTINE.filter((_, i) => i !== 4),
+          'every paragraph but the one the note is on is returned to the character')
       }
       return
     }

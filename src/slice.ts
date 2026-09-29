@@ -655,8 +655,17 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
     { layer: 'research', ids: [], reason: 'what the bound records cite', status: 'deferred', text: '',
       because: 'research is not read yet (Q16)' },
 
+    // EACH NOTE BY ID. A pass asked which of them pull against each other
+    // has to be able to name them (U2's conflict reading, A69-9), and one
+    // asked to answer them can say which it answered. Without the id the
+    // reading either finds nothing or invents an id the author cannot look
+    // up. The anchor comes too, because "at ¶3" is how the author reads it.
     b('notes', notes.map(n => n.id), 'what you said about this scene',
-      notes.map(n => `- ${n.body.trim()}`).join('\n'),
+      notes.map(n => {
+        const p = n.resolution?.paragraph
+        const where = typeof p === 'number' ? ` (¶${p + 1})` : ' (the whole scene)'
+        return `- ${n.id}${where}: ${n.body.trim()}`
+      }).join('\n'),
       { because: 'you have no open notes on this scene' }),
 
     b('promoted-rules', ['style'], 'your voice, as you ratified it', style.text,

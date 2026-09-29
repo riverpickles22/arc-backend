@@ -42,6 +42,7 @@ process.env.PATH = `${installStubCli({
 })}${path.delimiter}${process.env.PATH}`
 
 const { runWorkNotes, describeOutcome, nothingToWork } = await import('../src/work-notes.ts')
+const { updateAnnotation } = await import('../src/annotations.ts')
 const { createAnnotation, openNotesOn } = await import('../src/annotations.ts')
 const { generatedFor } = await import('../src/ledger.ts')
 const { proseDraft } = await import('../src/story.ts')
@@ -101,6 +102,25 @@ test('the scene\'s open notes are the brief — only that scene\'s, never a keyp
   assert.match(out.reply, /2 notes on sc\.02-1 were worked into the scene/)
   assert.match(out.reply, /open the manuscript to review it/)
   assert.ok(!out.reply.includes('revised first paragraph'), 'the reply never carries the prose')
+})
+
+test('the receipt names every note the pass was handed, and who wrote it', async () => {
+  reset(); clearLog()
+  const { readWorkingReceipt } = await import('../src/run.ts')
+  // A note arc wrote, on the same scene. Notes are resolved, never deleted
+  // (§14), so it is dropped rather than removed when the test is done.
+  const mine = createAnnotation({ scene: 'sc.02-1', body: 'arc thinks the doorway drags', by: 'agent' })
+  try {
+    const out = await runWorkNotes({ scene: 'sc.02-1' })
+    const receipt = readWorkingReceipt(out.run!)!
+    const handed = receipt.notes_handed ?? []
+    assert.deepEqual(handed.map(h => h.id), [n2.id, n1.id], 'the author\'s notes, in the order the scene holds them')
+    assert.ok(handed.every(h => h.by === 'author'), 'each with the authority that let it in')
+    assert.ok(!handed.some(h => h.id === mine.id),
+      'and arc\'s own is not among them — a note arc wrote is never handed back as an instruction')
+  } finally {
+    updateAnnotation(mine.id, { status: 'dropped' })
+  }
 })
 
 test('the clean pass answers the same notes and records them under its own origin', async () => {

@@ -395,7 +395,7 @@ export async function planFirst(
 
 /** The reading has no prose to measure and nothing to overlap: its one gate
  *  reads the answer's own shape. */
-const planGateCtx = (): ProseGateCtx => gateCtxOf({
+export const planGateCtx = (): ProseGateCtx => gateCtxOf({
   sceneName: '', sceneBody: '', sceneLocks: [], lockedTexts: [], literals: [],
   andCap: null, wordCap: null, destination: [], known: [],
 })

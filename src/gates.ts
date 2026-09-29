@@ -23,6 +23,8 @@
 // A gate never repairs; it refuses and says why. `could not judge` is not a
 // pass: the author reads it as *not checked*.
 import type { ResolvedLock } from 'arc-canon-graph'
+import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
+import { readConflicts } from './revise'
 import { load as yamlLoad } from 'js-yaml'
 import type { DroppedClaim, RouteCoverage } from 'arc-canon-graph/api-types.ts'
 import { lockViolations } from 'arc-canon-graph/annotations.ts'
@@ -49,6 +51,16 @@ export interface ProseGateCtx {
   literals: string[]
   andCap: number | null
   wordCap: number | null
+  /** PROSE THIS PASS RETURNED RATHER THAN WROTE (A69-9). A minimal revision
+   *  is told to hand back untouched every paragraph no note points at, word
+   *  for word — and the author's own book may break the author's own
+   *  countable rules, because those rules bind what arc WRITES, never what
+   *  the author has already settled on the page. Without this the first
+   *  honest minimal revision is refused for obeying its instructions. Set by
+   *  the row whose register asks for unchanged prose; the gate then exempts
+   *  any paragraph byte-identical to one already in the scene, exactly as it
+   *  exempts a locked one. */
+  exemptUnchanged?: boolean
   destination: string[]
   /** the overlap bar and where it came from */
   maxOverlap: number
@@ -149,6 +161,18 @@ export function boundIds(sceneFile: string): string[] {
     else if (typeof v === 'string' && v.trim()) ids.push(v.trim())
   }
   return [...new Set(ids)]
+}
+
+/** What the countable style gates do not measure: the locked paragraphs
+ *  always, and — for a row whose register returns prose unchanged — every
+ *  paragraph the answer handed back exactly as it found it. A rule the
+ *  author ratified binds the prose arc writes; it is not a verdict on the
+ *  book they have already written. */
+function exemptFor(ctx: ProseGateCtx, a: ParsedAnswer): string[] {
+  if (!ctx.exemptUnchanged) return ctx.lockedTexts
+  const had = new Set(paragraphsOf(ctx.sceneBody).map(p => p.trim()))
+  const kept = paragraphsOf(a.prose).map(p => p.trim()).filter(p => had.has(p))
+  return [...new Set([...ctx.lockedTexts, ...kept])]
 }
 
 type GateVerdict =
@@ -297,6 +321,15 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
       ? refuse(`touched locked prose — ${describeViolation(ctx.sceneName, violated[0])}`, record)
       : held(record)
   },
+  // DESIGNED, SLICE 3 (A69-9). Declared on U2's row so every receipt says
+  // this is not yet checked — `not applicable` would read as "there was
+  // nothing to check", and there is: "minimal" is the claim the row makes
+  // loudest. `could not judge` reaches the author as NOT CHECKED, never as
+  // passed, and the bar_from line says why.
+  'blast-radius': () => ({
+    verdict: 'could not judge',
+    record: { stage: 'answer', bar: 'no paragraph changes that no handed note anchors to', bar_from: 'designed, slice 3 — arc does not check this yet' },
+  }),
   'lock-order': (ctx, a) => {
     const record = { measured_against: ctx.sceneLocks.map(l => l.id), stage: 'answer' as const }
     return ctx.lockOrderViolation(ctx.assembled ? ctx.assembled(a.prose) : a.prose, ctx.lockedTexts)
@@ -313,7 +346,7 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
   'and-chain': (ctx, a) => {
     const bar_from = 'the style contract: "a chain stops at N"'
     if (ctx.andCap === null) return { verdict: 'not applicable', record: { bar_from: 'the style contract states no chain rule', stage: 'answer' } }
-    const chains = ctx.andChainViolations(a.prose, ctx.andCap, ctx.lockedTexts)
+    const chains = ctx.andChainViolations(a.prose, ctx.andCap, exemptFor(ctx, a))
     if (!chains.length) return held({ measured: 0, bar: ctx.andCap, bar_from, stage: 'answer' })
     const worst = [...chains].sort((x, y) => y.ands - x.ands)[0]
     return refuse(
@@ -323,7 +356,7 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
   'sentence-length': (ctx, a) => {
     const bar_from = 'the style contract: "a sentence stops at N words"'
     if (ctx.wordCap === null) return { verdict: 'not applicable', record: { bar_from: 'the style contract states no sentence rule', stage: 'answer' } }
-    const long = ctx.longSentenceViolations(a.prose, ctx.wordCap, ctx.lockedTexts)
+    const long = ctx.longSentenceViolations(a.prose, ctx.wordCap, exemptFor(ctx, a))
     if (!long.length) return held({ measured: 0, bar: ctx.wordCap, bar_from, stage: 'answer' })
     const worst = [...long].sort((x, y) => y.words - x.words)[0]
     return refuse(
@@ -375,6 +408,20 @@ export function runRowGates(row: LaunchSpec, ctx: ProseGateCtx, text: string, at
   // A READING ANSWERS WITH ITS SHAPE, not with prose. The craft plan returns
   // one JSON block; there is no body to be empty and no briefing to split,
   // so the prose shape checks below would refuse every honest answer.
+  // A READING ANSWERS WITH A JSON ARRAY, not with prose (A69-9). Its
+  // emptiness is the common answer and a good one, so "nothing to read as
+  // prose" must not refuse it.
+  if (row.answer === 'conflicts') {
+    // AND AN UNREADABLE ANSWER IS NOT "NO CONFLICTS". A reading that could
+    // not be read has not looked, and letting it stand as an empty list is
+    // exactly how a failed check becomes a licence to write (§5, P2).
+    if (readConflicts(text) === null) {
+      gates.push({ gate: 'shape', verdict: 'refused', attempt, ...(launch ? { launch } : {}), stage: 'answer', measured: 0, bar: 'a json array of the tensions, empty when there are none', bar_from: "the row's answer shape" })
+      return { ok: false, reason: 'arc could not read that check of your notes, so nothing was written. Ask again.', gates, unreadable: true }
+    }
+    gates.push({ gate: 'shape', verdict: 'held', attempt, ...(launch ? { launch } : {}), stage: 'answer' })
+    return { ok: true, body: text, briefing: '', coverage: null, dropped: [], returned: 0, overlap: null, gates }
+  }
   if (row.answer === 'craft-plan') {
     const plan = parseCraftPlan(text)
     if (!plan) {

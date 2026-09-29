@@ -35,7 +35,6 @@ import type {
   ProseResponse,
   ProseSentenceRequest,
   RatifyRuleResponse,
-  ReviseResponse,
   RunDecisionResponse,
   RunDetailResponse,
   RunResponse,
@@ -114,7 +113,6 @@ import { resolveRequest } from './request'
 import { hook, listAgents } from './agents'
 import { Run, subscribeRuns, stampReceiptCommit } from './run'
 import { runLensFanOut } from './lenses'
-import { runRevisionFanOut } from './revise'
 import { decide } from './orchestrate'
 
 type Handler = (req: http.IncomingMessage, res: http.ServerResponse, url: URL) => void | Promise<void>
@@ -239,21 +237,12 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     GET: (_req, res) => json(res, 200, { items: materialItems() } satisfies MaterialResponse),
   },
 
-  // Revision fan-out: the author's open notes worked into the prose. Writes
-  // land in the working tree — the draft layer — so every revision is
-  // reviewed through the accept gate that already exists.
-  '/api/prose/revise': {
-    POST: async (_req, res) => {
-      if (!currentEngine()) throw new HttpError(503, 'No generation engine available.')
-      const run = new Run('ui', 'work the open notes into the prose')
-      registerRun(run)
-      // Keypoints are intent markers, not requests for change — the fan-out
-      // revises against NOTES only (A30).
-      const out = await runRevisionFanOut(annotations().filter(a => (a.kind ?? 'note') === 'note'), run)
-      closeRun(run.id, out.conflicts.length ? 'abandoned' : 'accepted')
-      json(res, 200, { ...out, run: run.id } satisfies ReviseResponse)
-    },
-  },
+  // The book-wide revision fan-out is GONE (A69-9). It put prose in the
+  // Changes reading from a pass with no row, which is exactly what the trust
+  // boundary forbids once that surface is governed (§11), and nothing called
+  // it. Working the notes on ONE scene is `/api/prose/work-notes`, rowed;
+  // working every note in the book at once is Revise at manuscript scope,
+  // which no slice owns yet.
 
   // Editorial lenses: several readings of one scene at once, each from its
   // own projection. Read-only by construction, so running them concurrently

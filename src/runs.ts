@@ -169,7 +169,7 @@ export function attachLaunch(id: string, launch: Launch): () => void {
 /** End a run with its ending (invariant 9): the state follows the ending,
  *  the record gets `run.ended`, and any child still in flight is killed —
  *  no run ends with a process it does not know about. */
-export function endRun(id: string, ending: RunEnding, detail?: unknown): RunSummary | null {
+export function endRun(id: string, ending: RunEnding, detail?: unknown, state?: RunState): RunSummary | null {
   const e = live.get(id)
   if (!e) return null
   // The first ending wins, here as in the record: a failure on the way out
@@ -177,7 +177,14 @@ export function endRun(id: string, ending: RunEnding, detail?: unknown): RunSumm
   if (OVER.has(e.state)) return summarise(e)
   for (const l of e.launches) l.stop()
   e.launches.clear()
-  e.state = stateOfEnding(ending)
+  // THE STATE IS USUALLY THE ENDING'S, and sometimes the caller knows
+  // better. A caller that overrides it owes the run a way OUT of the state
+  // it names: `waiting for you` is left only by a decision on an outcome, so
+  // a run parked there without one stays there for the life of the process.
+  e.state = state ?? stateOfEnding(ending)
+  if (e.state === 'waiting for you' && !e.outcome) {
+    throw new Error(`run ${id} was put in "waiting for you" with nothing to decide on — it could never leave that state`)
+  }
   e.run.end(ending, detail)
   return summarise(e)
 }

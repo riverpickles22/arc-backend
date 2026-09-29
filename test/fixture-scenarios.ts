@@ -31,6 +31,8 @@ delete process.env.ANTHROPIC_AUTH_TOKEN
 const { runReroute, runRevise, addRouteNote } = await import('../src/reroute.ts')
 const { runDraft } = await import('../src/draft.ts')
 const { runRedraft } = await import('../src/redraft.ts')
+const { runWorkNotes } = await import('../src/work-notes.ts')
+const { createAnnotation } = await import('../src/annotations.ts')
 const { ROWS, rowKey } = await import('../src/registry.ts')
 const { observeBriefs } = await import('../src/fixtures.ts')
 
@@ -54,7 +56,7 @@ export interface Scenario {
   /** what the fixture's `expect` field must say. `leak` is the one that
    *  never reaches the engine: the gate proves the brief and refuses before
    *  the send (A67-7), so the scenario carries no recorded answer. */
-  expect: 'lands' | 'overlap' | 'coverage-drop' | 'leak' | 'validator-refused' | 'leaned-on' | 'lock-touched'
+  expect: 'lands' | 'overlap' | 'coverage-drop' | 'leak' | 'validator-refused' | 'leaned-on' | 'lock-touched' | 'conflict-found'
   /** the story state and request, in one breath — copied into the fixture */
   scenario: string
   prepare?: () => Promise<void>
@@ -62,6 +64,19 @@ export interface Scenario {
    *  the seam, so what comes back is the scenario's own business — a route
    *  response today, a drafting response when U1 has its row. */
   run: () => Promise<unknown>
+}
+
+/** ONE OPEN NOTE ON THE SCENE. The example ships keypoints on sc.01-1 —
+ *  markers of what a passage must get across, never requests for change — so
+ *  a notes revision has nothing to work until the author leaves a note. */
+function oneNote(): void {
+  createAnnotation({ scene: SCENE, paragraph: 4, quote: 'Then the log.', body: 'the log entry should cost her something', by: 'author' })
+}
+
+/** TWO NOTES THAT CANNOT BOTH BE SATISFIED. The reading's whole job. */
+function opposedNotes(): void {
+  createAnnotation({ scene: SCENE, paragraph: 0, quote: 'Ninety-one stairs.', body: 'more of the dog on the way up — he should be the reason she counts', by: 'author' })
+  createAnnotation({ scene: SCENE, paragraph: 0, quote: 'Ninety-one stairs.', body: 'less of the dog here; he is doing too much work this early', by: 'author' })
 }
 
 /** The example exactly as committed: every edit and every route gone. */
@@ -187,6 +202,30 @@ export const SCENARIOS: Scenario[] = [
     row: 'revise.selection.one-shot.write', name: 'lands', expect: 'lands',
     scenario: 'a clean pass over ¶3–¶4 of sc.01-1 — the lamp room and the drive weight — no line said; the answer is the passage alone and its two seams are handed over unchanged',
     run: () => runRedraft({ scene: SCENE, paragraphs: [2, 3] }),
+  },
+  {
+    row: 'revise.scene.one-shot.quick.conflict', name: 'conflict-none', expect: 'lands',
+    scenario: 'the worked example with one open note on sc.01-1 — one note cannot pull against itself, so the reading answers with the empty array and the revision goes ahead',
+    prepare: async () => { oneNote() },
+    run: () => runWorkNotes({ scene: SCENE }),
+  },
+  {
+    row: 'revise.scene.one-shot.quick.write', name: 'lands', expect: 'lands',
+    scenario: 'the same one note, past a reading that found no conflict: the minimal revision answers it and leaves the rest of the scene to the character',
+    prepare: async () => { oneNote() },
+    run: () => runWorkNotes({ scene: SCENE }),
+  },
+  {
+    row: 'revise.scene.one-shot.quick.craft-plan', name: 'plan-dread', expect: 'lands',
+    scenario: 'one open note on sc.01-1 and a line said with it — "more dread" — so the minimal revision stages its craft plan between the reading and the write',
+    prepare: async () => { oneNote() },
+    run: () => runWorkNotes({ scene: SCENE, guidance: 'more dread' }),
+  },
+  {
+    row: 'revise.scene.one-shot.quick.conflict', name: 'conflict-found', expect: 'conflict-found',
+    scenario: 'two notes on sc.01-1 that pull against each other — more of the dog, and less of the dog. The reading names the tension, the run waits for the author, and nothing is written',
+    prepare: async () => { opposedNotes() },
+    run: () => runWorkNotes({ scene: SCENE }),
   },
   rewrite('leak', 'leak',
     `the landed explore.scene.one-shot/lands route with one note on the whole route that quotes the manuscript — "${QUOTED_SENTENCE}" — so the brief would carry a sentence of the withheld prose. The leak gate refuses before the send.`,
