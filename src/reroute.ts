@@ -689,6 +689,7 @@ function parseAlternative(text: string): RouteAlternative | null {
     overlap: typeof head.overlap === 'number' ? head.overlap : null,
     ...(typeof head.retried === 'string' ? { retried: head.retried } : {}),
     ...(typeof head.revises === 'string' ? { revises: head.revises } : {}),
+    ...(head.reissued === true ? { reissued: true as const } : {}),
     ...(Array.isArray(head.notes) ? { notes: head.notes as RouteNote[] } : {}),
   }
 }
@@ -871,6 +872,8 @@ export function routeReceipt(alt: RouteAlternative): RouteReceipt | null {
     })),
     ending: 'landed',
     outcome: null,
+    ...(alt.reissued ? { reissued: true } : {}),
+    ...(r.reissued_from ? { reissued_from: r.reissued_from } : {}),
     ...(r.engine ? { engine: r.engine } : {}),
     ...(typeof r.wall_clock_ms === 'number' ? { wall_clock_ms: r.wall_clock_ms } : {}),
     started_at: r.started_at,
@@ -1003,6 +1006,14 @@ export interface RerouteTarget {
   count?: number
   guidance?: string
   dry?: boolean
+  /** ASK AGAIN (A69-13): the route the author is reading, to be re-issued
+   *  rather than joined. Its job is taken from what it recorded — the same
+   *  seed, the same line, the same notes BY ID — and run against the record
+   *  and the row as they stand now; on success it takes that route's place,
+   *  and the route it replaces leaves with a `superseded` disposition
+   *  carrying the author's notes (A67-10). Absent, this is *another way
+   *  through*, which adds. */
+  reissue?: RouteAlternative
   /** the gesture the author made, resolved by code at the door (A67-8).
    *  Absent only for a caller inside arc — the CLI, a test — which gets the
    *  default cell for this pass. */
@@ -1229,18 +1240,44 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
   const request = t.request ?? defaultRequest(ROW_EXPLORE_SCENE, `another way through ${t.scene}`, t.scene)
   const scene = proseScenes().find(s => s.scene === t.scene)
   if (!scene) throw new HttpError(400, `no scene ${t.scene}`)
+  // ASK AGAIN TAKES A PLACE THAT IS ALREADY TAKEN, so the cap has nothing
+  // to say to it: the re-issued route replaces the one it re-ran, and a
+  // scene at four stays at four. Refusing here would make the cap mean "you
+  // may not try that one again", which is not what it is for.
+  const reissue = t.reissue
+  if (reissue) {
+    // ONLY THE NEWEST VERSION OF A ROUTE MAY BE ASKED AGAIN, as only the
+    // newest takes a note (A58). Re-issuing an earlier one would supersede
+    // it and its ancestors and leave the version that replaced it pointing
+    // at nothing — and a dangling `revises` reads as a head, so the scene
+    // would silently gain a way through.
+    const newer = listAlternatives(t.scene).find(a => a.revises === reissue.id)
+    if (newer) {
+      throw new HttpError(409, 'this is an earlier version of that route — ask again from the newest one, which is the version open above it')
+    }
+  }
   // At the cap the author decides what goes. Checked before any token is
   // spent, and in the backend rather than the button, because a limit only
   // the viewer knows is not a limit.
   const waiting = routesWaiting(t.scene)
-  if (waiting >= MAX_ROUTES) {
+  // A STALE ROUTE HOLDS NO PLACE AGAINST THE CAP (A67-10, Q13) — so asking
+  // again for one does not replace a place, it TAKES one, and at the cap
+  // that would put the scene past four. A re-issue of a route that already
+  // holds its place is free; a re-issue of one that does not is a new
+  // arrival and is counted like one.
+  // A route that already holds its place frees it again by being replaced,
+  // so the count cannot move; a stale one holds none, and its replacement
+  // is a new arrival however it was asked for.
+  const heldAPlace = reissue ? !withStaleness(reissue, fingerprintsNow(t.scene)).stale : false
+  if (!heldAPlace && waiting >= MAX_ROUTES) {
     refuseWithReceipt(request, ROW_EXPLORE_SCENE,
       { gate: 'route-cap', verdict: 'refused', attempt: 1, stage: 'intake', measured: waiting, bar: MAX_ROUTES, bar_from: `MAX_ROUTES, arc-backend ${MAX_ROUTES}` },
       `this scene already holds ${MAX_ROUTES} other ways through — cancel one you are done with to make room for another`, 409)
   }
   // Never take a scene past the cap: a request for two with room for one
-  // returns one rather than being refused outright.
-  const count = Math.min(t.count ?? 2, MAX_ROUTES - waiting)
+  // returns one rather than being refused outright. A re-issue is always
+  // exactly one — the one it replaces.
+  const count = reissue ? 1 : Math.min(t.count ?? 2, MAX_ROUTES - waiting)
   if (!Number.isInteger(count) || count < 1 || count > SEEDS.length) throw new HttpError(400, `count must be 1–${SEEDS.length}`)
 
   // ---- PRECONDITIONS: proven refusals, before anything is spent -----------
@@ -1276,18 +1313,42 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
   // The canon pack, scoped exactly as redraft scopes it: the scene's own
   // bindings at the chapter's moment. Facts, in canon's order — never route.
   const { pack, siblings } = packAndSiblings(scene)
-  const openNotes = openNotesOn(t.scene)
+  // THE SAME JOB, AGAINST THE CURRENT RECORD. A re-issue is handed the notes
+  // the route it re-runs was handed, BY ID, as the record holds them now: one
+  // resolved since is simply not there any more, and one written since was no
+  // part of the job the author is asking again for. Anything else would make
+  // *ask again* quietly mean *ask something else*.
+  // A route that recorded WHAT IT READ names the notes it was given; one
+  // written by an older arc recorded nothing, and arc cannot tell what it
+  // was asked for. Those are different facts and they are kept apart, as
+  // `reissued_from` keeps them: a recorded-but-empty set means "it was given
+  // no notes", and an ABSENT one means "ask it as the scene stands today".
+  const askedFor = reissue?.reads ? new Set(reissue.reads.map(r => r.id)) : null
+  const openNotes = askedFor
+    ? openNotesOn(t.scene).filter(n => askedFor.has(n.id))
+    : openNotesOn(t.scene)
+  // And the same line, and the same seed. A line typed into the bar while a
+  // route is open belongs to the next *another way through*, not to this.
+  const guidance = reissue ? reissue.guidance : t.guidance
+  // THE SAME SEED, or none: substituting a different one and still calling
+  // the answer a re-issue would tell the author arc asked the same question
+  // when it asked another.
+  const reissueSeed = reissue ? SEEDS.find(s => s.id === reissue.seed) : undefined
+  if (reissue && !reissueSeed) {
+    throw new HttpError(409,
+      `that route was taken a way arc no longer offers, so it cannot be asked again as it was — take another way through instead; nothing was written.`)
+  }
+  const seeds = reissueSeed ? [reissueSeed] : SEEDS.slice(0, count)
 
   const base = {
     scene, pack, style: styleForPass({ scene: t.scene, file: scene.file, body: scene.body }), siblings, notes: openNotes,
     destination, knownRoute: buildKnownRoute(kps.author, locked), inferred: inferredRoute(kps.agent),
-    locked, guidance: t.guidance,
+    locked, guidance,
   }
   const literals = literalWithholds(scene.contract?.must_withhold)
   const andCap = andCapFromContract(base.style)
   const wordCap = wordCapFromContract(base.style)
   const basedOn = bodyHash(scene.body)
-  const seeds = SEEDS.slice(0, count)
 
   // A dry run: the slice and the brief, rendered, and no engine consulted —
   // so it needs none.
@@ -1313,6 +1374,10 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
   // record is on disk before the seam is called.
   return underRun(request, ROW_EXPLORE_SCENE, used, async (ctx, kinds) => {
   const { run, receipt } = ctx
+  // WHICH RECEIPT THIS ONE RE-ISSUES (§4). A route written by an older arc
+  // carries no run, so there is nothing to name and the field stays absent
+  // rather than saying "none" about a receipt that never existed.
+  if (reissue?.run) receipt.reissued_from = reissue.run
 
   // Every seed is one job for the gate runner: it owns the child, walks
   // the row's gate ids, keeps the refused text, and offers the one repair
@@ -1349,13 +1414,16 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
     const created_at = new Date().toISOString()
     const id = 'alt-' + createHash('sha256').update(`${seed.id}\n${created_at}\n${out.checked.body}`).digest('hex').slice(0, 8)
     const alt: RouteAlternative = {
-      id, scene: t.scene, seed: seed.id, guidance: t.guidance?.trim() || undefined, based_on: basedOn, created_at,
+      id, scene: t.scene, seed: seed.id, guidance: guidance?.trim() || undefined, based_on: basedOn, created_at,
       body: out.checked.body, briefing: out.checked.briefing, coverage: out.checked.coverage, overlap: out.checked.overlap,
       ...(out.checked.dropped.length ? { dropped: out.checked.dropped } : {}),
       // What it read, so the write path can tell when the ground moved
       // under it (invariant 1).
       reads: used.read,
-      run: run.id, ...(out.retried ? { retried: out.retried } : {}),
+      // ASKED AGAIN, on the route itself (A69-13): the fold must still say
+      // so after the run's working receipt has been cleaned up, and the
+      // route outlives the receipt by design.
+      run: run.id, ...(reissue ? { reissued: true } : {}), ...(out.retried ? { retried: out.retried } : {}),
     }
     writeAlternative(alt)   // on disk as soon as it passed its gates, so a stop keeps it
     return { ok: true, alt }
@@ -1382,6 +1450,22 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
       refused.push({ seed: seeds[i].id, reason: r.reason === 'stopped before it started' ? r.reason : (wasStopped(run, r.kind) ? 'stopped before it landed' : r.reason) })
     }
   })
+  // THE ROUTE IT REPLACES GOES, AND ONLY NOW. The new one is on disk and
+  // through its gates; until it was, the author still had the route they
+  // were reading. It leaves the way every route leaves — its disposition
+  // recorded first, with the author's own notes copied in (A67-10) — and so
+  // does every earlier version of it, because removing only the head would
+  // resurface a version the author has already moved past as a route in its
+  // own right.
+  if (reissue && alternatives.length) {
+    const byId = new Map(listAlternatives(t.scene).map(a => [a.id, a]))
+    let cur: RouteAlternative | undefined = byId.get(reissue.id)
+    while (cur) {
+      const parent: RouteAlternative | undefined = cur.revises ? byId.get(cur.revises) : undefined
+      removeAlternative(cur, 'superseded', `asked again — replaced by ${alternatives[0].id}`)
+      cur = parent
+    }
+  }
   // Deliberately NO recordGenerated here — see the header: the ledger learns
   // of a route only when it is adopted.
   return { alternatives, refused }

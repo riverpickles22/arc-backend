@@ -521,6 +521,13 @@ interface Receipt {
   /** what produced it: the arc commit and the job fingerprint over the row,
    *  its rules, its slice and its gates */
   produced_by?: { arc_commit: string | null; job_fingerprint: string | null }
+  /** THE RECEIPT THIS RUN RE-ISSUED (A69-13; §4, "The receipt": a re-run
+   *  re-issues the job from its receipt and names the receipt it reissued).
+   *  Present only on a run the author asked AGAIN for: the same job — the
+   *  same notes by id, the same line, the same seed — against the record
+   *  and the row as they stand now. A route written by an older arc has no
+   *  receipt to name, and the field is absent rather than empty. */
+  reissued_from?: string
 
   /** THE NOTES THE PASS WAS HANDED, each with WHO WROTE IT (§4, U2). A
    *  writing pass is handed the author's notes and never arc's, and the

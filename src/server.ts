@@ -102,7 +102,7 @@ import { proseChecks } from 'arc-canon-graph'
 import { runBootstrapStyle } from './bootstrap-style'
 import { runRedraft } from './redraft'
 import { runWorkNotes } from './work-notes'
-import { addRouteNote, adoptAlternative, clearAlternatives, deleteRouteNote, dropAlternative, listRoutes, routeCounts, runReroute, runReceipt, runRevise } from './reroute'
+import { addRouteNote, adoptAlternative, clearAlternatives, deleteRouteNote, dropAlternative, listAlternatives, listRoutes, routeCounts, runReroute, runReceipt, runRevise } from './reroute'
 import { doctorRecords } from './doctor'
 import { generatedFor } from './ledger'
 import type { AdoptRouteResponse, DoctorRecordsResponse, RerouteResponse, RouteListResponse, WorkNotesMode, WorkNotesResponse } from 'arc-canon-graph/api-types.ts'
@@ -860,6 +860,35 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // terminal asks; the counts are the backend's because the record is.
   '/api/doctor/records': {
     GET: (_req, res) => { json(res, 200, doctorRecords() satisfies DoctorRecordsResponse) },
+  },
+
+  // ASK AGAIN: one route re-issued from what it recorded, in its own place
+  // (A69-13). Separate from the reroute above because the two gestures mean
+  // different things — this one replaces, that one adds — and a flag on one
+  // endpoint would let a viewer bug turn one into the other.
+  '/api/prose/reroute/again': {
+    POST: async (req, res) => {
+      if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
+        throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+      }
+      const b = (await parsedBody(req)) as { scene?: unknown; alt?: unknown; depth?: unknown }
+      if (typeof b.scene !== 'string' || !b.scene || typeof b.alt !== 'string' || !b.alt) throw new HttpError(400, 'scene and alt required')
+      // THE ROUTE AS RECORDED, not as the page reads it. `listRoutes` strips
+      // `reads` on the way out — the fingerprints of the record have no
+      // business on a page beside the prose — and `reads` is the only place
+      // the notes this route was given are named. Read it here and the
+      // re-issue is handed no notes at all, which is the opposite of the
+      // job it claims to repeat (A69-13 review).
+      const alt = listAlternatives(b.scene).find(a => a.id === b.alt)
+      if (!alt) throw new HttpError(404, `no alternative ${b.alt} for ${b.scene}`)
+      const request = resolveRequest({
+        said: `ask again for this way through ${b.scene}`,
+        job: 'explore', scope: 'scene', mode: 'one-shot',
+        depth: typeof b.depth === 'string' ? b.depth : undefined,
+        subject: b.scene,
+      })
+      json(res, 200, await runReroute({ scene: b.scene, request, reissue: alt }) satisfies RerouteResponse)
+    },
   },
 
   '/api/prose/reroute/counts': {
