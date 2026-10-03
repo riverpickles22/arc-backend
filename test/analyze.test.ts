@@ -7,6 +7,11 @@ import { git, makeStory, writeScene } from './fixture.ts'
 
 const story = makeStory()
 process.env.ARC_STORY_PATH = story
+// The pass checks for an engine before it looks at the draft, so reaching
+// the 409 needs one named. Nothing here spends: the 409 throws before any
+// spawn, and the test run's tripwire (test/tripwire.ts) refuses a prompt
+// that reached the binary anyway.
+process.env.ARC_DRAFT_ENGINE = 'claude-cli'
 const { buildAnalysisPrompt, runAnalysis } = await import('../src/analyze.ts')
 const { proseDraft, proseScenes } = await import('../src/story.ts')
 
@@ -53,7 +58,7 @@ test('with a draft present the pass reads it but writes nothing (engine stubbed 
   try {
     await assert.rejects(runAnalysis(), /No generation engine/)
   } finally {
-    delete process.env.ARC_DRAFT_ENGINE
+    process.env.ARC_DRAFT_ENGINE = 'claude-cli'
   }
   const after = execFileSync('git', ['-C', story, 'status', '--porcelain', '-uall'], { encoding: 'utf8' })
   assert.equal(before, after)

@@ -502,6 +502,9 @@ interface SpawnPlan {
   scratchDir: string
   sessionId: string | null
   runId: string | null
+  /** the pass this launch runs, named in the child's environment (ARC_PASS)
+   *  so a refusal — the tests' tripwire, a hook — can say which pass reached it */
+  pass: string | null
   timeoutMs: number
   /** the row's output ceiling, handed to the child as its own cap */
   maxOutputTokens: number | null
@@ -535,6 +538,7 @@ function spawnClaude(plan: SpawnPlan): Launch {
           ...process.env,
           ANTHROPIC_API_KEY: undefined,
           ...(plan.runId ? { ARC_RUN_ID: plan.runId } : {}),
+          ...(plan.pass ? { ARC_PASS: plan.pass } : {}),
           ...(plan.maxOutputTokens ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(plan.maxOutputTokens) } : {}),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -709,6 +713,7 @@ export function launchCli(row: LaunchSpec, brief: Brief, opts: RowLaunchOpts): L
     scratchDir,
     sessionId,
     runId: opts.runId,
+    pass: rowKey(row),
     timeoutMs: opts.timeoutMs !== undefined ? Math.min(opts.timeoutMs, budget) : budget,
     maxOutputTokens: row.budget.outputTokens,
     // The envelope is asserted the moment the runtime says what it loaded —
@@ -862,6 +867,7 @@ export function runCliPrompt(
     scratchDir: scratchDirFor(runId ?? 'bare', attempt),
     sessionId: opts.sessionId ?? null,
     runId,
+    pass: opts.pass ?? (opts.row ? rowKey(opts.row) : null),
     timeoutMs: opts.timeoutMs ?? CLI_TIMEOUT_MS,
     maxOutputTokens: null,
   }).result

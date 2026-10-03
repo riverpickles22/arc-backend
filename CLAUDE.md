@@ -169,7 +169,12 @@ repo shares. This file is only what is particular to the backend.
   run, no pre-assigned session and no output ceiling — the row is what adds
   those. Test stubs for `claude` come from `installStubCli()` in
   `test/fixture.ts` and speak the streamed shape; the real shape is in
-  `test/captures/`.
+  `test/captures/`. **The test run never reaches the author's claude**
+  (A70-7): `test/tripwire.ts`, preloaded by `npm test` and imported by the
+  fixture, sets `ARC_DRAFT_ENGINE=none` and a temp `ARC_HOME`, and puts a
+  refusing `claude` first on PATH — a test that reaches it fails loudly,
+  naming the file and the pass (the child's `ARC_PASS`). A test that wants a
+  model pins the engine and installs the stub, after the preload.
 - **The fixture engine answers only a brief it has seen** (A67-9).
   `ARC_DRAFT_ENGINE=fixture` selects `src/fixtures.ts`: a recorded answer
   keyed by the fingerprint of the rendered brief, a miss refused with the

@@ -2,6 +2,10 @@
 // scene, git identity configured. Each test file makes its own and points
 // ARC_STORY_PATH at it BEFORE importing any src module — config resolves
 // paths at module load.
+// Importing the fixture arms the tripwire (A70-7) even when one file is run by
+// hand without the npm script's --import; ESM runs the module once per
+// process whichever way it arrives.
+import './tripwire.ts'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'

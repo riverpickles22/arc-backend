@@ -116,17 +116,24 @@ test('accept with capture requested but no credentials skips capture gracefully'
 })
 
 test('draft-scene guards: 503 with no engine, 400 without a chapter', async () => {
-  process.env.ARC_DRAFT_ENGINE = 'none'   // a live CLI on the test machine must not count
+  // The test run's default is already 'none' (test/tripwire.ts); said again
+  // here because this assertion depends on it, and restored rather than
+  // deleted — an unset engine falls back to whatever claude is on PATH.
+  const engine = process.env.ARC_DRAFT_ENGINE
+  process.env.ARC_DRAFT_ENGINE = 'none'
   try {
     const res = await post('/api/prose/draft-scene', { chapter: 'ch.01' })
     assert.equal(res.status, 503)
     assert.match((await res.json()).error, /No generation engine/)
   } finally {
-    delete process.env.ARC_DRAFT_ENGINE
+    // An engine named, none spent: the 400 below throws before any launch,
+    // and the run's tripwire would refuse one anyway.
+    process.env.ARC_DRAFT_ENGINE = 'claude-cli'
   }
   const bad = await post('/api/prose/draft-scene', {})
   assert.equal(bad.status, 400)
   assert.equal((await bad.json()).error, 'chapter required')
+  process.env.ARC_DRAFT_ENGINE = engine ?? 'none'
 })
 
 test('CORS: localhost reflected, anything else gets no header', async () => {
