@@ -81,6 +81,15 @@ repo shares. This file is only what is particular to the backend.
 - **Generated prose never lands in main.** Passes write to the story's
   working tree (the draft layer) or `.arc/alternatives/`; the accept endpoint
   is the only commit. The ledger records origin at adopt, not at generation.
+- **An accept names the scenes it ratifies** (A72-1). `files` is required of
+  `ProseAcceptRequest`, of `proseAccept` and of the viewer's `acceptDraft`;
+  there is no accept-everything, because the only honest accept is one over a
+  diff the author read. `acceptScope` in `story.ts` is the single door that
+  says which paths an accept may name — a plain `prose/…/*.md` inside the
+  story's prose directory, no duplicates, each with a pending change — and it
+  checks every name before any of them is accepted, so one bad path in a list
+  leaves the book exactly as it was. Staging and committing name those same
+  paths, so an accept never sweeps in a scene or a record edit beside it.
 - **One pass, one `*_RULES` constant, one gate.** Build the prompt from the
   six slots (`src/*.ts` beside `prompt-engineering.md`), parse the answer
   tolerantly, and gate it before anything is written. Countable style rules

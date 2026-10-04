@@ -394,16 +394,16 @@ test('a hand revision to accepted prose reaches the model gate; new hand-written
   // would test a path no author can reach.
   const rel = 'prose/ch-02/scene-01.md'
   writeScene(STORY, rel, 'sc.02-1', 'It was then that he saw the coast, at long last, finally.\n\nStable paragraph.')
-  proseAccept('prose: accept sc.02-1')
+  proseAccept('prose: accept sc.02-1', [rel])
   writeScene(STORY, rel, 'sc.02-1', 'He saw the coast.\n\nStable paragraph.')
-  proseAccept('prose: accept revision')
+  proseAccept('prose: accept revision', [rel])
   const r = await runLearnStyle([rel])
   assert.equal(r.skipped, 'no-engine', 'revision pairs were mined — only the engine was missing')
   assert.ok(r.pairsConsidered >= 1, 'the hand revision produced at least one significant pair')
   // a scene born in this commit has no before, argues nothing, costs nothing
   const fresh = 'prose/ch-03/scene-01.md'
   writeScene(STORY, fresh, 'sc.03-1', 'Entirely new prose the author wrote themselves.')
-  proseAccept('prose: accept new scene')
+  proseAccept('prose: accept new scene', [fresh])
   const r2 = await runLearnStyle([fresh])
   assert.equal(r2.skipped, 'no-edits')
   assert.equal(r2.pairsConsidered, 0)

@@ -46,11 +46,11 @@ test('accept commits prose only — a dirty canon file stays dirty', () => {
   writeScene(story, 'prose/ch-01/scene-01.md', 'sc.01-1', 'Accepted revision.')
   fs.appendFileSync(path.join(story, 'canon/story.yaml'), 'logline: dirty\n')
 
-  const result = proseAccept()
+  const result = proseAccept(undefined, ['prose/ch-01/scene-01.md'])
   assert.match(result.hash, /^[0-9a-f]{7,}$/)
   assert.deepEqual(result.files, ['prose/ch-01/scene-01.md'])
   assert.equal(proseDraft().changes.length, 0)
-  assert.match(git(story, 'log', '-1', '--pretty=%s'), /accept draft \(1 scene\)/)
+  assert.match(git(story, 'log', '-1', '--pretty=%s'), /accept sc\.01-1/)
   // The canon edit must not have been swept into the commit.
   assert.match(git(story, 'status', '--porcelain'), /^ M canon\/story\.yaml/m)
 
@@ -59,13 +59,14 @@ test('accept commits prose only — a dirty canon file stays dirty', () => {
 
 test('accept with a custom message uses it', () => {
   writeScene(story, 'prose/ch-01/scene-01.md', 'sc.01-1', 'Another revision.')
-  proseAccept('prose: my own words')
+  proseAccept('prose: my own words', ['prose/ch-01/scene-01.md'])
   assert.equal(git(story, 'log', '-1', '--pretty=%s').trim(), 'prose: my own words')
 })
 
 test('accept with no changes is a 409', () => {
   reset()
-  assert.throws(() => proseAccept(), (e: unknown) => e instanceof HttpError && e.status === 409)
+  assert.throws(() => proseAccept(undefined, ['prose/ch-01/scene-01.md']),
+    (e: unknown) => e instanceof HttpError && e.status === 409)
 })
 
 test('discard reverts a modified file and deletes an added one', () => {

@@ -56,14 +56,31 @@ test('unknown route → 404, wrong method → 405, both with clean {error}', asy
 })
 
 test('accept with no draft changes → 409 with the domain message', async () => {
-  const res = await post('/api/prose/accept', {})
+  const res = await post('/api/prose/accept', { files: ['prose/ch-01/scene-01.md'] })
   assert.equal(res.status, 409)
   assert.equal((await res.json()).error, 'no draft changes to accept')
 })
 
+// A72-1: there is no accept-everything. An accept that names no scene is a
+// request nobody read a diff for, and it is refused over the wire, not
+// quietly widened to the whole prose directory.
+test('an accept that names no scene → 400, and the pending change is still pending', async () => {
+  writeScene(story, 'prose/ch-01/scene-01.md', 'sc.01-1', 'Nobody read this yet.')
+  for (const body of [{}, { files: [] }, { files: ['prose'] }, { files: 'prose/ch-01/scene-01.md' }]) {
+    const res = await post('/api/prose/accept', body)
+    assert.equal(res.status, 400, JSON.stringify(body))
+    assert.match((await res.json()).error, /names the scenes|array of scene paths|not a prose file/)
+  }
+  const draft = await (await get('/api/prose/draft')).json()
+  assert.deepEqual(draft.changes.map((c: { file: string }) => c.file), ['prose/ch-01/scene-01.md'])
+
+  await post('/api/prose/discard', { file: 'prose/ch-01/scene-01.md' })
+})
+
 test('accept/discard roundtrip through the HTTP layer', async () => {
   writeScene(story, 'prose/ch-01/scene-01.md', 'sc.01-1', 'HTTP-layer revision.')
-  const accept = await post('/api/prose/accept', { message: 'prose: via http' })
+  const accept = await post('/api/prose/accept',
+    { message: 'prose: via http', files: ['prose/ch-01/scene-01.md'] })
   assert.equal(accept.status, 200)
   const body = await accept.json()
   assert.match(body.hash, /^[0-9a-f]{7,}$/)
@@ -104,7 +121,8 @@ test('accept with capture requested but no credentials skips capture gracefully'
   delete process.env.ANTHROPIC_AUTH_TOKEN
   try {
     writeScene(story, 'prose/ch-01/scene-01.md', 'sc.01-1', 'Capture-skip revision.')
-    const res = await post('/api/prose/accept', { message: 'prose: capture skip', capture: true })
+    const res = await post('/api/prose/accept',
+      { message: 'prose: capture skip', capture: true, files: ['prose/ch-01/scene-01.md'] })
     assert.equal(res.status, 200)
     const body = await res.json()
     assert.match(body.hash, /^[0-9a-f]{7,}$/)

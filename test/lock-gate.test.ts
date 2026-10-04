@@ -81,11 +81,11 @@ test('accepting a sentence out of a locked paragraph is refused the same way', (
   reset()
 })
 
-test('the whole-draft accept is refused before any file commits or any judgment lands', () => {
+test('the scene accept is refused before the file commits or any judgment lands', () => {
   const fm = lockedFixture()
   fs.writeFileSync(abs, fm + 'Paragraph A, also revised.\n\nThe settled paragraph, overwritten wholesale.\n\nParagraph C.\n')
   const head = git(story, 'rev-parse', 'HEAD').trim()
-  assert.throws(() => proseAccept(), (e: unknown) => e instanceof HttpError && e.status === 423)
+  assert.throws(() => proseAccept(undefined, [file]), (e: unknown) => e instanceof HttpError && e.status === 423)
   assert.equal(git(story, 'rev-parse', 'HEAD').trim(), head, 'atomic: nothing committed')
   assert.deepEqual(readJudgments(), [], 'and nothing recorded')
   reset()

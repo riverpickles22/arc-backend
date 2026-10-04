@@ -53,7 +53,7 @@ test('the accept supersedes the routes waiting beside the one it adopted, and ne
   addRouteNote(SCENE, 'alt-1111bbbb', 'nearly, but the coat is late', null)
 
   assert.equal((await post('/api/prose/reroute/adopt', { scene: SCENE, alt: 'alt-1111aaaa' })).status, 200)
-  const accept = await post('/api/prose/accept', { message: 'a route taken' })
+  const accept = await post('/api/prose/accept', { message: 'a route taken', files: [sceneOf(SCENE).file] })
   assert.equal(accept.status, 200)
 
   // The one the author took: adopted, once. A `superseded` entry here would
@@ -81,7 +81,7 @@ test('an accept that adopted no route clears nothing: the routes wait, stale by 
   const other = sceneOf(OTHER)
   fs.writeFileSync(path.join(STORY, other.file),
     fs.readFileSync(path.join(STORY, other.file), 'utf8') + '\nOne more line, typed by hand.\n')
-  const accept = await post('/api/prose/accept', { message: 'a hand edit' })
+  const accept = await post('/api/prose/accept', { message: 'a hand edit', files: [other.file] })
   assert.equal(accept.status, 200)
 
   assert.equal(readDispositions().length, before, 'no route was disposed of by an accept that took none')

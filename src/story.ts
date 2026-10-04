@@ -287,29 +287,51 @@ export function proseDraft(): ProseDraft {
   return { git: true, changes, history }
 }
 
-/** Ratify the draft into main: stage and commit prose/ only. Anything else
- *  sitting in the story's working tree (canon edits, notes) is untouched.
+/** The scenes an accept is allowed to ratify, checked before anything is
+ *  written (A72-1). An accept NAMES ITS SCENES: there is no accept-everything,
+ *  because the only honest accept is one over a diff the author read, and a
+ *  request that named no file used to stage the whole prose directory. Every
+ *  entry is validated before any of them is accepted, so a bad path in a list
+ *  of three leaves the book exactly as it was.
  *
- *  `files` scopes the accept to particular scenes, which is what lets the
- *  decision live at the scene it is about rather than in a list (A64-3): the
- *  author reads one scene's diff and ratifies THAT, and the rest of the draft
- *  stays pending. Without it every pending scene is taken, exactly as before —
- *  the whole-draft accept is the same code path with no filter. */
-export function proseAccept(message?: string, files?: string[]): { hash: string; files: string[] } {
+ *  Each must be a plain `prose/…/*.md` path inside the story's prose
+ *  directory — `prose/` itself is not a scene — and must name a pending
+ *  change, which is also what keeps a scene the author never read out of the
+ *  commit. */
+function acceptScope(files: string[], pending: ProseChange[]): string[] {
+  if (!Array.isArray(files) || !files.length) {
+    throw new HttpError(400, 'an accept names the scenes it ratifies — there is nothing to accept without them')
+  }
+  const wanted: string[] = []
+  for (const f of files) {
+    if (typeof f !== 'string' || !f.trim()) throw new HttpError(400, 'every accepted scene is named by its path')
+    if (wanted.includes(f)) throw new HttpError(400, `${f} is named twice in one accept`)
+    if (!f.startsWith('prose/')) throw new HttpError(400, `not a prose file: ${f}`)
+    // A path that is not already plain can resolve somewhere its spelling
+    // does not say, and everything downstream matches scenes by this string.
+    if (path.posix.normalize(f) !== f) throw new HttpError(400, `not a plain scene path: ${f}`)
+    if (!f.endsWith('.md')) throw new HttpError(400, `not a scene file: ${f}`)
+    resolveWithin(path.join(STORY, 'prose'), f.slice('prose/'.length))
+    if (!pending.some(c => c.file === f)) throw new HttpError(409, `no draft change for ${f} — nothing was accepted`)
+    wanted.push(f)
+  }
+  return wanted
+}
+
+/** Ratify named scenes of the draft into main: stage and commit those scenes
+ *  only. Anything else sitting in the story's working tree (other pending
+ *  scenes, canon edits, notes) is untouched.
+ *
+ *  `files` is what lets the decision live at the scene it is about rather than
+ *  in a list (A64-3): the author reads one scene's diff and ratifies THAT, and
+ *  the rest of the draft stays pending. It is required (A72-1) — see
+ *  `acceptScope`. */
+export function proseAccept(message: string | undefined, files: string[]): { hash: string; files: string[] } {
   const all = proseDraft()
   if (!all.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer to accept')
   if (!all.changes.length) throw new HttpError(409, 'no draft changes to accept')
-  // A scope that names nothing pending is a mistake worth reporting, not a
-  // silent whole-book accept — the difference between the two is the book.
-  const wanted = files?.length ? new Set(files) : null
-  if (wanted) {
-    for (const f of wanted) {
-      if (!all.changes.some(c => c.file === f)) throw new HttpError(409, `no draft change for ${f} — nothing was accepted`)
-    }
-  }
-  const draft: ProseDraft = wanted
-    ? { ...all, changes: all.changes.filter(c => wanted.has(c.file)) }
-    : all
+  const wanted = acceptScope(files, all.changes)
+  const draft: ProseDraft = { ...all, changes: all.changes.filter(c => wanted.includes(c.file)) }
   // THE LOCKS, before anything else — including the evidence log. Settled
   // prose is settled against every write path, and the accept gate was the
   // last one that never asked (A40-3): an author could lock a paragraph and
@@ -336,18 +358,15 @@ export function proseAccept(message?: string, files?: string[]): { hash: string;
       wrote && wrote.trim() !== kept.trim() ? 'accepted' : 'approved', wrote, kept)
   }
 
-  // Staging and committing name the same paths, so a scoped accept cannot
-  // sweep in a scene the author has not read: `git add -A -- <paths>` stages
-  // deletions too, which a scene the draft removes needs.
-  const paths = wanted ? [...wanted] : ['prose']
+  // Staging and committing name the same paths, so an accept cannot sweep in
+  // a scene the author has not read: `git add -A -- <paths>` stages deletions
+  // too, which a scene the draft removes needs.
+  const paths = [...wanted]
   git('add', '-A', '--', ...paths)
   git('add', '--', EVIDENCE_REL)
   // The unlocks the author made, ratified with the edits they were made for.
   const released = draft.changes.flatMap(c => withReleasedLocks(c.file))
-  const n = draft.changes.length
-  const msg = message?.trim() || (wanted
-    ? `prose: accept ${draft.changes.map(c => c.main?.scene ?? c.file).join(', ')}`
-    : `prose: accept draft (${n} scene${n === 1 ? '' : 's'})`)
+  const msg = message?.trim() || `prose: accept ${draft.changes.map(c => c.main?.scene ?? c.file).join(', ')}`
   commitRatifying(msg, [...paths, EVIDENCE_REL, ...released])
   // The draft is fully judged; the next one starts from wherever the book now
   // stands rather than from a boundary that has moved out from under it.

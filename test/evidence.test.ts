@@ -170,12 +170,12 @@ test('an accept commits the evidence alongside the prose', () => {
   reset(); wipe()
 })
 
-test('the whole-draft accept records one entry per scene and pins its baseline', () => {
+test('the scene accept records one entry per scene and pins its baseline', () => {
   reset(); wipe()
   const before = git(story, 'rev-parse', 'HEAD').trim()
   const fm = fmOf()
   fs.writeFileSync(abs, fm + 'A whole draft, accepted at once.\n\nParagraph B.\n')
-  proseAccept('prose: accept the lot')
+  proseAccept('prose: accept the lot', [file])
 
   const j = readJudgments().filter(x => x.file === file).at(-1)!
   assert.equal(j.granularity, 'scene')

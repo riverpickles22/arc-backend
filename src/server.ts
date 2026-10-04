@@ -640,17 +640,16 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     POST: async (req, res) => {
       const body = (await parsedBody(req)) as { message?: unknown; capture?: unknown; files?: unknown }
       // The scene-scoped accept (A64-3): the author read ONE scene's diff and
-      // ratified that. Absent, every pending scene is taken, as before.
-      let files: string[] | undefined
-      if (body.files !== undefined) {
-        if (!Array.isArray(body.files) || !body.files.every(f => typeof f === 'string' && f)) {
-          throw new HttpError(400, 'files must be an array of scene paths')
-        }
-        files = body.files as string[]
+      // ratified that. `files` is required (A72-1) — the rules about which
+      // paths an accept may name live in one place, `acceptScope` in story.ts,
+      // so this route only narrows the wire shape.
+      if (body.files !== undefined && !Array.isArray(body.files)) {
+        throw new HttpError(400, 'files must be an array of scene paths')
       }
+      const files = (body.files ?? []) as string[]
       // WHICH scenes lose their field, decided BEFORE the accept while the
-      // ledger still answers. Accept is a whole-prose commit, so its files
-      // include scenes the author merely edited by hand — those keep their
+      // ledger still answers. An accept commits the scenes it names, and those
+      // include scenes the author merely edited by hand — they keep their
       // routes and the notes on them. Only a scene an alternative was
       // actually ADOPTED into is settled by this accept, and the ledger
       // records exactly that (origin 'reroute', written at adopt).

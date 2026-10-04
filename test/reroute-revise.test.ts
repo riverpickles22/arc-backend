@@ -266,7 +266,8 @@ test('accepting a scene clears its field: the adopted route became the book, the
   assert.ok(r.alternatives.length >= 1, JSON.stringify(r.refused))
   assert.ok(listAlternatives('sc.02-1').length >= 1)
   adoptAlternative('sc.02-1', r.alternatives[0].id)
-  const res = await post('/api/prose/accept', { message: 'accept the route' })
+  const res = await post('/api/prose/accept',
+    { message: 'accept the route', files: ['prose/ch-02/scene-01.md'] })
   assert.equal(res.status, 200, await res.text())
   assert.deepEqual(listAlternatives('sc.02-1'), [], 'the field is clear once the scene is accepted')
 })
