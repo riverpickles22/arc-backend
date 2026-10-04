@@ -81,6 +81,38 @@ repo shares. This file is only what is particular to the backend.
 - **Generated prose never lands in main.** Passes write to the story's
   working tree (the draft layer) or `.arc/alternatives/`; the accept endpoint
   is the only commit. The ledger records origin at adopt, not at generation.
+- **One commit lane, and it is not a lock on the files** (A72-2).
+  `inLane(what, fn)` in `src/lane.ts` runs one short mutation transaction at a
+  time over the story repo, and `Tx.commit` is the only place arc runs
+  `git commit` in it. `test/commit-lane.test.ts` reads every `git(...)` call in
+  `src/` and names the verb each one runs — walking past `-c key=value` and any
+  other flag — against an allow-list of READ-ONLY verbs, so a verb the list has
+  never heard of fails the check rather than slipping through it; a second test
+  names the three files allowed to spawn git at all, so a new wrapper cannot
+  make that list a half-truth. Every path that touches the story takes the
+  lane: the three accepts, the author's own save, the rejects, the discard, the
+  route adoption's write-and-ledger, the style ratification (its WRITE
+  included, so a refusal does not leave the contract changed and uncommitted)
+  and the record commits. `Tx.commit` refuses a transaction that names no
+  path — `git commit --` with no pathspec takes the whole index, which is
+  every unrelated thing the author happened to have staged. A transaction MAY NOT YIELD —
+  `inLane` refuses a thenable, because an `await` inside one reopens the
+  window it closes — so no model ever runs while the lane is held. It
+  remembers the bytes it is about to change and the index entries it is about
+  to stage, and a failure puts both back: a refused commit records no verdict,
+  stages nothing and changes no prose. `Tx.stageAppended` commits THIS
+  decision's lines of the evidence log and puts the rest of the file back, so
+  an earlier uncommitted verdict is not ratified by someone else's decision.
+  `commitRecords` repairs its own bookkeeping — a receipt whose commit failed
+  rides along with the next one rather than making the author repeat an accept
+  that already landed — but ONLY one that already carries its hash: an adopted
+  route's receipt waits, unstamped, for its own scene's accept, and sweeping it
+  in would commit it twice under the wrong message.
+  And the boundary, which is not negotiable: the lane is process-local
+  exclusion, never a claim over the files. A foreign `index.lock` is refused
+  in the author's words and NEVER removed, and a file that changed under a
+  restoration is left alone. Nothing in arc may say or imply that the lane
+  holds back the author's own editor.
 - **An accept names the scenes it ratifies** (A72-1). `files` is required of
   `ProseAcceptRequest`, of `proseAccept` and of the viewer's `acceptDraft`;
   there is no accept-everything, because the only honest accept is one over a

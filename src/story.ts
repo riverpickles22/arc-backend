@@ -4,7 +4,6 @@
 // what is true about it — so they live outside canon/ and are served straight
 // through rather than going near the validator. They live in the story repo
 // rather than the viewer so arc-frontend stays story-agnostic.
-import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { load as yamlLoad } from 'js-yaml'
@@ -18,6 +17,7 @@ import { STORY } from './config'
 import { HttpError } from './http'
 import { assertUnlocked, locksOn } from './locks'
 import { resolveWithin } from './safe-path'
+import { git, inLane, type Tx } from './lane'
 import { canonicalYaml } from './agent'
 import { validateStory } from './canon'
 import { readWorkingReceipt } from './run'
@@ -215,9 +215,10 @@ export function updateMaterial(
 // canon uses); discarding a file is a surfaced git checkout. A story that
 // isn't a git repository simply has no draft layer.
 
-export function git(...args: string[]): string {
-  return execFileSync('git', ['-C', STORY, ...args], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
-}
+// `git` itself lives in the lane now (A72-2), beside the exclusion and the
+// one commit call every path goes through. Reading is free; mutating takes a
+// transaction. Re-exported because half the backend reads the story with it.
+export { git }
 
 /** The draft state: every prose file that differs from HEAD, with the main
  *  version of each, plus the ratification history of prose/. */
@@ -327,6 +328,10 @@ function acceptScope(files: string[], pending: ProseChange[]): string[] {
  *  the rest of the draft stays pending. It is required (A72-1) — see
  *  `acceptScope`. */
 export function proseAccept(message: string | undefined, files: string[]): { hash: string; files: string[] } {
+  return inLane('accepting a scene', tx => acceptScenes(tx, message, files))
+}
+
+function acceptScenes(tx: Tx, message: string | undefined, files: string[]): { hash: string; files: string[] } {
   const all = proseDraft()
   if (!all.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer to accept')
   if (!all.changes.length) throw new HttpError(409, 'no draft changes to accept')
@@ -345,6 +350,10 @@ export function proseAccept(message: string | undefined, files: string[]): { has
     assertUnlocked(c.main.scene, c.main.body, workingBody, 'this accept')
   }
 
+  // The record files this decision is about to change, remembered before it
+  // changes them: a refusal past this point leaves no verdict behind.
+  tx.keep(path.join(STORY, EVIDENCE_REL), path.join(STORY, '.arc', 'baselines.json'))
+
   // One entry per scene, before the commit carries them. Whole-scene
   // granularity is the honest grain here: the author took the file entire, so
   // the pair is arc's draft against what the file now says, and the learning
@@ -362,12 +371,14 @@ export function proseAccept(message: string | undefined, files: string[]): { has
   // a scene the author has not read: `git add -A -- <paths>` stages deletions
   // too, which a scene the draft removes needs.
   const paths = [...wanted]
-  git('add', '-A', '--', ...paths)
-  git('add', '--', EVIDENCE_REL)
+  tx.stage(paths, { all: true })
+  // The evidence log carries THIS decision's verdicts and no other's, even
+  // when an earlier one left a line in the file that was never committed.
+  const evidence = tx.stageAppended(EVIDENCE_REL) ? [EVIDENCE_REL] : []
   // The unlocks the author made, ratified with the edits they were made for.
-  const released = draft.changes.flatMap(c => withReleasedLocks(c.file))
+  const released = draft.changes.flatMap(c => withReleasedLocks(tx, c.file))
   const msg = message?.trim() || `prose: accept ${draft.changes.map(c => c.main?.scene ?? c.file).join(', ')}`
-  commitRatifying(msg, [...paths, EVIDENCE_REL, ...released])
+  tx.commit(msg, [...paths, ...evidence, ...released])
   // The draft is fully judged; the next one starts from wherever the book now
   // stands rather than from a boundary that has moved out from under it.
   for (const c of draft.changes) clearBaseline(c.file)
@@ -387,6 +398,13 @@ export function proseAccept(message: string | undefined, files: string[]): { has
  *  is not a conflict.
  */
 export function proseWrite(file: string, body: string, baseline?: string): ProseScene {
+  return inLane('saving a scene', () => writeSceneBody(file, body, baseline))
+}
+
+/** The write itself, for a caller that is ALREADY holding the lane — the
+ *  route adoption, whose write and whose ledger entry are one decision
+ *  (A72-2). Everyone else goes through `proseWrite`. */
+export function writeSceneBody(file: string, body: string, baseline?: string): ProseScene {
   if (!file.startsWith('prose/')) throw new HttpError(400, `not a prose file: ${file}`)
   const abs = resolveWithin(path.join(STORY, 'prose'), file.slice('prose/'.length))
   if (!abs.endsWith('.md')) throw new HttpError(400, `not a scene file: ${file}`)
@@ -525,13 +543,15 @@ function judged(file: string, scene: string | null, granularity: Granularity,
   })
 }
 
-/** The paths an accept commits: the scene, and the evidence log when it has
- *  something new to say. A judgment is record, so it rides in the commit the
- *  decision already makes rather than waiting to be noticed. */
-function withEvidence(file: string): string[] {
+/** The paths an accept commits: the scene, and the evidence log when THIS
+ *  decision added to it. A judgment is record, so it rides in the commit the
+ *  decision already makes rather than waiting to be noticed — and only this
+ *  decision's lines do, which is why the delta is staged rather than the file
+ *  (A72-2: an earlier verdict that was never committed is a different
+ *  decision, and not this one's to ratify). */
+function withEvidence(tx: Tx, file: string): string[] {
   try {
-    git('add', '--', EVIDENCE_REL)
-    return git('status', '--porcelain', '--', EVIDENCE_REL).trim() ? [file, EVIDENCE_REL] : [file]
+    return tx.stageAppended(EVIDENCE_REL) ? [file, EVIDENCE_REL] : [file]
   } catch {
     return [file]
   }
@@ -581,10 +601,10 @@ export function releasedLocksFor(file: string): string[] {
 
 /** Stage the released locks for a scene and return them, so the commit that
  *  ratifies the edit ratifies the unlock with it. */
-function withReleasedLocks(file: string): string[] {
+function withReleasedLocks(tx: Tx, file: string): string[] {
   const locks = releasedLocksFor(file)
   for (const l of locks) {
-    try { git('add', '-A', '--', l) } catch { /* the commit will say */ }
+    try { tx.stage([l], { all: true }) } catch { /* the commit will say */ }
   }
   return locks
 }
@@ -597,33 +617,45 @@ function withReleasedLocks(file: string): string[] {
  *  finding for `arc doctor`, not a reason to fail an accept that already
  *  landed. */
 export function commitRecords(message: string, paths: string[]): string | null {
-  if (!paths.length) return null
+  // AND THE REPAIR (A72-2), narrowly. A receipt whose commit failed last time
+  // is still sitting in the working tree: it is record, not a decision, so
+  // the next records commit takes it along rather than making the author
+  // repeat an accept that already landed.
+  //
+  // ONLY ONE ALREADY STAMPED, though. An adopted route writes its receipt at
+  // the decision with `result.commit: null` and waits for ITS OWN scene's
+  // accept to fill the hash (reroute.ts, and the rule in CLAUDE.md: no file
+  // can hold the hash of the commit that contains it). Sweeping those in
+  // would commit a second scene's receipt under this scene's message, with no
+  // hash on it, and commit it again when that scene is accepted.
+  const orphans = (() => {
+    try {
+      return git('status', '--porcelain', '-uall', '--', 'history').split('\n')
+        .filter(Boolean)
+        .map(l => { const r = l.slice(3).trim(); return r.includes(' -> ') ? r.split(' -> ')[1] : r })
+        .filter(f => f.endsWith('.yaml') && !paths.includes(f))
+        .filter(f => {
+          try {
+            const doc = yamlLoad(fs.readFileSync(path.join(STORY, f), 'utf8')) as { result?: { commit?: unknown } } | null
+            return typeof doc?.result?.commit === 'string' && !!doc.result.commit
+          } catch { return false }
+        })
+    } catch { return [] }
+  })()
+  const wanted = [...paths, ...orphans]
+  if (!wanted.length) return null
   try {
-    git('add', '--', ...paths)
-    if (!git('diff', '--cached', '--name-only', '--', ...paths).trim()) return null
-    git('commit', '-m', message, '--', ...paths)
-    return git('rev-parse', '--short', 'HEAD').trim()
-  } catch {
-    return null
-  }
-}
-
-/** The commit that ratifies. A refusal from the story's own commit gate is
- *  not an internal error: it is the gate doing its job, and the author
- *  should read what it said — the lock, the scene, and the way out. */
-function commitRatifying(message: string, paths: string[]): void {
-  try {
-    git('commit', '-m', message, '--', ...paths)
+    return inLane('committing a receipt', tx => {
+      tx.stage(wanted)
+      if (!git('diff', '--cached', '--name-only', '--', ...wanted).trim()) return null
+      tx.commit(message, wanted)
+      return git('rev-parse', '--short', 'HEAD').trim()
+    })
   } catch (e) {
-    const err = e as { stderr?: string | Buffer; message?: string }
-    const text = String(err.stderr ?? '') + '\n' + String(err.message ?? '')
-    if (/lock-gate: refusing/.test(text)) {
-      const lines = text.split('\n').filter(l => l.trim() && !/^\s*at /.test(l))
-      const gate = lines.slice(lines.findIndex(l => /lock-gate: refusing/.test(l)))
-        .filter(l => !/^(error|fatal):|Command failed/.test(l.trim()))
-      throw new HttpError(423, gate.join(' ').replace(/\s+/g, ' ').trim())
-    }
-    throw e
+    // Never fatal: an uncommitted receipt is a finding for `arc doctor`, not
+    // a reason to fail an accept that already landed.
+    console.error('[records] the receipt was written but not committed:', e)
+    return null
   }
 }
 
@@ -657,10 +689,15 @@ function locate(aligned: AlignedParagraph[], t: ParagraphTarget): AlignedParagra
  *    del     — main's paragraph goes away, which is what accepting a
  *              deletion means and what could not be expressed before
  *
- *  The working tree is restored in a finally: a failure here must never cost
- *  the author words they have not accepted.
+ *  The working tree is restored once the decision is in the book; a failure
+ *  before that is the lane's to undo, and puts the author's words back
+ *  exactly as they were (A72-2).
  */
 export function proseAcceptParagraph(file: string, t: ParagraphTarget, message?: string): { hash: string; file: string } {
+  return inLane('accepting a paragraph', tx => acceptParagraph(tx, file, t, message))
+}
+
+function acceptParagraph(tx: Tx, file: string, t: ParagraphTarget, message?: string): { hash: string; file: string } {
   const { abs, working, fm, draftParas, mainParas, aligned, scene } = paragraphContext(file)
   const hit = locate(aligned, t)
 
@@ -684,41 +721,53 @@ export function proseAcceptParagraph(file: string, t: ParagraphTarget, message?:
   if (scene) assertUnlocked(scene, mainParas.join('\n\n'), merged.join('\n\n'), 'this accept')
 
   const committed = fm + merged.join('\n\n') + '\n'
-  try {
-    fs.writeFileSync(abs, committed)
+  tx.keep(abs, path.join(STORY, EVIDENCE_REL), path.join(STORY, '.arc', 'baselines.json'))
+  fs.writeFileSync(abs, committed)
+  tx.wrote(abs, committed)
 
-    // Before the commit, so the judgment rides in it. A deletion has no
-    // draft-side text at all; for the other two, arc's own words come from
-    // the ledger and are compared rather than assumed — taking arc's
-    // paragraph untouched is an approval, and editing it first is the pair.
-    if (hit.kind === 'del') {
-      judged(file, scene, 'paragraph', hit.mainIndex, 'accepted', '', '')
-    } else {
-      const kept = draftParas[hit.draftIndex!]
-      const wrote = arcSideOf(file, draftParas, hit.draftIndex!)
-      judged(file, scene, 'paragraph', hit.mainIndex ?? hit.draftIndex, wrote && wrote !== kept ? 'accepted' : 'approved', wrote, kept)
-    }
-
-    const paths = [...withEvidence(file), ...withReleasedLocks(file)]
-    git('add', '--', file)
-    commitRatifying(message?.trim() || `prose: accept one change in ${path.basename(file)}`, paths)
-    return { hash: git('rev-parse', '--short', 'HEAD').trim(), file }
-  } finally {
-    restoreWorking(abs, working, committed)   // the author's unaccepted words, always
+  // Before the commit, so the judgment rides in it. A deletion has no
+  // draft-side text at all; for the other two, arc's own words come from
+  // the ledger and are compared rather than assumed — taking arc's
+  // paragraph untouched is an approval, and editing it first is the pair.
+  if (hit.kind === 'del') {
+    judged(file, scene, 'paragraph', hit.mainIndex, 'accepted', '', '')
+  } else {
+    const kept = draftParas[hit.draftIndex!]
+    const wrote = arcSideOf(file, draftParas, hit.draftIndex!)
+    judged(file, scene, 'paragraph', hit.mainIndex ?? hit.draftIndex, wrote && wrote !== kept ? 'accepted' : 'approved', wrote, kept)
   }
+
+  tx.stage([file])
+  const paths = [...withEvidence(tx, file), ...withReleasedLocks(tx, file)]
+  tx.commit(message?.trim() || `prose: accept one change in ${path.basename(file)}`, paths)
+  restoreWorking(abs, working, committed)   // the author's unaccepted words
+  return { hash: git('rev-parse', '--short', 'HEAD').trim(), file }
 }
 
-/** The finally that does not manufacture ghosts. The commit normalizes
+/** The restoration that does not manufacture ghosts. The commit normalizes
  *  paragraphs; the author's original bytes may differ only in whitespace the
  *  model cannot see. Restoring those bytes over the freshly committed text
  *  would leave the scene "modified" forever with nothing visible to accept —
  *  so when the two are paragraph-identical, the committed bytes stand.
- *  Anything the model CAN see is the author's, and is restored exactly. */
+ *  Anything the model CAN see is the author's, and is restored exactly.
+ *
+ *  AND IT LOOKS BEFORE IT WRITES (A72-2). The lane excludes arc from itself,
+ *  never the author's own editor: if the file no longer holds what this
+ *  decision just committed, something outside arc wrote it between the commit
+ *  and here, and putting the pre-decision bytes back would destroy what they
+ *  typed. Observed conflict, so arc leaves it alone and says so in the log —
+ *  the draft reading will show their words as the pending change they are. */
 function restoreWorking(abs: string, working: string, committed: string): void {
   const paras = (text: string) => {
     const fm = text.match(FM_RE)
     const body = fm ? text.slice(fm[0].length) : text
     return (fm?.[0] ?? '') + body.split(/\n{2,}/).map(x => x.trim()).filter(Boolean).join('\n\n')
+  }
+  let onDisk: string
+  try { onDisk = fs.readFileSync(abs, 'utf8') } catch { return }
+  if (onDisk !== committed) {
+    console.error(`[lane] ${path.relative(STORY, abs)} changed outside arc while a decision was landing — left as it is`)
+    return
   }
   fs.writeFileSync(abs, paras(working) === paras(committed) ? committed : working)
 }
@@ -746,6 +795,10 @@ function restoreWorking(abs: string, working: string, committed: string): void {
  *  the book. (proseWrite's assertUnlocked guards arbitrary edits; a reject
  *  is not arbitrary — its output is main's text by construction.) */
 export function proseRejectParagraph(file: string, t: ParagraphTarget): { file: string } {
+  return inLane('rejecting a paragraph', () => rejectParagraph(file, t))
+}
+
+function rejectParagraph(file: string, t: ParagraphTarget): { file: string } {
   const { abs, working, fm, draftParas, mainParas, aligned, scene } = paragraphContext(file)
   const hit = locate(aligned, t)
 
@@ -902,6 +955,10 @@ function mergeSentence(
  *  deleted sentence commits the deletion; accepting an added one commits its
  *  arrival. */
 export function proseAcceptSentence(file: string, t: SentenceTarget, message?: string): { hash: string; file: string } {
+  return inLane('accepting a sentence', tx => acceptSentence(tx, file, t, message))
+}
+
+function acceptSentence(tx: Tx, file: string, t: SentenceTarget, message?: string): { hash: string; file: string } {
   const { abs, working, fm, draftParas, mainParas, main, scene } = sentenceContext(file, t.paragraph)
   const { aligned, hit, arcWrote } = sentenceAlignment(mainParas[main], draftParas[t.paragraph], t)
 
@@ -919,17 +976,17 @@ export function proseAcceptSentence(file: string, t: SentenceTarget, message?: s
   if (scene) assertUnlocked(scene, mainParas.join('\n\n'), next.join('\n\n'), 'this accept')
 
   const committed = fm + next.join('\n\n') + '\n'
-  try {
-    fs.writeFileSync(abs, committed)
-    // Taking arc's sentence, or agreeing with its cut: an approval either way.
-    judged(file, scene, 'sentence', main, 'approved', arcWrote, arcWrote)
-    const paths = [...withEvidence(file), ...withReleasedLocks(file)]
-    git('add', '--', file)
-    commitRatifying(message?.trim() || `prose: accept one sentence in ${path.basename(file)}`, paths)
-    return { hash: git('rev-parse', '--short', 'HEAD').trim(), file }
-  } finally {
-    restoreWorking(abs, working, committed)   // the author's unaccepted words, always
-  }
+  tx.keep(abs, path.join(STORY, EVIDENCE_REL), path.join(STORY, '.arc', 'baselines.json'))
+  fs.writeFileSync(abs, committed)
+  tx.wrote(abs, committed)
+
+  // Taking arc's sentence, or agreeing with its cut: an approval either way.
+  judged(file, scene, 'sentence', main, 'approved', arcWrote, arcWrote)
+  tx.stage([file])
+  const paths = [...withEvidence(tx, file), ...withReleasedLocks(tx, file)]
+  tx.commit(message?.trim() || `prose: accept one sentence in ${path.basename(file)}`, paths)
+  restoreWorking(abs, working, committed)   // the author's unaccepted words
+  return { hash: git('rev-parse', '--short', 'HEAD').trim(), file }
 }
 
 /** Refuse ONE sentence, leaving the rest of the paragraph pending.
@@ -938,6 +995,10 @@ export function proseAcceptSentence(file: string, t: SentenceTarget, message?: s
  *  change means the draft stops carrying it. Refusing an added sentence drops
  *  it; refusing a deleted one puts it back. */
 export function proseRejectSentence(file: string, t: SentenceTarget): { file: string } {
+  return inLane('rejecting a sentence', () => rejectSentence(file, t))
+}
+
+function rejectSentence(file: string, t: SentenceTarget): { file: string } {
   const { abs, fm, draftParas, mainParas, main, scene } = sentenceContext(file, t.paragraph)
   const { aligned, hit, arcWrote, mainHad } = sentenceAlignment(mainParas[main], draftParas[t.paragraph], t)
 
@@ -960,6 +1021,10 @@ export function proseRejectSentence(file: string, t: SentenceTarget): { file: st
 /** Roll one file back to main. The path arrives from the browser — reject
  *  anything that escapes prose/, including symlink escapes. */
 export function proseDiscard(file: string): void {
+  inLane('discarding a change', () => discardChange(file))
+}
+
+function discardChange(file: string): void {
   if (!file.startsWith('prose/')) throw new HttpError(400, `not a prose file: ${file}`)
   const abs = resolveWithin(path.join(STORY, 'prose'), file.slice('prose/'.length))
   const change = proseDraft().changes.find(c => c.file === file)

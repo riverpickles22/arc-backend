@@ -62,7 +62,8 @@ import { locksOn } from './locks'
 import { siblingLadder } from './ladder'
 import { contractBlock, literalWithholds, splitBriefing, withholdViolations } from './redraft'
 import { arcRevision, sha16, storyRevision } from './records'
-import { proseScenes, proseWrite } from './story'
+import { proseScenes, writeSceneBody } from './story'
+import { inLane } from './lane'
 import { styleContract } from './style'
 
 // The rules are the row's (registry.ts, ROW_EXPLORE_SCENE.rules): one
@@ -953,9 +954,16 @@ export function adoptAlternative(scene: string, id: string): AdoptRouteResponse 
   if (staleness && staleness.why === 'the record moved') {
     throw new HttpError(409, `${staleness.changed.includes(scene) ? 'this scene has changed' : 'what that route was written from has changed'} since that route was written, so arc did not put it into the book — run it again from where the scene stands now, or cancel it.`)
   }
-  const written = proseWrite(s.file, alt.body.trim() + '\n', s.body)
-  const full = fs.readFileSync(path.join(STORY, s.file), 'utf8')
-  recordGenerated(s.file, full, { engine: currentEngine() ?? 'sdk', scene, origin: 'reroute', run: alt.run, route: alt.id })
+  // ONE TRANSACTION (A72-2). Adopting is a draft write and makes no commit,
+  // but the write and the ledger entry that says where those words came from
+  // are one decision: a reader that saw the prose without the entry would
+  // call the author's own hand what arc wrote.
+  const written = inLane('adopting a route', () => {
+    const out = writeSceneBody(s.file, alt.body.trim() + '\n', s.body)
+    const full = fs.readFileSync(path.join(STORY, s.file), 'utf8')
+    recordGenerated(s.file, full, { engine: currentEngine() ?? 'sdk', scene, origin: 'reroute', run: alt.run, route: alt.id })
+    return out
+  })
   // The author decided about this route, so its receipt joins the record —
   // ids, hashes and links only. The commit follows at the accept
   // (`stampReceiptCommit`), which is the artefact this receipt is committed

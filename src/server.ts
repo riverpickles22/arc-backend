@@ -47,9 +47,10 @@ import type {
   WorkResponse,
 } from 'arc-canon-graph'
 import { STORY } from './config'
+import { inLane } from './lane'
 import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
-import { docsArticles, git, materialItems, updateMaterial, proseAccept, proseAcceptParagraph, proseRejectParagraph, proseAcceptSentence, proseRejectSentence, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig, commitRecords } from './story'
+import { docsArticles, materialItems, updateMaterial, proseAccept, proseAcceptParagraph, proseRejectParagraph, proseAcceptSentence, proseRejectSentence, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig, commitRecords } from './story'
 import { annotations, closeAnsweredNotes, createAnnotation, deleteAnnotation, updateAnnotation } from './annotations'
 
 /** After a paragraph or sentence accept: if the scene has nothing pending
@@ -582,36 +583,54 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       if (body.action !== 'ratify' && body.action !== 'dismiss') throw new HttpError(400, "action must be 'ratify' or 'dismiss'")
       const layer = body.layer === 'author' ? 'author' : 'story'
 
-      // A touchstone is a passage of THIS manuscript; it only ever lands in
-      // the story contract, whatever tab the click came from.
-      const { path: target, remaining } = body.kind === 'touchstone'
-        ? ratifyTouchstone(body.id, body.action, path.join(STORY, 'docs', 'style.md'))
-        : ratifyRule(body.id, body.action, layer, l =>
-          l === 'author' ? authorStylePath(process.env, os.homedir()) : path.join(STORY, 'docs', 'style.md'))
+      // THE WRITE IS INSIDE THE TRANSACTION (A72-2), because a ratification
+      // that changed the contract and then could not be committed is exactly
+      // the half-done state the lane exists to prevent: the files the rule
+      // lands in are kept first, so a refusal puts them back.
+      const storyContract = path.join(STORY, 'docs', 'style.md')
+      const { target, remaining, committed } = inLane('ratifying a style rule', tx => {
+        tx.keep(storyContract, authorStylePath(process.env, os.homedir()),
+          path.join(STORY, QUEUE_REL), path.join(STORY, DISMISSED_REL))
+        // A touchstone is a passage of THIS manuscript; it only ever lands in
+        // the story contract, whatever tab the click came from.
+        const out = body.kind === 'touchstone'
+          ? ratifyTouchstone(body.id as string, body.action as 'ratify' | 'dismiss', storyContract)
+          : ratifyRule(body.id as string, body.action as 'ratify' | 'dismiss', layer, l =>
+            l === 'author' ? authorStylePath(process.env, os.homedir()) : storyContract)
 
-      // Only the story layer lives in the story repo; the author layer is in
-      // the user's home and is not arc's to commit.
-      let committed = false
-      try {
-        // The dismissal list rides along: saying no is a decision, and a
-        // decision that lives only in a working tree is one a fresh clone
-        // asks the author again.
-        const tracked = ['docs/style.md', QUEUE_REL, DISMISSED_REL]
-          .filter(rel => { try { git('add', '--', rel); return true } catch { return false } })
-        git('commit', '-m', `style: ${body.action} proposed ${body.kind === 'touchstone' ? 'touchstone' : 'rule'} ${body.id}`, '--', ...tracked)
-        committed = true
-      } catch {
-        committed = false // not a git repo, or nothing staged — the file change stands either way
-      }
+        // Only the story layer lives in the story repo; the author layer is
+        // in the user's home and is not arc's to commit.
+        let landed = false
+        try {
+          // The dismissal list rides along: saying no is a decision, and a
+          // decision that lives only in a working tree is one a fresh clone
+          // asks the author again.
+          const tracked = ['docs/style.md', QUEUE_REL, DISMISSED_REL]
+            .filter(rel => { try { tx.stage([rel]); return true } catch { return false } })
+          if (tracked.length) {
+            tx.commit(`style: ${body.action} proposed ${body.kind === 'touchstone' ? 'touchstone' : 'rule'} ${body.id}`, tracked)
+            landed = true
+          }
+        } catch (e) {
+          // A refusal the author must read — the story's own commit gate, or
+          // something outside arc holding the index — is theirs to read, not
+          // a `committed: false` they would never notice. Anything else (no
+          // git repo at all) leaves the change standing in the working tree,
+          // which is a ratification too.
+          if (e instanceof HttpError) throw e
+          landed = false
+        }
+        return { target: out.path, remaining: out.remaining, committed: landed }
+      })
 
       // The author layer has its own repo and its own history; a ratification
       // into it is committed there, so `committed` finally means the same
       // thing for both layers.
-      if (body.action === 'ratify' && body.kind !== 'touchstone' && layer === 'author' && target) {
-        committed = commitAuthorStyle(target, `style: ratify proposed rule ${body.id}`)
-      }
+      const inTheirOwnRepo = body.action === 'ratify' && body.kind !== 'touchstone' && layer === 'author' && target
+        ? commitAuthorStyle(target, `style: ratify proposed rule ${body.id}`)
+        : committed
 
-      json(res, 200, { ok: true, action: body.action, path: target, remaining: remaining.length, committed } satisfies RatifyRuleResponse)
+      json(res, 200, { ok: true, action: body.action, path: target, remaining: remaining.length, committed: inTheirOwnRepo } satisfies RatifyRuleResponse)
     },
   },
 
