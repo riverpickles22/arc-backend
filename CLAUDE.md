@@ -1,6 +1,6 @@
 # arc-backend — agent notes
 
-Read `../arc-system-design/AGENTS.md` first; it carries the rules every arc
+Read `../arc-context/AGENTS.md` first; it carries the rules every arc
 repo shares. This file is only what is particular to the backend.
 
 - **Every write path goes through the lock check** and answers HTTP 423 on
