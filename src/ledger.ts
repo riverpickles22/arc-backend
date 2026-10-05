@@ -39,12 +39,37 @@ export interface LedgerEntry {
    *  accept that clears the scene's field knows which one it already has a
    *  disposition for and does not record it superseded by its own adoption. */
   route?: string
+
+  // ---- what the pass read (A72-4, invariant 1) --------------------------
+  // A route has carried this since slice 1; a draft carried nothing, so a
+  // draft written against a note the author has since answered looked exactly
+  // like one written a second ago. Same fields, same comparison, same two
+  // registers the author reads differently.
+
+  /** Everything the pass was shown, with the version it was shown. */
+  reads?: { id: string; version: string }[]
+  /** WHICH ENUMERATION produced those versions. A draft minted under an older
+   *  rule reads *written by an older arc* rather than pretending to compare. */
+  v?: number
+  /** The pass's own fingerprint at the time (`jobFingerprint`), so a draft
+   *  made by a version of the row that no longer exists is labelled as such
+   *  and not as the author's record having moved. */
+  job?: string
 }
 
-/** Record what the drafting pass just wrote. Never throws: a ledger failure
- *  must never fail a draft — losing the learning signal is a smaller harm
- *  than losing the scene. */
-export function recordGenerated(file: string, content: string, meta: { engine?: string; scene?: string; origin?: string; notes?: string[]; run?: string; route?: string } = {}): void {
+/** Record what the drafting pass just wrote.
+ *
+ *  THIS IS SAFETY PROVENANCE NOW, not only a learning signal (A72-4). A draft
+ *  on disk with no entry here reads as the author's own hand — and worse, as
+ *  a draft that read nothing, so nothing about it can be called stale. It has
+ *  to be durable BEFORE the draft is exposed, which is why every row writes
+ *  it inside the same lane transaction as the prose and lets `strict` decide
+ *  whether a failure to record is a failure to land.
+ *
+ *  `strict` throws when the entry cannot be written. The adopt path keeps the
+ *  old contract — it is recording a decision the author already made, and a
+ *  lost entry there costs provenance, not safety. */
+export function recordGenerated(file: string, content: string, meta: { engine?: string; scene?: string; origin?: string; notes?: string[]; run?: string; route?: string; reads?: { id: string; version: string }[]; v?: number; job?: string } = {}, strict = false): void {
   try {
     const sha = sha16(content)
     fs.mkdirSync(DIR(), { recursive: true })
@@ -52,6 +77,7 @@ export function recordGenerated(file: string, content: string, meta: { engine?: 
     const entry: LedgerEntry = { at: new Date().toISOString(), file, sha, ...meta }
     fs.appendFileSync(INDEX(), JSON.stringify(entry) + '\n')
   } catch (e) {
+    if (strict) throw e
     console.error('[warn] generation ledger write failed (the draft itself is fine):', e)
   }
 }

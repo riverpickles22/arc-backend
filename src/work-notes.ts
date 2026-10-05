@@ -41,10 +41,13 @@ import { currentEngine } from './engine'
 import { parseCraftPlan, runGates, type ProseGateCtx } from './gates'
 import { HttpError } from './http'
 import { recordGenerated } from './ledger'
+import { destinationAt, landOrKeep, movedSentence, trialValidate } from './landing'
+import { READ_MAP, readsFrom, rebaseToLanded } from './reads'
+import { fingerprintsAtWrite } from './reroute'
 import { locksOn } from './locks'
 import { sha16 } from './records'
 import { notesAnswerable, runRedraft } from './redraft'
-import { CRAFT_MOVES, stageRuns, type Stage, type StagedRow } from './registry'
+import { CRAFT_MOVES, jobFingerprint, stageRuns, type Stage, type StagedRow } from './registry'
 import { resolveRequest } from './request'
 import { andCapFromContract, endingOf, gateCtx as gateCtxOf, wordCapFromContract } from './reroute'
 import { clusterNotes, parseConflicts } from './revise'
@@ -206,6 +209,11 @@ async function runMinimalRevision(
     dropped: first.forReceipt().dropped_for_budget,
     read: [{ id: `slice:${t.scene}:conflict`, version: sha16(first.render()) }],
   }, t.source ?? 'ui')
+  // WHAT THE PASS WAS SHOWN, CAPTURED NOW (A72-4). A revision is written FROM
+  // notes, so a note whose status moves while the pass is out is the clearest
+  // case there is of an answer the author should read again before taking.
+  const readAtLaunch: { id: string; version: string }[] = readsFrom(fingerprintsAtWrite(t.scene))
+  const jobAtLaunch = jobFingerprint(row)
   const { run, receipt } = ctx
   receipt.notes_handed = handed.map(n => ({ id: n.id, by: (n.by ?? 'author') as 'author' | 'agent' }))
   receipt.intent = { said: said || null, plan: null, ...(said ? {} : { note: 'nothing to translate' }) }
@@ -230,7 +238,10 @@ async function runMinimalRevision(
    *  the draft layer and on the ledger is the one thing this must not say
    *  (A69-10 review). */
   const nothing = (
-    ending: 'refused' | 'could not run' | 'cancelled' | 'unreadable',
+    // `unfinished` is the honest ending for a pass whose answer could not
+    // land because the destination moved under it (A72-4): it ran, it has
+    // words, and nothing of the author's was touched.
+    ending: 'refused' | 'could not run' | 'cancelled' | 'unreadable' | 'unfinished',
     reply: string,
     already: { wrote: boolean; file: string } = { wrote: false, file: scene.file },
   ): WorkNotesResponse => {
@@ -336,14 +347,14 @@ async function runMinimalRevision(
       // below, because every gate held.
       const absLive = path.join(STORY, live.file)
       const rawLive = fs.readFileSync(absLive, 'utf8')
+      // THE DESTINATION AT LAUNCH of this cluster's write (A72-4).
+      const dest = destinationAt(live.file)
       const headLive = rawLive.slice(0, rawLive.length - (parseScene(rawLive, live.file)?.body.length ?? 0))
       const fileOf = (prose: string): string =>
         headLive + prose.trim() + (prose.trim().endsWith('\n') ? '' : '\n')
-      const validate = (prose: string): { ok: boolean; output: string } => {
-        const out = writeValidated(live.file, fileOf(prose))
-        if (out.ok) fs.writeFileSync(absLive, rawLive)
-        return out
-      }
+      // THE TRIAL DOES NOT CLOBBER (A72-4) — see `trialValidate`.
+      const validate = (prose: string): { ok: boolean; output: string } =>
+        trialValidate(live.file, fileOf(prose), text => writeValidated(live.file, text))
       const writeSlice = sliceFor(writeStage, { line: said || undefined, plan: plan?.moves ? { moves: plan.moves } : undefined })
       // THE RECEIPT NAMES WHAT THE WRITE WAS SHOWN, not what the conflict
       // reading was. The run opened on the reading's one-layer slice, and
@@ -376,15 +387,29 @@ async function runMinimalRevision(
       }
       const body = out.checked.body.trim()
       const next = fileOf(body)
-      const check = writeValidated(live.file, next)
-      if (!check.ok) {
-        return nothing('could not run',
-          `arc could not write that revision into your story — ${check.output.split('\n')[0]}. Nothing was written.`, sofar)
+      // THE LANDING COMPARE (A72-4, invariant 1): a revision never lands over
+      // words the author typed while it was being written.
+      const landing = landOrKeep(dest, run.id, next, () => writeValidated(live.file, next),
+        () => recordGenerated(live.file, next, {
+          engine: currentEngine() ?? 'fixture', scene: live.scene, origin: 'revise',
+          notes: cluster.notes.map(n => n.id), run: run.id,
+          // WHAT IT READ (A72-4), captured at launch — a revision is written
+          // FROM notes, so a note whose status or anchor moved while the pass
+          // was out is the clearest case there is of an answer to read again.
+          // ONLY WHAT THIS CLUSTER WAS HANDED: every note on the scene would
+          // claim the pass was shown notes it never saw.
+          reads: rebaseToLanded(
+            readAtLaunch.filter(r => !r.id.startsWith('note') || cluster.notes.some(n => n.id === r.id)),
+            live.scene),
+          v: READ_MAP, job: jobAtLaunch,
+        }, true))
+      if (!landing.ok && landing.why === 'moved') {
+        return nothing('unfinished', movedSentence(live.scene), sofar)
       }
-      recordGenerated(live.file, next, {
-        engine: currentEngine() ?? 'fixture', scene: live.scene, origin: 'revise',
-        notes: cluster.notes.map(n => n.id), run: run.id,
-      })
+      if (!landing.ok) {
+        return nothing('could not run',
+          `arc could not write that revision into your story — ${landing.output.split('\n')[0]}. Nothing was written.`, sofar)
+      }
       wrote = wrote || body !== live.body.trim()
       lastFile = live.file
     }

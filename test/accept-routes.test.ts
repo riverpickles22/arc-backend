@@ -20,8 +20,8 @@ const { createArcServer } = await import('../src/server.ts')
 const reroute = await import('../src/reroute.ts')
 const { addRouteNote, clearAlternatives, listAlternatives, writeAlternative } = reroute
 const { readDispositions } = await import('../src/evidence.ts')
-const { sha16 } = await import('../src/records.ts')
 const { proseScenes } = await import('../src/story.ts')
+const { READ_MAP, sceneVersion } = await import('../src/reads.ts')
 
 const server = createArcServer()
 await new Promise<void>(resolve => server.listen(0, resolve))
@@ -37,7 +37,7 @@ const OTHER = 'sc.01-1'
 const sceneOf = (id: string) => proseScenes().find(s => s.scene === id)!
 const put = (scene: string, id: string, at: string, over: Record<string, unknown> = {}) => writeAlternative({
   scene, seed: 'late-entry', based_on: 'b', briefing: '', coverage: null, overlap: 0,
-  run: 'run.0001', reads: [{ id: scene, version: sha16(sceneOf(scene).body) }],
+  run: 'run.0001', v: READ_MAP, reads: [{ id: scene, version: sceneVersion(sceneOf(scene)) }],
   id, created_at: at, body: `Body ${id}.`, ...over,
 } as never)
 const dispositionsFor = (id: string) => readDispositions().filter(d => d.route === id)

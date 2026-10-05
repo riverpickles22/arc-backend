@@ -71,6 +71,13 @@ export function openRowRun(request: ResolvedRequest, row: Row, slice: SliceUsed,
 /** Put the ending on the receipt. The run itself is ended by the caller,
  *  which knows what to say about what landed. */
 export function closeReceipt(ctx: RunCtx, ending: RunEnding): void {
+  // THE FIRST ENDING WINS, on the receipt as well as on the run (A72-4). A
+  // row that ends honestly and then throws is caught by its own surrounding
+  // catch, which would relabel the receipt `could not run` — leaving the run
+  // record and its receipt disagreeing about what happened, and the receipt
+  // no longer saying that the destination moved. `endRun` has held this rule
+  // since A67-3; the receipt had not.
+  if (ctx.receipt.ending) return
   ctx.receipt.ending = ending
   ctx.receipt.decided_at = new Date().toISOString()
   writeWorkingReceipt(ctx.receipt)

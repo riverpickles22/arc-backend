@@ -19,6 +19,10 @@ import { assertUnlocked, locksOn } from './locks'
 import { resolveWithin } from './safe-path'
 import { git, inLane, type Tx } from './lane'
 import { assertBase, assertBases, baseOf, tokenFor } from './base'
+import { fingerprintsNow as readsNow, staleAgainst } from './reads'
+// The style projection a pass is shown lives with the routes; the import is
+// used inside functions only, so the cycle never runs at module init.
+import { styleForPass } from './reroute'
 import { canonicalYaml } from './agent'
 import { validateStory } from './canon'
 import { readWorkingReceipt } from './run'
@@ -230,6 +234,12 @@ export function proseDraft(): ProseDraft {
   }
 
   const changes: ProseChange[] = []
+  const maps = new Map<string, ReturnType<typeof readsNow>>()
+  const mapFor = (scene: string): ReturnType<typeof readsNow> => {
+    let m = maps.get(scene)
+    if (!m) { m = readsNow(scene, styleForPass); maps.set(scene, m) }
+    return m
+  }
   // -uall: list untracked FILES, not their directory — a scene in a brand-new
   // chapter dir otherwise reports as `?? prose/ch-01/` and vanishes here.
   // core.quotepath=false: with the default, git prints a path with a
@@ -275,6 +285,17 @@ export function proseDraft(): ProseDraft {
           // cannot be told from one an unrowed pass left in this same
           // reading — which is what the trust boundary turns on (§11).
           if (gen.entry.run) change.run = gen.entry.run
+          // HAS THE GROUND MOVED UNDER IT (A72-4, invariant 1)? The same
+          // comparison routes have had since slice 1, against the same map.
+          // Only for a draft arc wrote: a scene the author typed themselves
+          // reads against nothing and is never labelled as arc's.
+          //
+          // ONE MAP PER SCENE PER LISTING. Building it walks all the prose,
+          // all the annotations and the locks and composes the style
+          // contract; doing that once per pending change made a listing cost
+          // O(changes × prose), which a chapter mid-revision feels.
+          const stale = staleAgainst(gen.entry, mapFor(gen.entry.scene ?? ''))
+          if (stale) change.stale = stale
         }
       }
     }

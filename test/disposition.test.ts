@@ -23,14 +23,14 @@ process.env.ARC_DRAFT_ENGINE = 'none'
 const reroute = await import('../src/reroute.ts')
 const { addRouteNote, adoptAlternative, clearAlternatives, dropAlternative, listAlternatives, writeAlternative, KEEP_ALTERNATIVES } = reroute
 const { readDispositions, readJudgments, EVIDENCE_REL } = await import('../src/evidence.ts')
-const { sha16 } = await import('../src/records.ts')
 const { proseScenes } = await import('../src/story.ts')
+const { READ_MAP, sceneVersion } = await import('../src/reads.ts')
 
 const SCENE = 'sc.02-1'
-const reads = () => [{ id: SCENE, version: sha16(proseScenes().find(s => s.scene === SCENE)!.body) }]
+const reads = () => [{ id: SCENE, version: sceneVersion(proseScenes().find(s => s.scene === SCENE)!) }]
 const put = (id: string, at: string, over: Record<string, unknown> = {}) => writeAlternative({
   scene: SCENE, seed: 'late-entry', based_on: 'b', briefing: '', coverage: null, overlap: 0,
-  run: 'run.0001', reads: reads(), id, created_at: at, body: `Body ${id}.`, ...over,
+  run: 'run.0001', v: READ_MAP, reads: reads(), id, created_at: at, body: `Body ${id}.`, ...over,
 } as never)
 const dispositionsFor = (id: string) => readDispositions().filter(d => d.route === id)
 const routeFile = (id: string) => path.join(STORY, '.arc', 'alternatives', SCENE, `${id}.md`)

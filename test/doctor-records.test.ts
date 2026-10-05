@@ -19,8 +19,8 @@ process.env.ARC_DRAFT_ENGINE = 'none'
 const { doctorRecords } = await import('../src/doctor.ts')
 const { encodeProjectDir, scratchParent, scratchDirFor } = await import('../src/engine.ts')
 const { writeAlternative, clearAlternatives } = await import('../src/reroute.ts')
-const { sha16 } = await import('../src/records.ts')
 const { proseScenes } = await import('../src/story.ts')
+const { READ_MAP, sceneVersion } = await import('../src/reads.ts')
 
 const SCENE = 'sc.02-1'
 const runDir = (id: string) => path.join(STORY, '.arc', 'runs', id)
@@ -100,17 +100,17 @@ test('a transcript no run names is counted; one a run names is not', () => {
 
 test('a proposal whose fingerprints moved is counted; one written by an older arc is not', () => {
   clearAlternatives(SCENE)
-  const body = proseScenes().find(s => s.scene === SCENE)!.body
+  const sceneOf = (id: string) => proseScenes().find(s => s.scene === id)!
   const base = {
     scene: SCENE, seed: 'late-entry', based_on: 'b', briefing: '', coverage: null, overlap: 0,
     created_at: '2026-09-12T00:00:00Z', body: 'A different way in.',
   }
   // Written from the scene as it stands: current, not counted.
-  writeAlternative({ ...base, id: 'alt-d0000001', run: 'run.0001', reads: [{ id: SCENE, version: sha16(body) }] } as never)
+  writeAlternative({ ...base, id: 'alt-d0000001', run: 'run.0001', v: READ_MAP, reads: [{ id: SCENE, version: sceneVersion(sceneOf(SCENE)) }] } as never)
   assert.equal(countOf('proposals-out-of-date').count, 0)
 
   // Written from a scene that has since changed: counted.
-  writeAlternative({ ...base, id: 'alt-d0000002', run: 'run.0001', reads: [{ id: SCENE, version: 'aaaaaaaaaaaaaaaa' }] } as never)
+  writeAlternative({ ...base, id: 'alt-d0000002', run: 'run.0001', v: READ_MAP, reads: [{ id: SCENE, version: 'aaaaaaaaaaaaaaaa' }] } as never)
   const c = countOf('proposals-out-of-date')
   assert.equal(c.count, 1)
   assert.deepEqual(c.some, [`${SCENE}/alt-d0000002`])
@@ -217,6 +217,7 @@ test('a route whose scene file is gone is still counted: routes leave disk only 
     'created_at: 2026-09-12T00:00:00Z',
     'overlap: 0',
     'run: run.0001',
+    `v: ${READ_MAP}`,
     'reads:',
     '  - id: sc.99-9',
     '    version: aaaaaaaaaaaaaaaa',

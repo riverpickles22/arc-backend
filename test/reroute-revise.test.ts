@@ -172,6 +172,7 @@ test('a rewrite with nothing to say is refused before anything is spent; an unkn
 // ---- the route, on an ephemeral port --------------------------------------
 import type { AddressInfo } from 'node:net'
 const { createArcServer } = await import('../src/server.ts')
+const { READ_MAP, sceneVersion } = await import('../src/reads.ts')
 const server = createArcServer()
 await new Promise<void>(resolve => server.listen(0, resolve))
 const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
@@ -333,13 +334,12 @@ test('route counts: one read for the whole story, counting routes not versions',
 
 test('a scene holds four ways through, and the author clears the field', async () => {
   const { MAX_ROUTES, routesWaiting, writeAlternative } = reroute
-  const { sha16 } = await import('../src/records.ts')
   const { proseScenes } = await import('../src/story.ts')
   clearAlternatives('sc.02-1')
   // A governed route names its run and what it read; a route that names
   // neither is one an older arc wrote, and does not hold a place (A67-10).
-  const current = () => [{ id: 'sc.02-1', version: sha16(proseScenes().find(s => s.scene === 'sc.02-1')!.body) }]
-  const base = { scene: 'sc.02-1', seed: 'late-entry', based_on: 'b', briefing: '', coverage: null, overlap: 0, run: 'run.0001' }
+  const current = () => [{ id: 'sc.02-1', version: sceneVersion(proseScenes().find(s => s.scene === 'sc.02-1')!) }]
+  const base = { scene: 'sc.02-1', seed: 'late-entry', based_on: 'b', briefing: '', coverage: null, overlap: 0, run: 'run.0001', v: READ_MAP }
   const put = (id: string, at: string, revises?: string) =>
     writeAlternative({ ...base, id, created_at: at, body: `Body ${id}.`, reads: current(), ...(revises ? { revises } : {}) } as never)
   for (let i = 0; i < MAX_ROUTES; i++) put(`alt-ffff000${i}`, `2026-09-0${i + 1}T00:00:00Z`)
@@ -371,7 +371,7 @@ test('a scene holds four ways through, and the author clears the field', async (
   // ...and a governed route whose scene has since moved is stale too, with
   // what changed named.
   clearAlternatives('sc.02-1')
-  writeAlternative({ ...base, id: 'alt-51a1e000', created_at: '2026-09-10T00:00:00Z', body: 'Written against an older scene.', reads: [{ id: 'sc.02-1', version: 'aaaaaaaaaaaaaaaa' }] } as never)
+  writeAlternative({ ...base, id: 'alt-51a1e000', created_at: '2026-09-10T00:00:00Z', body: 'Written against an older scene.', v: READ_MAP, reads: [{ id: 'sc.02-1', version: 'aaaaaaaaaaaaaaaa' }] } as never)
   const moved = reroute.listRoutes('sc.02-1').alternatives[0]
   assert.equal(moved.stale?.why, 'the record moved')
   assert.deepEqual(moved.stale?.changed, ['sc.02-1'])

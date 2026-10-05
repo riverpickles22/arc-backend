@@ -42,9 +42,12 @@ import { currentEngine } from './engine'
 import { runGates, type ProseGateCtx } from './gates'
 import { HttpError } from './http'
 import { recordGenerated } from './ledger'
+import { destinationAt, landOrKeep, movedSentence, restoreIfOurs, trialValidate } from './landing'
+import { READ_MAP, readsFrom, rebaseToLanded } from './reads'
+import { fingerprintsAtWrite } from './reroute'
 import { locksOn } from './locks'
 import { andCapFromContract, endingOf, gateCtx as gateCtxOf, wordCapFromContract } from './reroute'
-import { CRAFT_MOVES, stageRuns, type StagedRow } from './registry'
+import { CRAFT_MOVES, jobFingerprint, stageRuns, type StagedRow } from './registry'
 import { resolveRequest } from './request'
 import { outcomeSentence } from './run'
 import { closeReceipt, openRowRun } from './rowrun'
@@ -259,6 +262,11 @@ export async function runRedraft(t: RedraftTarget, given?: CraftPlanned | null):
     dropped: slice.forReceipt().dropped_for_budget,
     read: [{ id: `slice:${t.scene}`, version: sha16(slice.render()) }],
   })
+  // WHAT THE PASS WAS SHOWN, CAPTURED NOW (A72-4, invariant 1) — before the
+  // model runs. A note the author answers while the pass is out has to make
+  // the answer stale, which a map sampled at the landing cannot see.
+  const readAtLaunch = readsFrom(fingerprintsAtWrite(t.scene))
+  const jobAtLaunch = jobFingerprint(row)
   const { run, receipt } = ctx
   receipt.intent = {
     said: said || null,
@@ -283,17 +291,23 @@ export async function runRedraft(t: RedraftTarget, given?: CraftPlanned | null):
     range ? spliceRange(paras, range.from, range.to, prose).join('\n\n') : prose
   const abs = path.join(STORY, scene.file)
   const raw = fs.readFileSync(abs, 'utf8')
+  // THE DESTINATION AT LAUNCH (A72-4). The pass runs for a minute or two and
+  // the author is not idle; this is what its answer is allowed to land over,
+  // and what a failure may put back.
+  const dest = destinationAt(scene.file)
   const head = raw.slice(0, raw.length - (parseScene(raw, scene.file)?.body.length ?? 0))
   const fileOf = (prose: string): string => { const body = assembled(prose); return head + body + (body.endsWith('\n') ? '' : '\n') }
 
   // THE GATE CHECKS; IT DOES NOT WRITE. The validator reads a file on disk,
   // so the candidate goes down and the author's own text comes straight
   // back up whatever the verdict; the rebuilt scene is written once, below.
-  const validate = (prose: string): { ok: boolean; output: string } => {
-    const check = writeValidated(scene.file, fileOf(prose))
-    if (check.ok) fs.writeFileSync(abs, raw)
-    return check
-  }
+  // THE TRIAL DOES NOT CLOBBER (A72-4). The validator reads a file on disk,
+  // so a candidate has to go down to be judged — but it goes down and comes
+  // up inside the lane, against the destination as it stands AT THAT MOMENT,
+  // not the bytes read at launch minutes ago. The window spans a python
+  // process; an author save inside it used to be overwritten silently.
+  const validate = (prose: string): { ok: boolean; output: string } =>
+    trialValidate(scene.file, fileOf(prose), text => writeValidated(scene.file, text))
 
   const canon = JSON.parse(canonJson()) as CanonDoc
   const ctxForGates: ProseGateCtx = {
@@ -313,7 +327,7 @@ export async function runRedraft(t: RedraftTarget, given?: CraftPlanned | null):
   }
 
   let landed = false
-  let wrote = false
+  let wrote: string | null = null
   try {
     const out = await runGates({
       row: { ...stage, ...cellOf(row, 'write'), withholding: row.withholding, withheld: row.withheld, envelope: row.envelope },
@@ -353,16 +367,32 @@ export async function runRedraft(t: RedraftTarget, given?: CraftPlanned | null):
 
     // Every gate held, so the rebuilt scene is written — once, here. A write
     // the validator refuses is put back by writeValidated itself.
-    wrote = true
     const next = fileOf(out.checked.body)
-    const check = writeValidated(scene.file, next)
-    if (!check.ok) {
+    // THE LANDING COMPARE (A72-4, invariant 1). Inside the lane, immediately
+    // before the write: if the author has typed in this scene since the pass
+    // launched, their words stand and arc's are kept beside the book.
+    const landing = landOrKeep(dest, run.id, next, () => {
+      wrote = next   // what this pass put on disk, for the restore to recognise
+      return writeValidated(scene.file, next)
+    }, () => recordGenerated(scene.file, next, {
+      engine: currentEngine() ?? 'fixture', scene: t.scene, origin: 'redraft', notes: handed, run: run.id,
+      // WHAT IT READ (A72-4, invariant 1), captured at launch, so a draft
+      // written against a note the author has since answered says so instead
+      // of looking current. In the same transaction as the prose: a draft
+      // with no provenance reads as the author's own hand.
+      reads: rebaseToLanded(readAtLaunch, t.scene), v: READ_MAP, job: jobAtLaunch,
+    }, true))
+    if (!landing.ok && landing.why === 'moved') {
+      closeReceipt(ctx, 'unfinished')
+      endRun(run.id, 'unfinished', { error: 'the destination moved while the pass ran' })
+      throw new HttpError(409, movedSentence(range ? `¶${range.from + 1}–¶${range.to + 1} of ${t.scene}` : t.scene))
+    }
+    if (!landing.ok) {
       closeReceipt(ctx, 'could not run')
-      endRun(run.id, 'could not run', { error: check.output })
-      throw new HttpError(500, `arc could not write that pass into your story — ${check.output.split('\n')[0]}. Nothing was written.`)
+      endRun(run.id, 'could not run', { error: landing.output })
+      throw new HttpError(500, `arc could not write that pass into your story — ${landing.output.split('\n')[0]}. Nothing was written.`)
     }
     landed = true
-    recordGenerated(scene.file, next, { engine: currentEngine() ?? 'fixture', scene: t.scene, origin: 'redraft', notes: handed, run: run.id })
     closeReceipt(ctx, 'landed')
     endRun(run.id, 'landed', { landed: [t.scene] })
 
@@ -379,9 +409,10 @@ export async function runRedraft(t: RedraftTarget, given?: CraftPlanned | null):
       ...(plan ? { plan } : {}),
     }
   } catch (e) {
-    // Only a file this pass wrote and did not land is put back — to the
-    // author's own text, never removed: the scene existed before the pass.
-    if (wrote && !landed) { try { fs.writeFileSync(abs, raw) } catch { /* nothing to put back */ } }
+    // Only a file this pass wrote and did not land is put back, and only
+    // when the file still holds what the pass put there (A72-4): anything
+    // else on disk is somebody else's and is not arc's to roll back.
+    if (wrote && !landed) restoreIfOurs(dest, wrote)
     const ending = stateOf(run.id) === 'cancelled' ? 'cancelled' : 'could not run'
     closeReceipt(ctx, ending)
     endRun(run.id, ending, { error: (e as Error).message })

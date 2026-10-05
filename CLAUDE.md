@@ -113,6 +113,34 @@ repo shares. This file is only what is particular to the backend.
   in the author's words and NEVER removed, and a file that changed under a
   restoration is left alone. Nothing in arc may say or imply that the lane
   holds back the author's own editor.
+- **A pass's answer never lands over words that moved while it ran** (A72-4).
+  Every writing row takes `destinationAt(file)` when it LAUNCHES — including
+  the absence of a file it is about to create — and lands through
+  `landOrKeep`, which compares that snapshot inside the lane immediately
+  before the write. A destination that moved does not take the answer: what
+  the pass wrote is kept in `.arc/candidates/<run>.md`, readable after a
+  restart, and is NEVER made the live draft. A failure puts back only what arc
+  can still see it wrote (`restoreIfOurs`) — the old code restored the bytes
+  it read at launch, which is how a cancelled pass could cost the author the
+  paragraph they typed while it ran.
+- **One enumeration records what a proposal read and compares it** (A72-4).
+  `src/reads.ts` owns both `readManifest` (recording) and `staleAgainst`
+  (comparing), for routes and drafts alike — a manifest built by one rule and
+  compared by another agrees with nothing. It covers what the record SAYS
+  about each id, not only its words: a note's status, kind, authorship and
+  anchor; a scene's frontmatter and contract beside its prose. Every proposal
+  records `v` (`READ_MAP`); one minted under an older rule reads *written by
+  an older arc* rather than pretending to compare, and the same answer covers
+  a moved job fingerprint. BUMP `READ_MAP` whenever a fingerprint's coverage
+  changes. A stale draft is a WARNING — it still accepts, because accepting
+  destroys nothing the author wrote. The moved BASE is the other bar, and that
+  one refuses; never collapse them.
+  What it does NOT yet cover: the obligations layer, and the difference
+  between what the scene carried at launch and what the assembled slice
+  actually gave the pass (a layer dropped for budget is still claimed as
+  read). Closing that means `WritingSlice` reporting per-layer versioned ids.
+  The selection SUGGESTION path needs none of this: it writes nothing, and the
+  author applies it through the ordinary scene save, protected by the base.
 - **Every decision names the versions it was made about** (A72-3).
   `src/base.ts` mints a BASE per file — an opaque token over both versions of
   the diff the author is being shown, the accepted scene and the pending one,

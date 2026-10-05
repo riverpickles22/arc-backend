@@ -25,13 +25,16 @@ import { canonJson, validateStory } from './canon'
 import { currentEngine } from './engine'
 import { styleContract } from './style'
 import { recordGenerated } from './ledger'
+import { destinationAt, landOrKeep, movedSentence, restoreIfOurs } from './landing'
+import { READ_MAP, readsFrom, rebaseToLanded } from './reads'
+import { fingerprintsAtWrite } from './reroute'
 import { materialItems, proseScenes } from './story'
 import { HttpError } from './http'
 import { resolveWithin } from './safe-path'
 import { resolveRequest, type ResolvedRequest } from './request'
 import { assembleWritingSlice, weightOf, type WritingSubject } from './slice'
 import { runGates, parseCraftPlan, planSentence, type ProseGateCtx } from './gates'
-import { CRAFT_MOVES, stageRuns, type Stage, type StagedRow } from './registry'
+import { CRAFT_MOVES, jobFingerprint, stageRuns, type Stage, type StagedRow } from './registry'
 import { openRowRun, closeReceipt } from './rowrun'
 import { endRun, stateOf } from './runs'
 import { endingOf } from './reroute'
@@ -136,6 +139,9 @@ export async function runDraft(chapterId: string, guidance?: string, given?: Cra
   // halfway through editing — and a slot chosen from the parsed list would
   // hand back that exact path and write over their work (A69-3).
   const { file, sceneId } = sceneSlot(chapterId, chapter.order, proseFiles())
+  // THE DESTINATION AT LAUNCH (A72-4). For a new scene that is its ABSENCE,
+  // which is a state a target can stop being while the pass runs.
+  const dest = destinationAt(file)
   const chapterScenes = scenes.filter(s => s.chapter === chapterId)
 
   // THE SLICE, before anything is sent. A floor that will not fit refuses
@@ -185,6 +191,12 @@ export async function runDraft(chapterId: string, guidance?: string, given?: Cra
     dropped: slice.forReceipt().dropped_for_budget,
     read: [{ id: `slice:${sceneId}`, version: sha16(slice.render()) }],
   })
+  // WHAT THE PASS WAS SHOWN, CAPTURED NOW (A72-4, invariant 1) — before the
+  // model runs, not after it lands. A dependency the author moves WHILE the
+  // pass is out has to make the answer stale, and a map sampled at the
+  // landing records that change as if the pass had read it.
+  const readAtLaunch = readsFrom(fingerprintsAtWrite(sceneId))
+  const jobAtLaunch = jobFingerprint(row)
   const { run, receipt } = ctx
   // WHAT THE AUTHOR SAID AND WHAT IT BECAME, on the receipt. The plan is
   // ephemeral — it lives here and in the evidence-log row the decision
@@ -240,7 +252,7 @@ export async function runDraft(chapterId: string, guidance?: string, given?: Cra
   }
 
   let landed = false
-  let wrote = false
+  let wrote: string | null = null
   try {
     const out = await runGates({
       row: { ...stage, ...cellOf(row, 'write'), withholding: row.withholding, withheld: row.withheld, envelope: row.envelope },
@@ -288,15 +300,27 @@ export async function runDraft(chapterId: string, guidance?: string, given?: Cra
     // itself — the previous contents restored, or the file removed if there
     // were none — so nothing here removes the file on that path: a revert
     // after a restore would delete what was just put back.
-    wrote = true
-    const check = writeValidated(file, out.checked.body)
-    if (!check.ok) {
+    // THE LANDING COMPARE (A72-4, invariant 1). For a new scene the snapshot
+    // is the file's ABSENCE: a destination that has become occupied while the
+    // pass ran is one arc must not write over, and a plain write took it.
+    const landing = landOrKeep(dest, run.id, out.checked.body, () => {
+      wrote = out.checked.body   // what this pass put on disk, for the restore
+      return writeValidated(file, out.checked.body)
+    }, () => recordGenerated(file, out.checked.body, {
+      engine: currentEngine() ?? 'fixture', scene: sceneId, origin: 'draft', run: run.id,
+      reads: rebaseToLanded(readAtLaunch, sceneId), v: READ_MAP, job: jobAtLaunch,
+    }, true))
+    if (!landing.ok && landing.why === 'moved') {
+      closeReceipt(ctx, 'unfinished')
+      endRun(run.id, 'unfinished', { error: 'the destination was taken while the pass ran' })
+      throw new HttpError(409, movedSentence(sceneId))
+    }
+    if (!landing.ok) {
       closeReceipt(ctx, 'could not run')
-      endRun(run.id, 'could not run', { error: check.output })
-      throw new HttpError(500, `arc could not write that draft into your story — ${check.output.split('\n')[0]}. Nothing was written.`)
+      endRun(run.id, 'could not run', { error: landing.output })
+      throw new HttpError(500, `arc could not write that draft into your story — ${landing.output.split('\n')[0]}. Nothing was written.`)
     }
     landed = true
-    recordGenerated(file, out.checked.body, { engine: currentEngine() ?? 'fixture', scene: sceneId, origin: 'draft', run: run.id })
     closeReceipt(ctx, 'landed')
     endRun(run.id, 'landed', { landed: [sceneId] })
     return {
@@ -310,7 +334,10 @@ export async function runDraft(chapterId: string, guidance?: string, given?: Cra
     // Only a file this pass wrote and did not land is removed: a throw after
     // the draft is in the ledger must not delete the thing the ledger names,
     // and a throw before the write must not delete what was there before.
-    if (wrote && !landed) revert(file)
+    // Only a file this pass wrote and did not land is put back, and only when
+    // the file still holds what the pass put there (A72-4): a target someone
+    // else has written since is theirs, not arc's to remove.
+    if (wrote && !landed) restoreIfOurs(dest, wrote)
     const ending = stateOf(run.id) === 'cancelled' ? 'cancelled' : 'could not run'
     closeReceipt(ctx, ending)
     endRun(run.id, ending, { error: (e as Error).message })
@@ -439,8 +466,7 @@ function writeTrial(rel: string, content: string): { check: { ok: boolean; outpu
   }
 }
 
-/** Put a rejected draft back: a scene that did not pass its gates never
- *  existed, and leaving it on disk would put unratified prose in the book. */
-function revert(rel: string): void {
-  try { fs.rmSync(resolveWithin(STORY, rel), { force: true }) } catch { /* nothing to put back */ }
-}
+// `revert` is gone with A72-4: a rejected draft is put back by
+// `restoreIfOurs`, which removes the file only when it still holds what this
+// pass wrote. Deleting unconditionally is how a pass that failed could take a
+// scene somebody else had written in the meantime.

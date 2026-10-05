@@ -56,6 +56,7 @@ import { Run, emptyReceipt, gateName, outcomeSentence, readWorkingReceipt, write
 import { endRun, registerRun, stateOf } from './runs'
 import type { RunEnding } from 'arc-canon-graph'
 import { HttpError } from './http'
+import { READ_MAP, fingerprintsNow as readsNow, readManifest, rebase, sceneVersion, staleAgainst, type Fingerprints } from './reads'
 import { recordDisposition, type Disposition } from './evidence'
 import { recordGenerated } from './ledger'
 import { locksOn } from './locks'
@@ -120,48 +121,20 @@ export const routesWaiting = (scene: string): number => routeHeads(scene).govern
  *  route with no reads at all predates the governed path and is stale for a
  *  different reason, which the author reads differently. */
 export function withStaleness(alt: RouteAlternative, now = fingerprintsNow(alt.scene)): RouteAlternative {
-  if (!alt.reads?.length || !alt.run) {
-    return { ...alt, stale: { changed: [], why: 'written by an older arc' } }
-  }
-  const changed = alt.reads.filter(r => {
-    const cur = now.at.get(r.id)
-    // Gone counts as changed: an open note the pass read and the author has
-    // since answered or deleted is not the record the route was written
-    // from. Absence only means "not measured" for the ids this map does not
-    // carry — and the write path's map carries every one of them.
-    if (cur === undefined) return now.full ? r.id !== 'route' : recomputableAtRest(r.id)
-    return cur !== r.version
-  }).map(r => r.id)
-  return changed.length ? { ...alt, stale: { changed, why: 'the record moved' } } : alt
+  // ONE COMPARISON for routes and drafts alike (A72-4): the rule about what
+  // counts as moved lives in `reads.ts`, so the two kinds of proposal cannot
+  // drift into disagreeing about their own record.
+  const stale = staleAgainst(alt, now)
+  return stale ? { ...alt, stale } : alt
 }
 
-/** The ids `fingerprintsNow` enumerates completely, so that an id missing
- *  from it means the thing itself is gone rather than unmeasured: the scene,
- *  the style contract, every note and every lock. The canon pack and the
- *  sibling scenes cost a canon read and a chapter walk, so they are measured
- *  at the write path (`fingerprintsAtWrite`) and not on every listing; the
- *  parent body of a rewrite never changes under it. */
-const recomputableAtRest = (id: string): boolean =>
-  !id.startsWith('pack:') && !id.startsWith('siblings:') && id !== 'route'
-
-/** What the ids a route read fingerprint to now. `full` says whether every
- *  id class the manifest can name was measured — the write path's map says
- *  yes, and then a read id this map has no entry for names something that
- *  has been deleted since. */
-export interface Fingerprints { at: Map<string, string>; full: boolean }
+export type { Fingerprints }
 
 /** The cheap map, for listing routes: the scene, the style contract, every
- *  annotation and every lock the scene carries. No canon read. */
+ *  annotation and every lock the scene carries. No canon read. The
+ *  enumeration itself is `reads.ts`'s. */
 export function fingerprintsNow(scene: string): Fingerprints {
-  const at = new Map<string, string>()
-  const s = proseScenes().find(x => x.scene === scene)
-  if (s) at.set(scene, sha16(s.body))
-  try { at.set('style', sha16(styleForPass({ scene, file: s?.file ?? '', body: s?.body ?? '' }))) } catch { /* absent is not changed */ }
-  // Every note on the scene, not only the open ones: a note that closed is a
-  // note the pass would no longer be handed, and the route read it open.
-  try { for (const n of annotations().filter(n => n.anchor.scene === scene)) at.set(n.id, sha16(n.body)) } catch { /* absent is gone */ }
-  try { for (const l of locksOn(scene, s?.body ?? '')) at.set(l.id, sha16(String(l.anchor.quote ?? ''))) } catch { /* absent is gone */ }
-  return { at, full: false }
+  return readsNow(scene, styleForPass)
 }
 
 /** The whole map, for the write path (invariant 1: a changed fingerprint
@@ -685,6 +658,7 @@ function parseAlternative(text: string): RouteAlternative | null {
     based_on: String(head.based_on ?? ''), created_at: String(head.created_at ?? ''),
     ...(typeof head.run === 'string' ? { run: head.run } : {}),
     ...(Array.isArray(head.reads) ? { reads: head.reads as { id: string; version: string }[] } : {}),
+    ...(typeof head.v === 'number' ? { v: head.v } : {}),
     body, briefing,
     coverage: Array.isArray(head.coverage) ? head.coverage as RouteCoverage[] : null,
     ...(Array.isArray(head.dropped) ? { dropped: head.dropped as DroppedClaim[] } : {}),
@@ -971,7 +945,21 @@ export function adoptAlternative(scene: string, id: string, base?: unknown): Ado
     }
     const out = writeSceneBody(s.file, alt.body.trim() + '\n', s.body)
     const full = fs.readFileSync(path.join(STORY, s.file), 'utf8')
-    recordGenerated(s.file, full, { engine: currentEngine() ?? 'sdk', scene, origin: 'reroute', run: alt.run, route: alt.id })
+    // THE ROUTE'S OWN PROVENANCE, carried into the draft it becomes (A72-4):
+    // the words came from that route and were read against what that route
+    // read — the style contract, the canon pack, the siblings, the notes.
+    // The DESTINATION's entry is the one exception: the adoption just wrote
+    // it, so the route's record of what it used to say is a record of
+    // something this very decision changed. Rebased to the scene as the
+    // adoption left it, AFTER the review token of A72-3 has been accepted,
+    // so the rebase can only ever stand on the version the author reviewed.
+    const reads = alt.reads
+      ? rebase(alt.reads, scene, sceneVersion({ ...out, body: out.body }))
+      : undefined
+    recordGenerated(s.file, full, {
+      engine: currentEngine() ?? 'sdk', scene, origin: 'reroute', run: alt.run, route: alt.id,
+      ...(reads ? { reads } : {}), ...(alt.v ? { v: alt.v } : {}),
+    })
     return out
   })
   // The author decided about this route, so its receipt joins the record —
@@ -1197,29 +1185,7 @@ export function withheldSet(row: SealedRow, a: {
  *  it actually assembled, not from a map of canon records, because what a
  *  brief read is the style contract as composed, the pack as built and the
  *  scene as it stands. Invariant 1 compares these at the write path. */
-export function readManifest(a: {
-  style: string
-  scene: string
-  sceneBody: string
-  pack: string
-  notes: { id: string; body: string }[]
-  locks: { id: string; quote: string }[]
-  siblings: string
-  route?: string
-}): { id: string; version: string }[] {
-  return [
-    { id: 'style', version: sha16(a.style) },
-    { id: a.scene, version: sha16(a.sceneBody) },
-    { id: `pack:${a.scene}`, version: sha16(a.pack) },
-    // Named even when empty: a chapter that GAINS a sibling scene has moved
-    // under a route that was written when it had none, and an id the route
-    // never recorded can never be compared.
-    { id: `siblings:${a.scene}`, version: sha16(a.siblings) },
-    ...(a.route ? [{ id: 'route', version: sha16(a.route) }] : []),
-    ...a.notes.map(n => ({ id: n.id, version: sha16(n.body) })),
-    ...a.locks.map(l => ({ id: l.id, version: sha16(l.quote) })),
-  ]
-}
+export { readManifest }
 
 /** A refusal before anything is spent still leaves a receipt, with the
  *  stage it refused at (invariant 9: EVERY run ends with one). */
@@ -1385,7 +1351,7 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
       ...(literals.length ? [`the contract's quoted withholds (${literals.length})`] : []),
     ],
     dropped: [],
-    read: readManifest({ style: base.style, scene: t.scene, sceneBody: scene.body, pack, notes: openNotes, locks: sceneLocks.map(l => ({ id: l.id, quote: String(l.anchor.quote ?? '') })), siblings }),
+    read: readManifest({ style: base.style, scene, pack, notes: openNotes, locks: sceneLocks.map(l => ({ id: l.id, quote: String(l.anchor.quote ?? '') })), siblings }),
   }
 
   // The run exists before the first token, in the author's words, and its
@@ -1436,8 +1402,9 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
       body: out.checked.body, briefing: out.checked.briefing, coverage: out.checked.coverage, overlap: out.checked.overlap,
       ...(out.checked.dropped.length ? { dropped: out.checked.dropped } : {}),
       // What it read, so the write path can tell when the ground moved
-      // under it (invariant 1).
-      reads: used.read,
+      // under it (invariant 1), and under WHICH enumeration — versions from
+      // an older rule are not comparable with this one (A72-4).
+      reads: used.read, v: READ_MAP,
       // ASKED AGAIN, on the route itself (A69-13): the fold must still say
       // so after the run's working receipt has been cleaned up, and the
       // route outlives the receipt by design.
@@ -1676,7 +1643,7 @@ export async function runRevise(t: ReviseTarget): Promise<RerouteResponse> {
     included: ['style', 'contract', 'pack', 'destination', 'known-route', ...(locked.length ? ['locked'] : []), 'route', 'route-notes'],
     withheld: [`the current prose of ${t.scene} (${paras.length} paragraphs), less its locked paragraphs`],
     dropped: [],
-    read: readManifest({ style, scene: t.scene, sceneBody: scene.body, pack, notes: [], locks: sceneLocks.map(l => ({ id: l.id, quote: String(l.anchor.quote ?? '') })), siblings: '', route: parent.body }),
+    read: readManifest({ style, scene, pack, notes: [], locks: sceneLocks.map(l => ({ id: l.id, quote: String(l.anchor.quote ?? '') })), siblings: '', route: parent.body }),
   }
   return underRun(request, ROW_EXPLORE_ROUTE, used, async (rctx, kinds) => {
   const { run, receipt } = rctx
@@ -1710,7 +1677,7 @@ export async function runRevise(t: ReviseTarget): Promise<RerouteResponse> {
     scene: t.scene, seed: parent.seed, guidance: brief.replace(/\s*\n+\s*/g, ' / '), based_on: bodyHash(scene.body),
     created_at, body: out.checked.body, briefing: out.checked.briefing, coverage: out.checked.coverage,
     ...(out.checked.dropped.length ? { dropped: out.checked.dropped } : {}),
-    reads: used.read,
+    reads: used.read, v: READ_MAP,
     overlap: out.checked.overlap, revises: parent.id, run: run.id, ...(out.retried ? { retried: out.retried } : {}),
   }
   writeAlternative(alt)
