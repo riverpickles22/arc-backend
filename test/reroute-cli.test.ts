@@ -112,7 +112,8 @@ test('the routes: validation, run, list, adopt (ledger only after), drop', async
   const list = await (await get('/api/prose/reroute?scene=sc.02-1')).json() as { scene: string; alternatives: { id: string }[]; locks: unknown[] }
   assert.equal(list.scene, 'sc.02-1'); assert.deepEqual(list.alternatives.map(a => a.id), [body.alternatives[0].id]); assert.deepEqual(list.locks, [])
 
-  const adopt = await post('/api/prose/reroute/adopt', { scene: 'sc.02-1', alt: body.alternatives[0].id })
+  const destination = (await (await fetch(`${base}/api/prose`)).json() as { bases: Record<string, string> }).bases['prose/ch-02/scene-01.md']
+  const adopt = await post('/api/prose/reroute/adopt', { scene: 'sc.02-1', alt: body.alternatives[0].id, base: destination })
   assert.equal(adopt.status, 200)
   const adopted = await adopt.json() as { file: string; scene: { body: string } }
   assert.equal(adopted.file, 'prose/ch-02/scene-01.md'); assert.match(adopted.scene.body, /forty-one steps/)

@@ -20,6 +20,14 @@ const post = (p: string, body: unknown, headers: Record<string, string> = {}) =>
     headers: { 'content-type': 'application/json', ...headers },
     body: typeof body === 'string' ? body : JSON.stringify(body),
   })
+/** THE BASE as a CLIENT gets it (A72-3): read from what the draft reading
+ *  served, and echoed back with the decision — never recomputed here. */
+const servedBases = async (files: string[]): Promise<Record<string, string>> => {
+  const draft = await (await fetch(`${base}/api/prose/draft`)).json() as { changes: { file: string; base: string }[] }
+  return Object.fromEntries(files.map(f => [f, draft.changes.find(c => c.file === f)?.base ?? 'missing']))
+}
+const servedBase = async (file: string): Promise<string> => (await servedBases([file]))[file]
+
 
 test('GET shapes match the shared envelopes', async () => {
   const docs = await (await get('/api/docs')).json()
@@ -74,23 +82,25 @@ test('an accept that names no scene → 400, and the pending change is still pen
   const draft = await (await get('/api/prose/draft')).json()
   assert.deepEqual(draft.changes.map((c: { file: string }) => c.file), ['prose/ch-01/scene-01.md'])
 
-  await post('/api/prose/discard', { file: 'prose/ch-01/scene-01.md' })
+  await post('/api/prose/discard',
+    { file: 'prose/ch-01/scene-01.md', base: await servedBase('prose/ch-01/scene-01.md') })
 })
 
 test('accept/discard roundtrip through the HTTP layer', async () => {
   writeScene(story, 'prose/ch-01/scene-01.md', 'sc.01-1', 'HTTP-layer revision.')
   const accept = await post('/api/prose/accept',
-    { message: 'prose: via http', files: ['prose/ch-01/scene-01.md'] })
+    { message: 'prose: via http', files: ['prose/ch-01/scene-01.md'], bases: await servedBases(['prose/ch-01/scene-01.md']) })
   assert.equal(accept.status, 200)
   const body = await accept.json()
   assert.match(body.hash, /^[0-9a-f]{7,}$/)
 
   writeScene(story, 'prose/ch-01/scene-01.md', 'sc.01-1', 'Doomed.')
-  const discard = await post('/api/prose/discard', { file: 'prose/ch-01/scene-01.md' })
+  const discard = await post('/api/prose/discard',
+    { file: 'prose/ch-01/scene-01.md', base: await servedBase('prose/ch-01/scene-01.md') })
   assert.equal(discard.status, 200)
   assert.deepEqual(await discard.json(), { ok: true })
 
-  const bad = await post('/api/prose/discard', { file: 'prose/../canon/story.yaml' })
+  const bad = await post('/api/prose/discard', { file: 'prose/../canon/story.yaml', base: 'x'.repeat(16) })
   assert.equal(bad.status, 400)
 })
 
@@ -122,7 +132,8 @@ test('accept with capture requested but no credentials skips capture gracefully'
   try {
     writeScene(story, 'prose/ch-01/scene-01.md', 'sc.01-1', 'Capture-skip revision.')
     const res = await post('/api/prose/accept',
-      { message: 'prose: capture skip', capture: true, files: ['prose/ch-01/scene-01.md'] })
+      { message: 'prose: capture skip', capture: true, files: ['prose/ch-01/scene-01.md'],
+        bases: await servedBases(['prose/ch-01/scene-01.md']) })
     assert.equal(res.status, 200)
     const body = await res.json()
     assert.match(body.hash, /^[0-9a-f]{7,}$/)

@@ -64,6 +64,7 @@ import { contractBlock, literalWithholds, splitBriefing, withholdViolations } fr
 import { arcRevision, sha16, storyRevision } from './records'
 import { proseScenes, writeSceneBody } from './story'
 import { inLane } from './lane'
+import { assertBase } from './base'
 import { styleContract } from './style'
 
 // The rules are the row's (registry.ts, ROW_EXPLORE_SCENE.rules): one
@@ -943,22 +944,31 @@ export function listRoutes(scene: string): RouteListResponse {
  *  lock-gated write every scene edit uses, with the current body as the
  *  baseline so a stale route cannot clobber a newer edit. Only now does the
  *  ledger record the route — the pair learning will mine begins here. */
-export function adoptAlternative(scene: string, id: string): AdoptRouteResponse {
+export function adoptAlternative(scene: string, id: string, base?: unknown): AdoptRouteResponse {
   const s = proseScenes().find(x => x.scene === scene)
   if (!s) throw new HttpError(400, `no scene ${scene}`)
   const alt = listAlternatives(scene).find(a => a.id === id)
   if (!alt) throw new HttpError(404, `no alternative ${id} for ${scene}`)
-  // A stale route is never written over newer work (invariant 1): the
-  // ground moved under it, and the author re-runs it or cancels it.
-  const staleness = withStaleness(alt, fingerprintsAtWrite(scene)).stale
-  if (staleness && staleness.why === 'the record moved') {
-    throw new HttpError(409, `${staleness.changed.includes(scene) ? 'this scene has changed' : 'what that route was written from has changed'} since that route was written, so arc did not put it into the book — run it again from where the scene stands now, or cancel it.`)
-  }
-  // ONE TRANSACTION (A72-2). Adopting is a draft write and makes no commit,
-  // but the write and the ledger entry that says where those words came from
-  // are one decision: a reader that saw the prose without the entry would
-  // call the author's own hand what arc wrote.
+  // ONE TRANSACTION (A72-2, A72-3). Adopting is a draft write and makes no
+  // commit, but reading the destination, both staleness questions, the write
+  // and the ledger entry that says where those words came from are one
+  // decision: a reader that saw the prose without the entry would call the
+  // author's own hand what arc wrote, and a check made outside the lane is a
+  // check about a moment that has passed.
   const written = inLane('adopting a route', () => {
+    // THE DESTINATION'S BASE FIRST (A72-3). The scene read above was taken
+    // when the request ARRIVED, which is not the version the author was
+    // looking at when they decided: an old tab adopting a route must not
+    // replace words typed in another one since. Cheap, decisive, and before
+    // anything expensive is computed.
+    if (base !== undefined) assertBase(s.file, base, 'put that route into the book')
+    // And a stale ROUTE is never written over newer work either (invariant
+    // 1): the ground moved under what it was written from, and the author
+    // re-runs it or cancels it.
+    const staleness = withStaleness(alt, fingerprintsAtWrite(scene)).stale
+    if (staleness && staleness.why === 'the record moved') {
+      throw new HttpError(409, `${staleness.changed.includes(scene) ? 'this scene has changed' : 'what that route was written from has changed'} since that route was written, so arc did not put it into the book — run it again from where the scene stands now, or cancel it.`)
+    }
     const out = writeSceneBody(s.file, alt.body.trim() + '\n', s.body)
     const full = fs.readFileSync(path.join(STORY, s.file), 'utf8')
     recordGenerated(s.file, full, { engine: currentEngine() ?? 'sdk', scene, origin: 'reroute', run: alt.run, route: alt.id })

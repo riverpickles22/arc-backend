@@ -25,6 +25,11 @@ git(STORY, 'config', 'core.hooksPath', 'bin/hooks')
 
 const { proseAcceptParagraph, proseAccept, proseDraft, releasedLocksFor } = await import('../src/story.ts')
 const { HttpError } = await import('../src/http.ts')
+const { baseOf } = await import('../src/base.ts')
+/** THE BASE a decision is made about (A72-3), taken the moment before the
+ *  decision — which is what a viewer that has just rendered the diff sends. */
+const basesOf = (files?: string[]): Record<string, string> =>
+  Object.fromEntries((files ?? []).map(f => [f, baseOf(f)]))
 
 const FILE = 'prose/ch-01/scene-01.md'
 const LOCK = 'locks/lock-001.yaml'
@@ -48,7 +53,7 @@ test('an unlock the author made in the viewer rides with the accept, and the gat
   edit()
   assert.deepEqual(releasedLocksFor(FILE), [LOCK], 'the released lock is found by the scene it settled')
   const before = git(STORY, 'rev-parse', 'HEAD').trim()
-  proseAcceptParagraph(FILE, { side: 'draft', paragraph: 1 })
+  proseAcceptParagraph(FILE, { side: 'draft', paragraph: 1 }, baseOf(FILE))
   assert.notEqual(git(STORY, 'rev-parse', 'HEAD').trim(), before, 'the gate let the ratification through')
   assert.throws(() => git(STORY, 'show', `HEAD:${LOCK}`), 'the lock left the book with the edit')
   assert.match(git(STORY, 'show', `HEAD:${FILE}`), /A revised second paragraph\./)
@@ -58,7 +63,7 @@ test('an unlock the author made in the viewer rides with the accept, and the gat
 test('with the lock still in place the accept is refused, naming the lock — never an internal error', () => {
   seed()
   edit()
-  assert.throws(() => proseAcceptParagraph(FILE, { side: 'draft', paragraph: 1 }),
+  assert.throws(() => proseAcceptParagraph(FILE, { side: 'draft', paragraph: 1 }, baseOf(FILE)),
     (e: unknown) => e instanceof HttpError && e.status === 423 && /lock\.001/.test(e.message))
   assert.deepEqual(releasedLocksFor(FILE), [], 'nothing was released')
 })
@@ -72,7 +77,7 @@ test('a lock on another scene is left alone, and the whole accept carries a rele
   fs.unlinkSync(path.join(STORY, 'locks', 'lock-002.yaml'))
   edit()
   assert.deepEqual(releasedLocksFor(FILE), [LOCK], 'only the lock that settled THIS scene')
-  proseAccept(undefined, [FILE])
+  proseAccept(undefined, [FILE], basesOf([FILE]))
   assert.throws(() => git(STORY, 'show', `HEAD:${LOCK}`))
   assert.doesNotThrow(() => git(STORY, 'show', 'HEAD:locks/lock-002.yaml'), 'the other scene\'s lock is still in the book — its release waits for its own accept')
 })

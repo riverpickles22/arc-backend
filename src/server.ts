@@ -48,6 +48,7 @@ import type {
 } from 'arc-canon-graph'
 import { STORY } from './config'
 import { inLane } from './lane'
+import { baseOf } from './base'
 import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
 import { docsArticles, materialItems, updateMaterial, proseAccept, proseAcceptParagraph, proseRejectParagraph, proseAcceptSentence, proseRejectSentence, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig, commitRecords } from './story'
@@ -209,6 +210,8 @@ function paragraphTarget(body: unknown): ProseParagraphRequest {
     side: b.side,
     paragraph: b.paragraph as number,
     message: typeof b.message === 'string' ? b.message : undefined,
+    // Checked in story.ts, where the compare lives (A72-3); carried here.
+    base: (b as { base?: unknown }).base as string,
   }
 }
 
@@ -224,6 +227,7 @@ function sentenceTarget(body: unknown): ProseSentenceRequest {
     side: b.side,
     sentence: b.sentence as number,
     message: typeof b.message === 'string' ? b.message : undefined,
+    base: (b as { base?: unknown }).base as string,
   }
 }
 
@@ -634,9 +638,15 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     },
   },
 
-  // The manuscript: bound prose scenes (conventions §10).
+  // The manuscript: bound prose scenes (conventions §10), each with THE BASE
+  // of the file it came from (A72-3) — what a save or an adoption into it
+  // must say it was decided about.
   '/api/prose': {
-    GET: (_req, res) => json(res, 200, { scenes: proseScenes() } satisfies ProseResponse),
+    GET: (_req, res) => {
+      const scenes = proseScenes()
+      const bases = Object.fromEntries(scenes.map(s => [s.file, baseOf(s.file)]))
+      json(res, 200, { scenes, bases } satisfies ProseResponse)
+    },
   },
 
   // The draft layer: working tree vs HEAD, plus ratification history.
@@ -657,7 +667,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // failure is logged, never fatal: capture must never un-accept prose.
   '/api/prose/accept': {
     POST: async (req, res) => {
-      const body = (await parsedBody(req)) as { message?: unknown; capture?: unknown; files?: unknown }
+      const body = (await parsedBody(req)) as { message?: unknown; capture?: unknown; files?: unknown; bases?: unknown }
       // The scene-scoped accept (A64-3): the author read ONE scene's diff and
       // ratified that. `files` is required (A72-1) — the rules about which
       // paths an accept may name live in one place, `acceptScope` in story.ts,
@@ -686,7 +696,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         if (gen?.entry.origin === 'reroute' && gen.entry.run) adoptedRun.set(c.file, gen.entry.run)
         if (gen?.entry.origin === 'reroute' && gen.entry.route) adoptedRoute.set(c.file, gen.entry.route)
       }
-      const result = proseAccept(typeof body.message === 'string' ? body.message : undefined, files)
+      const result = proseAccept(typeof body.message === 'string' ? body.message : undefined, files, body.bases)
       // Kept here rather than inside proseAccept so story.ts and reroute.ts
       // stay acyclic, and never on a paragraph or sentence accept — those do
       // not settle the scene.
@@ -738,10 +748,10 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // only way to tell an edit apart from a clobber.
   '/api/prose/scene': {
     POST: async (req, res) => {
-      const b = (await parsedBody(req)) as { file?: unknown; body?: unknown; baseline?: unknown }
+      const b = (await parsedBody(req)) as { file?: unknown; body?: unknown; baseline?: unknown; base?: unknown }
       if (typeof b.file !== 'string' || typeof b.body !== 'string') throw new HttpError(400, 'file and body required')
       if (b.baseline !== undefined && typeof b.baseline !== 'string') throw new HttpError(400, 'baseline must be a string')
-      json(res, 200, proseWrite(b.file, b.body, b.baseline))
+      json(res, 200, proseWrite(b.file, b.body, b.baseline, b.base))
     },
   },
 
@@ -751,7 +761,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   '/api/prose/accept-paragraph': {
     POST: async (req, res) => {
       const t = paragraphTarget(await parsedBody(req))
-      const out = proseAcceptParagraph(t.file, t, t.message)
+      const out = proseAcceptParagraph(t.file, t, t.base, t.message)
       json(res, 200, { ...out, notesResolved: notesClosedIfSettled(t.file) })
     },
   },
@@ -762,7 +772,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   '/api/prose/reject-paragraph': {
     POST: async (req, res) => {
       const t = paragraphTarget(await parsedBody(req))
-      json(res, 200, proseRejectParagraph(t.file, t))
+      json(res, 200, proseRejectParagraph(t.file, t, t.base))
     },
   },
 
@@ -771,7 +781,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   '/api/prose/accept-sentence': {
     POST: async (req, res) => {
       const t = sentenceTarget(await parsedBody(req))
-      const out = proseAcceptSentence(t.file, t, t.message)
+      const out = proseAcceptSentence(t.file, t, t.base, t.message)
       json(res, 200, { ...out, notesResolved: notesClosedIfSettled(t.file) })
     },
   },
@@ -779,7 +789,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   '/api/prose/reject-sentence': {
     POST: async (req, res) => {
       const t = sentenceTarget(await parsedBody(req))
-      json(res, 200, proseRejectSentence(t.file, t))
+      json(res, 200, proseRejectSentence(t.file, t, t.base))
     },
   },
 
@@ -915,9 +925,17 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
 
   '/api/prose/reroute/adopt': {
     POST: async (req, res) => {
-      const b = (await parsedBody(req)) as { scene?: unknown; alt?: unknown }
+      const b = (await parsedBody(req)) as { scene?: unknown; alt?: unknown; base?: unknown }
       if (typeof b.scene !== 'string' || !b.scene || typeof b.alt !== 'string' || !b.alt) throw new HttpError(400, 'scene and alt required')
-      json(res, 200, adoptAlternative(b.scene, b.alt) satisfies AdoptRouteResponse)
+      // FAILS CLOSED like every other decision (A72-3). Adoption writes the
+      // destination scene, so a request that does not say which version it
+      // was deciding about is one arc cannot show the author a reason for.
+      // The in-process function keeps the parameter optional for a caller
+      // with no view to have read — a terminal, a test; the door does not.
+      if (typeof b.base !== 'string' || !b.base) {
+        throw new HttpError(400, 'putting a route into the book must say which version of the scene it was decided about — reload the manuscript and try again')
+      }
+      json(res, 200, adoptAlternative(b.scene, b.alt, b.base) satisfies AdoptRouteResponse)
     },
   },
   '/api/prose/reroute/drop': {
@@ -975,9 +993,9 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // Discard rolls one draft file back to main (a surfaced git checkout).
   '/api/prose/discard': {
     POST: async (req, res) => {
-      const body = (await parsedBody(req)) as { file?: unknown }
+      const body = (await parsedBody(req)) as { file?: unknown; base?: unknown }
       if (typeof body.file !== 'string') throw new HttpError(400, 'file required')
-      proseDiscard(body.file)
+      proseDiscard(body.file, body.base)
       json(res, 200, { ok: true } satisfies OkResponse)
     },
   },
@@ -1126,7 +1144,7 @@ export function createArcServer(): http.Server {
       }
     } catch (e) {
       if (e instanceof HttpError) {
-        json(res, e.status, { error: e.message } satisfies ApiErrorResponse)
+        json(res, e.status, { error: e.message, ...(e.detail ?? {}) } satisfies ApiErrorResponse)
       } else {
         console.error(`[error] ${req.method} ${url.pathname}:`, e)
         json(res, 500, { error: 'internal error — see backend log' } satisfies ApiErrorResponse)

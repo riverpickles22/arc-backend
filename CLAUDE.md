@@ -113,6 +113,27 @@ repo shares. This file is only what is particular to the backend.
   in the author's words and NEVER removed, and a file that changed under a
   restoration is left alone. Nothing in arc may say or imply that the lane
   holds back the author's own editor.
+- **Every decision names the versions it was made about** (A72-3).
+  `src/base.ts` mints a BASE per file — an opaque token over both versions of
+  the diff the author is being shown, the accepted scene and the pending one,
+  bytes and frontmatter together — served on every `ProseChange` and beside
+  every scene (`ProseResponse.bases`), and echoed back with the decision.
+  `assertBase` runs INSIDE the lane and BEFORE any index is resolved, anything
+  is written, any evidence is recorded or any note is resolved; `assertBases`
+  preflights every file of a multi-file request so one that moved leaves the
+  others untouched. It FAILS CLOSED: a missing or malformed token is a 400,
+  not an accommodation. A moved one is a 409 carrying what was read and what
+  is there now, from a small bounded in-memory record of what the server
+  showed — for display only, never read back as permission to write. Both
+  sides matter: the pending side moving is the case HEAD cannot see, and the
+  one that costs the author a paragraph. It is NOT `evidence.ts`'s pinned
+  baseline, which is the commit a generation was judged from. The editor's
+  autosave keeps its own `baseline` body compare instead — a view-level token
+  would refuse every save after the first — and `proseWrite` takes both.
+- **A decision leaves a record, in the log that already exists** (A72-3). The
+  evidence entries carry a stable `decision` id, the `base` decided about and
+  the `after` it makes true. No second history store, and nothing infers a
+  decision from a commit subject.
 - **An accept names the scenes it ratifies** (A72-1). `files` is required of
   `ProseAcceptRequest`, of `proseAccept` and of the viewer's `acceptDraft`;
   there is no accept-everything, because the only honest accept is one over a

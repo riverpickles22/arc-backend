@@ -17,6 +17,11 @@ process.env.ARC_DRAFT_ENGINE = 'none'
 
 const { proseAccept, proseDraft } = await import('../src/story.ts')
 const { HttpError } = await import('../src/http.ts')
+const { baseOf } = await import('../src/base.ts')
+/** THE BASE a decision is made about (A72-3), taken the moment before the
+ *  decision — which is what a viewer that has just rendered the diff sends. */
+const basesOf = (files?: string[]): Record<string, string> =>
+  Object.fromEntries((files ?? []).map(f => [f, baseOf(f)]))
 
 const A = 'prose/ch-01/scene-01.md'
 const B = 'prose/ch-01/scene-02.md'
@@ -41,7 +46,7 @@ test('accepting one scene leaves every other pending scene pending', () => {
   edit(B, 'The second scene, revised.')
   assert.equal(proseDraft().changes.length, 2)
 
-  const out = proseAccept(undefined, [A])
+  const out = proseAccept(undefined, [A], basesOf([A]))
   assert.deepEqual(out.files, [A])
 
   // B is still waiting, and A is in the book.
@@ -54,12 +59,12 @@ test('accepting one scene leaves every other pending scene pending', () => {
 test('the commit message names the scene it ratified, and the author\'s own wins', () => {
   seed()
   edit(A, 'Named by the pass.')
-  proseAccept(undefined, [A])
+  proseAccept(undefined, [A], basesOf([A]))
   assert.match(git(STORY, 'log', '-1', '--format=%s'), /sc\.01-1/)
 
   seed()
   edit(A, 'Named by the author.')
-  proseAccept('prose: the doorway, slower', [A])
+  proseAccept('prose: the doorway, slower', [A], basesOf([A]))
   assert.equal(git(STORY, 'log', '-1', '--format=%s').trim(), 'prose: the doorway, slower')
 })
 
@@ -67,7 +72,7 @@ test('a scope naming nothing pending is refused, and nothing is committed', () =
   seed()
   edit(A, 'Only this one is pending.')
   const before = git(STORY, 'rev-parse', 'HEAD').trim()
-  assert.throws(() => proseAccept(undefined, [B]), (e: unknown) =>
+  assert.throws(() => proseAccept(undefined, [B], basesOf([B])), (e: unknown) =>
     e instanceof HttpError && e.status === 409 && e.message.includes(B))
   assert.equal(git(STORY, 'rev-parse', 'HEAD').trim(), before)
   assert.equal(proseDraft().changes.length, 1)
@@ -77,7 +82,7 @@ test('several named scenes go together, and all of them are checked first', () =
   seed()
   edit(A, 'Both go together.')
   edit(B, 'Both go together.')
-  const out = proseAccept(undefined, [A, B])
+  const out = proseAccept(undefined, [A, B], basesOf([A, B]))
   assert.deepEqual(out.files.sort(), [A, B])
   assert.equal(proseDraft().changes.length, 0)
 })
@@ -87,7 +92,7 @@ test('an accept that names no scene is refused, and nothing is committed', () =>
   edit(A, 'Pending, and nobody has read it.')
   const head = git(STORY, 'rev-parse', 'HEAD').trim()
   for (const scope of [undefined, [], null]) {
-    assert.throws(() => proseAccept(undefined, scope as unknown as string[]),
+    assert.throws(() => proseAccept(undefined, scope as unknown as string[], basesOf(scope as unknown as string[])),
       (e: unknown) => e instanceof HttpError && e.status === 400 && /names the scenes/.test(e.message),
       `scope ${JSON.stringify(scope)} must refuse`)
   }
@@ -112,16 +117,16 @@ test('a path that is not a scene is refused before any mutation', () => {
     [42, /named by its path/],
   ]
   for (const [bad, message] of refusals) {
-    assert.throws(() => proseAccept(undefined, [bad] as string[]),
+    assert.throws(() => proseAccept(undefined, [bad] as string[], basesOf([bad] as string[])),
       (e: unknown) => e instanceof HttpError && e.status === 400 && message.test(e.message),
       `${JSON.stringify(bad)} must refuse with ${message}`)
   }
   // And a scene named twice: one decision, one name.
-  assert.throws(() => proseAccept(undefined, [A, A]),
+  assert.throws(() => proseAccept(undefined, [A, A], basesOf([A, A])),
     (e: unknown) => e instanceof HttpError && e.status === 400 && /twice/.test(e.message))
   // A valid scene beside an invalid one takes nothing: the list is checked
   // before any of it is accepted.
-  assert.throws(() => proseAccept(undefined, [A, 'prose/ch-01']),
+  assert.throws(() => proseAccept(undefined, [A, 'prose/ch-01'], basesOf([A, 'prose/ch-01'])),
     (e: unknown) => e instanceof HttpError && e.status === 400)
 
   assert.equal(git(STORY, 'rev-parse', 'HEAD').trim(), head)
@@ -134,7 +139,7 @@ test('a symlink planted in prose/ cannot carry an accept out of the story', () =
   const link = path.join(STORY, 'prose', 'elsewhere')
   fs.symlinkSync(path.dirname(STORY), link)
   try {
-    assert.throws(() => proseAccept(undefined, ['prose/elsewhere/scene-01.md']),
+    assert.throws(() => proseAccept(undefined, ['prose/elsewhere/scene-01.md'], basesOf(['prose/elsewhere/scene-01.md'])),
       (e: unknown) => e instanceof HttpError && e.status === 400 && /escapes prose\//.test(e.message))
   } finally {
     fs.rmSync(link)
@@ -149,7 +154,7 @@ test('the accept commits the named scene only, and leaves staged work alone', ()
   fs.appendFileSync(path.join(STORY, 'canon/story.yaml'), '# a line the author staged\n')
   git(STORY, 'add', '--', 'canon/story.yaml')
 
-  const out = proseAccept(undefined, [A])
+  const out = proseAccept(undefined, [A], basesOf([A]))
   assert.deepEqual(out.files, [A])
 
   // The commit carries A and nothing else of theirs.
@@ -166,7 +171,7 @@ test('a scene the draft deletes can be accepted alone', () => {
   seed()
   fs.rmSync(path.join(STORY, B))
   edit(A, 'Untouched by this accept.')
-  const out = proseAccept(undefined, [B])
+  const out = proseAccept(undefined, [B], basesOf([B]))
   assert.deepEqual(out.files, [B])
   assert.throws(() => git(STORY, 'show', `HEAD:${B}`))
   assert.deepEqual(proseDraft().changes.map(c => c.file), [A])

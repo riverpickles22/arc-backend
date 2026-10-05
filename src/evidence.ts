@@ -15,6 +15,7 @@
 // NOTHING HERE MAY FAIL AN ACCEPT. Losing a style proposal is a smaller harm
 // than failing an accept that already committed; every write is wrapped and
 // every read returns a default. Same contract as the capture pass.
+import { randomBytes } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { AlignedSentence } from 'arc-canon-graph'
@@ -169,12 +170,44 @@ export interface Judgment {
   plan?: { move: string; how: string }[]
   /** The commit this file's pending work started from. */
   baseline: string | null
+
+  // ---- the decision record (A72-3) --------------------------------------
+  // The same entries, carrying enough to reconstruct a lifecycle after a
+  // reload instead of inferring one from commit subjects. A72-7 hangs note
+  // links here and A72-8 extends these records for a reversal; there is no
+  // second store, and there is not going to be one.
+
+  /** Stable identity for this decision — minted once, never derived from
+   *  anything that can move. What a reversal names. */
+  decision?: string
+  /** THE BASE the author decided about: the token for both versions of the
+   *  diff they had in front of them (`base.ts`). */
+  base?: string
+  /** The token for the same file once the decision landed. Absent when the
+   *  decision changed nothing on disk, and on a reversal's own record it is
+   *  what the file went back to. */
+  after?: string
+  // The COMMIT a decision made is deliberately not a field. A record cannot
+  // hold the hash of the commit that carries it, and this record rides in the
+  // decision's own commit so the two are never apart. The commit is found
+  // exactly, by the decision's id in history — never by reading a subject
+  // line (`git log -S<decision> -- docs/style.evidence.jsonl`).
+  /** Where the words came from, carried so a decision can be traced back to
+   *  the work that proposed it without reading another store. */
+  run?: string
+  route?: string
 }
+
+/** A decision's own id: when it happened and eight random hex, so two
+ *  decisions in the same millisecond are still two decisions and nothing has
+ *  to be unique by luck. */
+export const mintDecision = (): string =>
+  `dec.${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}.${randomBytes(4).toString('hex')}`
 
 /** Append one judgment. Never throws. */
 export function recordJudgment(j: Omit<Judgment, 'at'> & { at?: string }): void {
   try {
-    const entry: Judgment = { at: j.at ?? new Date().toISOString(), ...j } as Judgment
+    const entry: Judgment = { at: j.at ?? new Date().toISOString(), ...j, decision: j.decision ?? mintDecision() } as Judgment
     fs.mkdirSync(path.dirname(evidencePath()), { recursive: true })
     fs.appendFileSync(evidencePath(), JSON.stringify(entry) + '\n')
   } catch (e) {

@@ -41,6 +41,13 @@ const put = (scene: string, id: string, at: string, over: Record<string, unknown
   id, created_at: at, body: `Body ${id}.`, ...over,
 } as never)
 const dispositionsFor = (id: string) => readDispositions().filter(d => d.route === id)
+/** THE BASE as a CLIENT gets it (A72-3): read from what the draft reading
+ *  served, and echoed back with the decision — never recomputed here. */
+const servedBases = async (files: string[]): Promise<Record<string, string>> => {
+  const draft = await (await fetch(`${base}/api/prose/draft`)).json() as { changes: { file: string; base: string }[] }
+  return Object.fromEntries(files.map(f => [f, draft.changes.find(c => c.file === f)?.base ?? 'missing']))
+}
+
 const reset = () => {
   clearAlternatives(SCENE); clearAlternatives(OTHER)
   git(STORY, 'checkout', 'HEAD', '--', 'prose')
@@ -52,8 +59,12 @@ test('the accept supersedes the routes waiting beside the one it adopted, and ne
   put(SCENE, 'alt-1111bbbb', '2026-09-11T00:00:00Z')
   addRouteNote(SCENE, 'alt-1111bbbb', 'nearly, but the coat is late', null)
 
-  assert.equal((await post('/api/prose/reroute/adopt', { scene: SCENE, alt: 'alt-1111aaaa' })).status, 200)
-  const accept = await post('/api/prose/accept', { message: 'a route taken', files: [sceneOf(SCENE).file] })
+  // The destination as this view was served it (A72-3); the route requires it.
+  const destination = (await (await fetch(`${base}/api/prose`)).json() as { bases: Record<string, string> }).bases[sceneOf(SCENE).file]
+  assert.equal((await post('/api/prose/reroute/adopt', { scene: SCENE, alt: 'alt-1111aaaa', base: destination })).status, 200)
+  const acceptFiles = [sceneOf(SCENE).file]
+  const accept = await post('/api/prose/accept',
+    { message: 'a route taken', files: acceptFiles, bases: await servedBases(acceptFiles) })
   assert.equal(accept.status, 200)
 
   // The one the author took: adopted, once. A `superseded` entry here would
@@ -81,7 +92,8 @@ test('an accept that adopted no route clears nothing: the routes wait, stale by 
   const other = sceneOf(OTHER)
   fs.writeFileSync(path.join(STORY, other.file),
     fs.readFileSync(path.join(STORY, other.file), 'utf8') + '\nOne more line, typed by hand.\n')
-  const accept = await post('/api/prose/accept', { message: 'a hand edit', files: [other.file] })
+  const accept = await post('/api/prose/accept',
+    { message: 'a hand edit', files: [other.file], bases: await servedBases([other.file]) })
   assert.equal(accept.status, 200)
 
   assert.equal(readDispositions().length, before, 'no route was disposed of by an accept that took none')

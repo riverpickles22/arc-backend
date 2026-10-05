@@ -178,6 +178,13 @@ const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 test.after(() => server.close())
 const post = (p: string, body: unknown) =>
   fetch(base + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+/** THE BASE as a CLIENT gets it (A72-3): read from what the draft reading
+ *  served, and echoed back with the decision — never recomputed here. */
+const servedBases = async (files: string[]): Promise<Record<string, string>> => {
+  const draft = await (await fetch(`${base}/api/prose/draft`)).json() as { changes: { file: string; base: string }[] }
+  return Object.fromEntries(files.map(f => [f, draft.changes.find(c => c.file === f)?.base ?? 'missing']))
+}
+
 
 test('the route: an empty note is a 400; a real note lands the next version of the chain', async () => {
   const head = listAlternatives('sc.02-1').find(a => !a.revises)
@@ -267,7 +274,7 @@ test('accepting a scene clears its field: the adopted route became the book, the
   assert.ok(listAlternatives('sc.02-1').length >= 1)
   adoptAlternative('sc.02-1', r.alternatives[0].id)
   const res = await post('/api/prose/accept',
-    { message: 'accept the route', files: ['prose/ch-02/scene-01.md'] })
+    { message: 'accept the route', files: ['prose/ch-02/scene-01.md'], bases: await servedBases(['prose/ch-02/scene-01.md']) })
   assert.equal(res.status, 200, await res.text())
   assert.deepEqual(listAlternatives('sc.02-1'), [], 'the field is clear once the scene is accepted')
 })

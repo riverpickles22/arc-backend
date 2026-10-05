@@ -18,6 +18,11 @@ const { proseAcceptParagraph, proseRejectParagraph, proseAcceptSentence, proseRe
   await import('../src/story.ts')
 const { readJudgments, counterpartOf, EVIDENCE_REL, recordJudgment } = await import('../src/evidence.ts')
 const { recordGenerated } = await import('../src/ledger.ts')
+const { baseOf } = await import('../src/base.ts')
+/** THE BASE a decision is made about (A72-3), taken the moment before the
+ *  decision — which is what a viewer that has just rendered the diff sends. */
+const basesOf = (files?: string[]): Record<string, string> =>
+  Object.fromEntries((files ?? []).map(f => [f, baseOf(f)]))
 
 const reset = () => { git(story, 'checkout', 'HEAD', '--', '.'); git(story, 'clean', '-fdq') }
 const wipe = () => { try { fs.rmSync(path.join(story, EVIDENCE_REL)) } catch { /* none yet */ } }
@@ -68,7 +73,7 @@ test('a cut has no other half, and neither does a bare addition', () => {
 
 test('a refusal is recorded — the one decision git never sees', () => {
   draftOver('Paragraph A rewritten by arc.\n\nParagraph B.\n', 'Paragraph A rewritten by arc.\n\nParagraph B.\n')
-  proseRejectParagraph(file, { side: 'draft', paragraph: 0 })
+  proseRejectParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file))
 
   const j = readJudgments().at(-1)!
   assert.equal(j.verdict, 'rejected')
@@ -82,7 +87,7 @@ test('a refusal is recorded — the one decision git never sees', () => {
 test('taking arc\'s paragraph untouched is an approval, not a pair', () => {
   const arc = 'Paragraph A, as arc wrote it.\n\nParagraph B.\n'
   draftOver(arc, arc)
-  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 })
+  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file))
 
   const j = readJudgments().at(-1)!
   assert.equal(j.verdict, 'approved', 'arc got this one right — real, but not an edit')
@@ -92,7 +97,7 @@ test('taking arc\'s paragraph untouched is an approval, not a pair', () => {
 
 test('editing arc\'s paragraph before accepting it is the pair worth having', () => {
   draftOver('The author\'s own tightening.\n\nParagraph B.\n', 'A long and rather overwritten opening by arc.\n\nParagraph B.\n')
-  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 })
+  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file))
 
   const j = readJudgments().at(-1)!
   assert.equal(j.verdict, 'accepted')
@@ -115,7 +120,7 @@ test('a sentence refusal records the sentence arc offered and the one that stand
   fs.writeFileSync(abs, draft)
   recordGenerated(file, draft, { engine: 'test', scene: 'sc.01-1', origin: 'revise' })
 
-  proseRejectSentence(file, { paragraph: 0, side: 'draft', sentence: 1 })
+  proseRejectSentence(file, { paragraph: 0, side: 'draft', sentence: 1 }, baseOf(file))
 
   const j = readJudgments().at(-1)!
   assert.equal(j.granularity, 'sentence')
@@ -128,7 +133,7 @@ test('a sentence refusal records the sentence arc offered and the one that stand
 test('discarding a scene records it before the ledger forgets it', () => {
   const fm = draftOver('Everything arc wrote, thrown away.\n\nParagraph B.\n', 'Everything arc wrote, thrown away.\n\nParagraph B.\n')
   assert.ok(fm)
-  proseDiscard(file)
+  proseDiscard(file, baseOf(file))
 
   const j = readJudgments().at(-1)!
   assert.equal(j.verdict, 'discarded')
@@ -149,7 +154,7 @@ test('accepting arc\'s sentence records an approval of that sentence', () => {
   fs.writeFileSync(abs, draft)
   recordGenerated(file, draft, { engine: 'test', scene: 'sc.01-1', origin: 'revise' })
 
-  proseAcceptSentence(file, { paragraph: 0, side: 'draft', sentence: 1 })
+  proseAcceptSentence(file, { paragraph: 0, side: 'draft', sentence: 1 }, baseOf(file))
 
   const j = readJudgments().at(-1)!
   assert.equal(j.granularity, 'sentence')
@@ -163,7 +168,7 @@ test('accepting arc\'s sentence records an approval of that sentence', () => {
 
 test('an accept commits the evidence alongside the prose', () => {
   draftOver('Paragraph A, revised.\n\nParagraph B.\n', 'Paragraph A, revised.\n\nParagraph B.\n')
-  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 })
+  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file))
 
   const inHead = git(story, 'show', `HEAD:${EVIDENCE_REL}`)
   assert.match(inHead, /"verdict"/, 'the judgment is in the book, not only on the disk')
@@ -175,7 +180,7 @@ test('the scene accept records one entry per scene and pins its baseline', () =>
   const before = git(story, 'rev-parse', 'HEAD').trim()
   const fm = fmOf()
   fs.writeFileSync(abs, fm + 'A whole draft, accepted at once.\n\nParagraph B.\n')
-  proseAccept('prose: accept the lot', [file])
+  proseAccept('prose: accept the lot', [file], basesOf([file]))
 
   const j = readJudgments().filter(x => x.file === file).at(-1)!
   assert.equal(j.granularity, 'scene')
@@ -197,7 +202,7 @@ test('a broken evidence log costs a proposal, never a decision', () => {
     arcWrote: 'x', authorKept: 'y', origin: 'revise', baseline: null,
   }))
   assert.deepEqual(readJudgments(), [])
-  assert.doesNotThrow(() => proseRejectParagraph(file, { side: 'draft', paragraph: 0 }),
+  assert.doesNotThrow(() => proseRejectParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file)),
     'the author still gets to refuse a paragraph')
 
   fs.rmSync(p, { recursive: true, force: true })

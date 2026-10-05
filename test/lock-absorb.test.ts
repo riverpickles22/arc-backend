@@ -17,6 +17,7 @@ process.env.ARC_DRAFT_ENGINE = 'none'
 const { createLock, removeLock, locks, locksOn } = await import('../src/locks.ts')
 const { proseAcceptParagraph } = await import('../src/story.ts')
 const { HttpError } = await import('../src/http.ts')
+const { baseOf } = await import('../src/base.ts')
 
 const LOCKS = path.join(story, 'locks')
 const file = 'prose/ch-01/scene-01.md'
@@ -91,7 +92,7 @@ test('an absorbed lock enforces nothing; the parent enforces everything', () => 
   assert.deepEqual(active.map(l => l.id), [section.id], 'only the parent binds')
 
   fs.writeFileSync(abs, fm + 'Paragraph A, revised.\n\nParagraph B.\n\nParagraph C.\n')
-  assert.throws(() => proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }),
+  assert.throws(() => proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file)),
     (e: unknown) => e instanceof HttpError && e.status === 423 && /this section is locked/.test(e.message),
     'the section refuses what no paragraph lock covered')
   assert.ok(para.id, 'and the narrow decision still exists, waiting')

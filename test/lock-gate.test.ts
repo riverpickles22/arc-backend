@@ -19,6 +19,11 @@ const { proseAccept, proseAcceptParagraph, proseRejectParagraph, proseAcceptSent
   await import('../src/story.ts')
 const { readJudgments, EVIDENCE_REL } = await import('../src/evidence.ts')
 const { HttpError } = await import('../src/http.ts')
+const { baseOf } = await import('../src/base.ts')
+/** THE BASE a decision is made about (A72-3), taken the moment before the
+ *  decision — which is what a viewer that has just rendered the diff sends. */
+const basesOf = (files?: string[]): Record<string, string> =>
+  Object.fromEntries((files ?? []).map(f => [f, baseOf(f)]))
 
 const file = 'prose/ch-01/scene-01.md'
 const abs = path.join(story, file)
@@ -55,7 +60,7 @@ test('accepting a paragraph over locked prose is refused, costs no words, record
   const working = fs.readFileSync(abs, 'utf8')
   const head = git(story, 'rev-parse', 'HEAD').trim()
 
-  assert.throws(() => proseAcceptParagraph(file, { side: 'draft', paragraph: 1 }),
+  assert.throws(() => proseAcceptParagraph(file, { side: 'draft', paragraph: 1 }, baseOf(file)),
     (e: unknown) => e instanceof HttpError && e.status === 423 && /lock\.001/.test(e.message),
     'refused with the lock named')
   assert.equal(fs.readFileSync(abs, 'utf8'), working, 'the author keeps every unaccepted word')
@@ -67,7 +72,7 @@ test('accepting a paragraph over locked prose is refused, costs no words, record
 test('an accept elsewhere in the same scene still goes through', () => {
   const fm = lockedFixture()
   fs.writeFileSync(abs, fm + 'Paragraph A, revised.\n\nThe settled paragraph. It has two sentences.\n\nParagraph C.\n')
-  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 })
+  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file))
   assert.match(git(story, 'show', `HEAD:${file}`), /Paragraph A, revised\./,
     'the lock fences its paragraph, not the scene')
   reset()
@@ -76,7 +81,7 @@ test('an accept elsewhere in the same scene still goes through', () => {
 test('accepting a sentence out of a locked paragraph is refused the same way', () => {
   const fm = lockedFixture()
   fs.writeFileSync(abs, fm + 'Paragraph A.\n\nThe settled paragraph. It has two sentences. It grew a third.\n\nParagraph C.\n')
-  assert.throws(() => proseAcceptSentence(file, { paragraph: 1, side: 'draft', sentence: 2 }),
+  assert.throws(() => proseAcceptSentence(file, { paragraph: 1, side: 'draft', sentence: 2 }, baseOf(file)),
     (e: unknown) => e instanceof HttpError && e.status === 423 && /lock\.001/.test(e.message))
   reset()
 })
@@ -85,7 +90,7 @@ test('the scene accept is refused before the file commits or any judgment lands'
   const fm = lockedFixture()
   fs.writeFileSync(abs, fm + 'Paragraph A, also revised.\n\nThe settled paragraph, overwritten wholesale.\n\nParagraph C.\n')
   const head = git(story, 'rev-parse', 'HEAD').trim()
-  assert.throws(() => proseAccept(undefined, [file]), (e: unknown) => e instanceof HttpError && e.status === 423)
+  assert.throws(() => proseAccept(undefined, [file], basesOf([file])), (e: unknown) => e instanceof HttpError && e.status === 423)
   assert.equal(git(story, 'rev-parse', 'HEAD').trim(), head, 'atomic: nothing committed')
   assert.deepEqual(readJudgments(), [], 'and nothing recorded')
   reset()
@@ -94,7 +99,7 @@ test('the scene accept is refused before the file commits or any judgment lands'
 test('rejecting on locked prose is allowed — it restores exactly what the lock protects', () => {
   const fm = lockedFixture()
   fs.writeFileSync(abs, fm + 'Paragraph A.\n\nThe settled paragraph, rewritten by a draft.\n\nParagraph C.\n')
-  proseRejectParagraph(file, { side: 'draft', paragraph: 1 })
+  proseRejectParagraph(file, { side: 'draft', paragraph: 1 }, baseOf(file))
   assert.match(fs.readFileSync(abs, 'utf8'), /The settled paragraph\. It has two sentences\./,
     "main's words — the locked words — are back")
   reset()
@@ -104,7 +109,7 @@ test('discard is refused only when the locked passage lives nowhere but the draf
   const fm = lockedFixture()
   // The locked text is in HEAD: rolling back RESTORES it. Allowed.
   fs.writeFileSync(abs, fm + 'Paragraph A.\n\nThe settled paragraph, mangled.\n\nParagraph C.\n')
-  proseDiscard(file)
+  proseDiscard(file, baseOf(file))
   assert.match(fs.readFileSync(abs, 'utf8'), /It has two sentences\./, 'the rollback restored the settled text')
 
   // Now the author locks a paragraph that exists only in the draft.
@@ -114,7 +119,7 @@ test('discard is refused only when the locked passage lives nowhere but the draf
     '  quote: A new passage, locked before it was ever accepted.', '',
   ].join('\n'))
   const working = fs.readFileSync(abs, 'utf8')
-  assert.throws(() => proseDiscard(file),
+  assert.throws(() => proseDiscard(file, baseOf(file)),
     (e: unknown) => e instanceof HttpError && e.status === 423 && /lock\.002/.test(e.message),
     'destroying locked prose is refused with the lock named')
   assert.equal(fs.readFileSync(abs, 'utf8'), working, 'and the draft is untouched')
@@ -130,7 +135,7 @@ test('a section lock refuses every accept into its scene, in its own words', () 
     'id: lock.003\nanchor:\n  scene: sc.01-1\n')
   fs.writeFileSync(abs, fm + 'Paragraph A, revised.\n\nThe settled paragraph. It has two sentences.\n\nParagraph C.\n')
 
-  assert.throws(() => proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }),
+  assert.throws(() => proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file)),
     (e: unknown) => e instanceof HttpError && e.status === 423 && /this section is locked \(lock\.003\)/.test(e.message),
     'the refusal names the scope, not a paragraph number that does not apply')
   reset()
@@ -145,7 +150,7 @@ test('a chapter lock covers every scene whose frontmatter names it', () => {
     'id: lock.004\nanchor:\n  chapter: ch.01\n')
   fs.writeFileSync(abs, fm + 'Paragraph A, revised.\n\nThe settled paragraph. It has two sentences.\n\nParagraph C.\n')
 
-  assert.throws(() => proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }),
+  assert.throws(() => proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file)),
     (e: unknown) => e instanceof HttpError && e.status === 423 && /this chapter is locked \(lock\.004\)/.test(e.message))
   reset()
 })
@@ -156,7 +161,7 @@ test('an incoherent lock enforces nothing — rejected, not guessed at', () => {
   fs.writeFileSync(path.join(LOCKS, 'lock-005.yaml'),
     'id: lock.005\nanchor:\n  chapter: ch.01\n  paragraph: 1\n')
   fs.writeFileSync(abs, fm + 'Paragraph A, revised.\n\nThe settled paragraph. It has two sentences.\n\nParagraph C.\n')
-  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 })
+  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file))
   assert.match(git(story, 'show', `HEAD:${file}`), /Paragraph A, revised\./,
     'a lock claiming two sizes at once blocks neither')
   reset()

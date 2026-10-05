@@ -13,6 +13,11 @@ process.env.ARC_DRAFT_ENGINE = 'none'
 const { closeAnsweredNotes, createAnnotation, annotations, updateAnnotation } = await import('../src/annotations.ts')
 const { recordGenerated } = await import('../src/ledger.ts')
 const { proseAccept, proseDraft } = await import('../src/story.ts')
+const { baseOf } = await import('../src/base.ts')
+/** THE BASE a decision is made about (A72-3), taken the moment before the
+ *  decision — which is what a viewer that has just rendered the diff sends. */
+const basesOf = (files?: string[]): Record<string, string> =>
+  Object.fromEntries((files ?? []).map(f => [f, baseOf(f)]))
 
 const FILE = 'prose/ch-01/scene-01.md'
 const abs = path.join(STORY, FILE)
@@ -25,6 +30,27 @@ const reset = () => {
   writeScene(STORY, FILE, 'sc.01-1', 'Original first paragraph.\n\nSecond paragraph.')
   git(STORY, 'add', '-A'); if (git(STORY, 'status', '--porcelain').trim()) git(STORY, 'commit', '-qm', 'seed')
 }
+
+test('an accept that is refused leaves the notes it would have closed open', () => {
+  reset()
+  const answered = createAnnotation({ scene: 'sc.01-1', paragraph: 0, quote: 'Original first', body: 'slower' })
+  git(STORY, 'add', '-A'); git(STORY, 'commit', '-qm', 'a note')
+
+  const next = fs.readFileSync(abs, 'utf8').replace('Original first paragraph.', 'A slower first paragraph.')
+  fs.writeFileSync(abs, next)
+  recordGenerated(FILE, next, { origin: 'revise', scene: 'sc.01-1', notes: [answered.id] })
+
+  // The author reads the diff — and then types in the scene in another view.
+  const read = basesOf([FILE])
+  fs.writeFileSync(abs, next.replace('A slower first paragraph.', 'Slower still, in their own hand.'))
+
+  assert.throws(() => proseAccept(undefined, [FILE], read),
+    (e: unknown) => (e as { status?: number }).status === 409)
+  // Notes close only after an accept returns, so a refused one closes none —
+  // the structure says so, and this says the structure holds (A72-3).
+  assert.equal(status(answered.id), 'open', 'nothing was answered, because nothing was accepted')
+  assert.equal(proseDraft().changes.length, 1, 'and the change is still waiting')
+})
 
 test('the notes a change was written from resolve when that change is accepted', () => {
   reset()
@@ -43,7 +69,7 @@ test('the notes a change was written from resolve when that change is accepted',
   // Not yet: the change is a proposal until the author takes it.
   assert.equal(status(answered.id), 'open')
 
-  proseAccept(undefined, [FILE])
+  proseAccept(undefined, [FILE], basesOf([FILE]))
   const closed = closeAnsweredNotes([FILE])
   assert.deepEqual(closed, [answered.id], 'exactly the open note the pass was handed')
   assert.equal(status(answered.id), 'resolved', 'resolved — it still exists for the style learner')

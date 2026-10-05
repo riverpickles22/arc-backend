@@ -25,6 +25,11 @@ const { commitRecords, proseAccept, proseAcceptParagraph, proseDraft, proseRejec
 const { inLane, laneHolder } = await import('../src/lane.ts')
 const { readJudgments, EVIDENCE_REL } = await import('../src/evidence.ts')
 const { HttpError } = await import('../src/http.ts')
+const { baseOf } = await import('../src/base.ts')
+/** THE BASE a decision is made about (A72-3), taken the moment before the
+ *  decision — which is what a viewer that has just rendered the diff sends. */
+const basesOf = (files?: string[]): Record<string, string> =>
+  Object.fromEntries((files ?? []).map(f => [f, baseOf(f)]))
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'src')
 const A = 'prose/ch-01/scene-01.md'
@@ -162,7 +167,7 @@ test('a lock held outside arc refuses the decision, in the author\'s words, and 
   const head = git(STORY, 'rev-parse', 'HEAD').trim()
   fs.writeFileSync(INDEX_LOCK, 'held by something else\n')
   try {
-    assert.throws(() => proseAccept(undefined, [A]), (e: unknown) =>
+    assert.throws(() => proseAccept(undefined, [A], basesOf([A])), (e: unknown) =>
       e instanceof HttpError && e.status === 409
       && /writing to this story right now/.test(e.message)
       && /try again/.test(e.message)
@@ -187,7 +192,7 @@ test('a lock taken AFTER the preflight reaches the author as the same sentence',
   assert.equal(laneHolder(), null)
   // And the next request works.
   edit(A, 'After the lock went away.')
-  assert.deepEqual(proseAccept(undefined, [A]).files, [A])
+  assert.deepEqual(proseAccept(undefined, [A], basesOf([A])).files, [A])
 })
 
 // ---- what a refused commit leaves behind -----------------------------------
@@ -198,7 +203,7 @@ test('a commit the gate refuses leaves no verdict, nothing staged and the words 
   const head = git(STORY, 'rev-parse', 'HEAD').trim()
   const before = fs.readFileSync(path.join(STORY, A), 'utf8')
   refuseAtCommit()
-  assert.throws(() => proseAccept(undefined, [A]))
+  assert.throws(() => proseAccept(undefined, [A], basesOf([A])))
   fs.rmSync(HOOK, { force: true })
 
   assert.equal(git(STORY, 'rev-parse', 'HEAD').trim(), head, 'nothing committed')
@@ -209,7 +214,7 @@ test('a commit the gate refuses leaves no verdict, nothing staged and the words 
   assert.equal(laneHolder(), null)
 
   // A later request succeeds.
-  const out = proseAccept(undefined, [A])
+  const out = proseAccept(undefined, [A], basesOf([A]))
   assert.deepEqual(out.files, [A])
   assert.equal(readJudgments().length, 1)
 })
@@ -225,7 +230,7 @@ test('a refused paragraph accept puts the scene, the log and the index back', ()
   const pending = fs.readFileSync(abs, 'utf8')
 
   refuseAtCommit()
-  assert.throws(() => proseAcceptParagraph(A, { file: A, side: 'draft', paragraph: 0 }))
+  assert.throws(() => proseAcceptParagraph(A, { file: A, side: 'draft', paragraph: 0 }, baseOf(A)))
   fs.rmSync(HOOK, { force: true })
 
   assert.equal(git(STORY, 'rev-parse', 'HEAD').trim(), head)
@@ -247,7 +252,7 @@ test('a decision carries its own evidence and leaves every other pending thing a
   fs.writeFileSync(absB, fmB + '\nOne.\n\nTwo.\n')
   git(STORY, 'commit', '-qam', 'prose: paragraphs in the second scene')
   fs.writeFileSync(absB, fmB + '\nOne, rewritten.\n\nTwo.\n')
-  proseRejectParagraph(B, { file: B, side: 'draft', paragraph: 0 })
+  proseRejectParagraph(B, { file: B, side: 'draft', paragraph: 0 }, baseOf(B))
   const earlier = evidenceLines()
   assert.equal(earlier.length, 1, 'the refusal left one uncommitted verdict')
 
@@ -257,7 +262,7 @@ test('a decision carries its own evidence and leaves every other pending thing a
   fs.appendFileSync(path.join(STORY, 'canon/story.yaml'), '# a line the author staged\n')
   git(STORY, 'add', '--', 'canon/story.yaml')
 
-  proseAccept(undefined, [A])
+  proseAccept(undefined, [A], basesOf([A]))
 
   const committed = git(STORY, 'show', '--name-only', '--format=', 'HEAD').split('\n').filter(Boolean)
   assert.ok(committed.includes(A))
@@ -281,8 +286,8 @@ test('two accepts of different scenes both land, one after the other', () => {
   seed()
   edit(A, 'One decision.')
   edit(B, 'Another decision.')
-  const first = proseAccept(undefined, [A])
-  const second = proseAccept(undefined, [B])
+  const first = proseAccept(undefined, [A], basesOf([A]))
+  const second = proseAccept(undefined, [B], basesOf([B]))
   assert.deepEqual(first.files, [A])
   assert.deepEqual(second.files, [B])
   assert.notEqual(first.hash, second.hash, 'two decisions, two commits')
@@ -294,12 +299,12 @@ test('two accepts of different scenes both land, one after the other', () => {
 test('two decisions about the same change do not both land', () => {
   seed()
   edit(A, 'The change both decisions are about.')
-  const first = proseAccept(undefined, [A])
+  const first = proseAccept(undefined, [A], basesOf([A]))
   assert.deepEqual(first.files, [A])
   // The second arrives after the first changed its input. Today it is refused
   // because there is nothing pending for that scene any more; A72-3 gives the
   // accept the base the author read, and refuses it for the right reason.
-  assert.throws(() => proseAccept(undefined, [A]), (e: unknown) =>
+  assert.throws(() => proseAccept(undefined, [A], basesOf([A])), (e: unknown) =>
     e instanceof HttpError && (e.status === 409 || e.status === 400))
   assert.equal(git(STORY, 'rev-parse', 'HEAD').trim(), git(STORY, 'rev-parse', first.hash).trim(),
     'and it committed nothing on top')
@@ -359,7 +364,7 @@ test('a staging failure after preparation rolls the decision back like any other
   const before = fs.readFileSync(exclude, 'utf8')
   fs.writeFileSync(exclude, `${before}\n${EVIDENCE_REL}\n`)
   try {
-    assert.throws(() => proseAccept(undefined, [A]))
+    assert.throws(() => proseAccept(undefined, [A], basesOf([A])))
   } finally {
     fs.writeFileSync(exclude, before)
   }
@@ -369,7 +374,7 @@ test('a staging failure after preparation rolls the decision back like any other
   assert.equal(git(STORY, 'diff', '--cached', '--name-only').trim(), '', 'nothing left staged')
   assert.equal(fs.readFileSync(path.join(STORY, A), 'utf8'), pending)
   assert.equal(laneHolder(), null)
-  assert.deepEqual(proseAccept(undefined, [A]).files, [A], 'and the next request works')
+  assert.deepEqual(proseAccept(undefined, [A], basesOf([A])).files, [A], 'and the next request works')
 })
 
 test('a commit that names no path is refused rather than taking the whole index', () => {
@@ -414,7 +419,7 @@ test('an editor outside arc that changes the scene mid-decision is not written o
   fs.writeFileSync(HOOK,
     `#!/bin/sh\nprintf '%s' "${'$'}(cat <<'EOF'\n${fm}\nTyped by hand while that was landing.\nEOF\n)" > ${JSON.stringify(abs)}\nexit 0\n`,
     { mode: 0o755 })
-  proseAcceptParagraph(A, { file: A, side: 'draft', paragraph: 0 })
+  proseAcceptParagraph(A, { file: A, side: 'draft', paragraph: 0 }, baseOf(A))
   fs.rmSync(HOOK, { force: true })
 
   assert.match(fs.readFileSync(abs, 'utf8'), /Typed by hand while that was landing\./,

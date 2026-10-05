@@ -18,6 +18,7 @@ import { HttpError } from './http'
 import { assertUnlocked, locksOn } from './locks'
 import { resolveWithin } from './safe-path'
 import { git, inLane, type Tx } from './lane'
+import { assertBase, assertBases, baseOf, tokenFor } from './base'
 import { canonicalYaml } from './agent'
 import { validateStory } from './canon'
 import { readWorkingReceipt } from './run'
@@ -254,7 +255,9 @@ export function proseDraft(): ProseDraft {
     // the paragraph model (and in frontmatter), there is no change to
     // review, and the draft layer says so by staying silent.
     if (status === 'modified' && main && modelEqual(main, file)) continue
-    const change: ProseChange = { file, status, main }
+    // THE BASE (A72-3): both versions of this diff as the author is about to
+    // be shown them, so the decision they make can only land on these words.
+    const change: ProseChange = { file, status, main, base: baseOf(file) }
     // Provenance, from the ledger: which pass wrote the pending text and
     // which notes it was handed. A ledger entry whose text is already what
     // HEAD holds was accepted earlier — the pending change is the author's
@@ -327,15 +330,18 @@ function acceptScope(files: string[], pending: ProseChange[]): string[] {
  *  in a list (A64-3): the author reads one scene's diff and ratifies THAT, and
  *  the rest of the draft stays pending. It is required (A72-1) — see
  *  `acceptScope`. */
-export function proseAccept(message: string | undefined, files: string[]): { hash: string; files: string[] } {
-  return inLane('accepting a scene', tx => acceptScenes(tx, message, files))
+export function proseAccept(message: string | undefined, files: string[], bases: unknown): { hash: string; files: string[] } {
+  return inLane('accepting a scene', tx => acceptScenes(tx, message, files, bases))
 }
 
-function acceptScenes(tx: Tx, message: string | undefined, files: string[]): { hash: string; files: string[] } {
+function acceptScenes(tx: Tx, message: string | undefined, files: string[], bases: unknown): { hash: string; files: string[] } {
   const all = proseDraft()
   if (!all.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer to accept')
   if (!all.changes.length) throw new HttpError(409, 'no draft changes to accept')
   const wanted = acceptScope(files, all.changes)
+  // EVERY base before ANY mutation (A72-3): one scene that moved refuses the
+  // whole request, and the others are left exactly as they were.
+  assertBases(wanted, bases, 'accept that')
   const draft: ProseDraft = { ...all, changes: all.changes.filter(c => wanted.includes(c.file)) }
   // THE LOCKS, before anything else — including the evidence log. Settled
   // prose is settled against every write path, and the accept gate was the
@@ -358,13 +364,19 @@ function acceptScenes(tx: Tx, message: string | undefined, files: string[]): { h
   // granularity is the honest grain here: the author took the file entire, so
   // the pair is arc's draft against what the file now says, and the learning
   // pass does the paragraph arithmetic from there.
+  const named = (bases ?? {}) as Record<string, string>
   for (const c of draft.changes) {
     const gen = generatedFor(c.file)
     const wrote = gen ? parseScene(gen.content, c.file)?.body ?? gen.content : ''
     let kept = ''
-    try { kept = parseScene(fs.readFileSync(path.join(STORY, c.file), 'utf8'), c.file)?.body ?? '' } catch { kept = '' }
+    let bytes: string | null = null
+    try { bytes = fs.readFileSync(path.join(STORY, c.file), 'utf8'); kept = parseScene(bytes, c.file)?.body ?? '' } catch { kept = '' }
+    // A whole-scene accept makes the pending bytes the accepted ones, and
+    // leaves the working tree holding the same — both sides known before the
+    // commit, which is what lets the record name what it is producing.
     judged(c.file, c.main?.scene ?? null, 'scene', null,
-      wrote && wrote.trim() !== kept.trim() ? 'accepted' : 'approved', wrote, kept)
+      wrote && wrote.trim() !== kept.trim() ? 'accepted' : 'approved', wrote, kept,
+      { base: named[c.file], after: tokenFor(c.file, bytes, bytes) })
   }
 
   // Staging and committing name the same paths, so an accept cannot sweep in
@@ -397,8 +409,18 @@ function acceptScenes(tx: Tx, message: string | undefined, files: string[]): { h
  *  clobber into a refusal. Whitespace-insensitive, because a trailing newline
  *  is not a conflict.
  */
-export function proseWrite(file: string, body: string, baseline?: string): ProseScene {
-  return inLane('saving a scene', () => writeSceneBody(file, body, baseline))
+export function proseWrite(file: string, body: string, baseline?: string, base?: unknown): ProseScene {
+  return inLane('saving a scene', () => {
+    // TWO DIFFERENT INPUTS TO THE SAME QUESTION (A72-3). `base` is the
+    // version of the scene the author's editor was opened on; `baseline` is
+    // the body text their edit started from, which gives the better sentence
+    // when it is the one that moved. Both are kept: the token catches a
+    // changed frontmatter or a scene that went away, which the body compare
+    // cannot see, and the body compare is whitespace-insensitive, which a
+    // trailing newline deserves.
+    if (base !== undefined) assertBase(file, base, 'save that')
+    return writeSceneBody(file, body, baseline)
+  })
 }
 
 /** The write itself, for a caller that is ALREADY holding the lane — the
@@ -532,13 +554,23 @@ function intentOf(run: string | undefined): { said?: string; plan?: { move: stri
   }
 }
 
+/** THE DECISION RECORD (A72-3). The verdict the learning pass reads, and the
+ *  record a lifecycle is reconstructed from, are the same entry in the same
+ *  log — there is no second store. `decided` carries what the author decided
+ *  ABOUT (the base) and what the decision makes true (`after`), both known
+ *  before the commit because an accept is deterministic. */
 function judged(file: string, scene: string | null, granularity: Granularity,
-                paragraph: number | null, verdict: Verdict, arcWrote: string, authorKept: string): void {
+                paragraph: number | null, verdict: Verdict, arcWrote: string, authorKept: string,
+                decided?: { base?: unknown; after?: string }): void {
   const entry = generatedFor(file)?.entry
   recordJudgment({
     file, scene, granularity, paragraph, verdict, arcWrote, authorKept,
     origin: entry?.origin ?? 'hand',
     baseline: pinBaseline(file, headSha()),
+    ...(typeof decided?.base === 'string' ? { base: decided.base } : {}),
+    ...(decided?.after ? { after: decided.after } : {}),
+    ...(entry?.run ? { run: entry.run } : {}),
+    ...(entry?.route ? { route: entry.route } : {}),
     ...intentOf(entry?.run),
   })
 }
@@ -693,11 +725,14 @@ function locate(aligned: AlignedParagraph[], t: ParagraphTarget): AlignedParagra
  *  before that is the lane's to undo, and puts the author's words back
  *  exactly as they were (A72-2).
  */
-export function proseAcceptParagraph(file: string, t: ParagraphTarget, message?: string): { hash: string; file: string } {
-  return inLane('accepting a paragraph', tx => acceptParagraph(tx, file, t, message))
+export function proseAcceptParagraph(file: string, t: ParagraphTarget, base: unknown, message?: string): { hash: string; file: string } {
+  return inLane('accepting a paragraph', tx => acceptParagraph(tx, file, t, base, message))
 }
 
-function acceptParagraph(tx: Tx, file: string, t: ParagraphTarget, message?: string): { hash: string; file: string } {
+function acceptParagraph(tx: Tx, file: string, t: ParagraphTarget, base: unknown, message?: string): { hash: string; file: string } {
+  // BEFORE the indices are resolved (A72-3): an index read off a version that
+  // has moved names a different paragraph, so the compare comes first.
+  assertBase(file, base, 'accept that paragraph')
   const { abs, working, fm, draftParas, mainParas, aligned, scene } = paragraphContext(file)
   const hit = locate(aligned, t)
 
@@ -729,12 +764,15 @@ function acceptParagraph(tx: Tx, file: string, t: ParagraphTarget, message?: str
   // draft-side text at all; for the other two, arc's own words come from
   // the ledger and are compared rather than assumed — taking arc's
   // paragraph untouched is an approval, and editing it first is the pair.
+  // What the decision makes true: the merged text becomes the book, and the
+  // working tree keeps whatever of the author's words it did not take.
+  const decided = { base, after: tokenFor(file, committed, restoredBytes(working, committed)) }
   if (hit.kind === 'del') {
-    judged(file, scene, 'paragraph', hit.mainIndex, 'accepted', '', '')
+    judged(file, scene, 'paragraph', hit.mainIndex, 'accepted', '', '', decided)
   } else {
     const kept = draftParas[hit.draftIndex!]
     const wrote = arcSideOf(file, draftParas, hit.draftIndex!)
-    judged(file, scene, 'paragraph', hit.mainIndex ?? hit.draftIndex, wrote && wrote !== kept ? 'accepted' : 'approved', wrote, kept)
+    judged(file, scene, 'paragraph', hit.mainIndex ?? hit.draftIndex, wrote && wrote !== kept ? 'accepted' : 'approved', wrote, kept, decided)
   }
 
   tx.stage([file])
@@ -742,6 +780,26 @@ function acceptParagraph(tx: Tx, file: string, t: ParagraphTarget, message?: str
   tx.commit(message?.trim() || `prose: accept one change in ${path.basename(file)}`, paths)
   restoreWorking(abs, working, committed)   // the author's unaccepted words
   return { hash: git('rev-parse', '--short', 'HEAD').trim(), file }
+}
+
+/** The rule `restoreWorking` applies, as a function of text — ONE definition,
+ *  used both to do the restoring and to let a decision's record name the
+ *  version it produces before it produces it. (The one case where the record
+ *  and the disk part company is an editor outside arc writing between the
+ *  commit and the restore: `restoreWorking` then leaves their words alone, and
+ *  theirs is a later change that the next reading's base will show.) */
+function restoredBytes(working: string, committed: string): string {
+  const paras = (text: string) => {
+    const fm = text.match(FM_RE)
+    const body = fm ? text.slice(fm[0].length) : text
+    return (fm?.[0] ?? '') + body.split(/\n{2,}/).map(x => x.trim()).filter(Boolean).join('\n\n')
+  }
+  return paras(working) === paras(committed) ? committed : working
+}
+
+/** The book's own bytes for a file, or null when it is not in the book. */
+function headBytes(file: string): string | null {
+  try { return git('show', `HEAD:${file}`) } catch { return null }
 }
 
 /** The restoration that does not manufacture ghosts. The commit normalizes
@@ -758,18 +816,13 @@ function acceptParagraph(tx: Tx, file: string, t: ParagraphTarget, message?: str
  *  typed. Observed conflict, so arc leaves it alone and says so in the log —
  *  the draft reading will show their words as the pending change they are. */
 function restoreWorking(abs: string, working: string, committed: string): void {
-  const paras = (text: string) => {
-    const fm = text.match(FM_RE)
-    const body = fm ? text.slice(fm[0].length) : text
-    return (fm?.[0] ?? '') + body.split(/\n{2,}/).map(x => x.trim()).filter(Boolean).join('\n\n')
-  }
   let onDisk: string
   try { onDisk = fs.readFileSync(abs, 'utf8') } catch { return }
   if (onDisk !== committed) {
     console.error(`[lane] ${path.relative(STORY, abs)} changed outside arc while a decision was landing — left as it is`)
     return
   }
-  fs.writeFileSync(abs, paras(working) === paras(committed) ? committed : working)
+  fs.writeFileSync(abs, restoredBytes(working, committed))
 }
 
 /** Reject ONE paragraph of a scene, leaving every other change pending.
@@ -794,11 +847,14 @@ function restoreWorking(abs: string, working: string, committed: string): void {
  *  author that restoration would make the lock protect the draft against
  *  the book. (proseWrite's assertUnlocked guards arbitrary edits; a reject
  *  is not arbitrary — its output is main's text by construction.) */
-export function proseRejectParagraph(file: string, t: ParagraphTarget): { file: string } {
-  return inLane('rejecting a paragraph', () => rejectParagraph(file, t))
+export function proseRejectParagraph(file: string, t: ParagraphTarget, base: unknown): { file: string } {
+  return inLane('rejecting a paragraph', () => rejectParagraph(file, t, base))
 }
 
-function rejectParagraph(file: string, t: ParagraphTarget): { file: string } {
+function rejectParagraph(file: string, t: ParagraphTarget, base: unknown): { file: string } {
+  // Refusing is a decision about words too, and it writes: an old tab must
+  // not be able to put main's text back over something typed since.
+  assertBase(file, base, 'refuse that paragraph')
   const { abs, working, fm, draftParas, mainParas, aligned, scene } = paragraphContext(file)
   const hit = locate(aligned, t)
 
@@ -954,11 +1010,12 @@ function mergeSentence(
  *  commit it, restore the author's working tree in a finally. Accepting a
  *  deleted sentence commits the deletion; accepting an added one commits its
  *  arrival. */
-export function proseAcceptSentence(file: string, t: SentenceTarget, message?: string): { hash: string; file: string } {
-  return inLane('accepting a sentence', tx => acceptSentence(tx, file, t, message))
+export function proseAcceptSentence(file: string, t: SentenceTarget, base: unknown, message?: string): { hash: string; file: string } {
+  return inLane('accepting a sentence', tx => acceptSentence(tx, file, t, base, message))
 }
 
-function acceptSentence(tx: Tx, file: string, t: SentenceTarget, message?: string): { hash: string; file: string } {
+function acceptSentence(tx: Tx, file: string, t: SentenceTarget, base: unknown, message?: string): { hash: string; file: string } {
+  assertBase(file, base, 'accept that sentence')
   const { abs, working, fm, draftParas, mainParas, main, scene } = sentenceContext(file, t.paragraph)
   const { aligned, hit, arcWrote } = sentenceAlignment(mainParas[main], draftParas[t.paragraph], t)
 
@@ -981,7 +1038,8 @@ function acceptSentence(tx: Tx, file: string, t: SentenceTarget, message?: strin
   tx.wrote(abs, committed)
 
   // Taking arc's sentence, or agreeing with its cut: an approval either way.
-  judged(file, scene, 'sentence', main, 'approved', arcWrote, arcWrote)
+  judged(file, scene, 'sentence', main, 'approved', arcWrote, arcWrote,
+    { base, after: tokenFor(file, committed, restoredBytes(working, committed)) })
   tx.stage([file])
   const paths = [...withEvidence(tx, file), ...withReleasedLocks(tx, file)]
   tx.commit(message?.trim() || `prose: accept one sentence in ${path.basename(file)}`, paths)
@@ -994,11 +1052,12 @@ function acceptSentence(tx: Tx, file: string, t: SentenceTarget, message?: strin
  *  Never reaches git, for the reason proseRejectParagraph does not: refusing a
  *  change means the draft stops carrying it. Refusing an added sentence drops
  *  it; refusing a deleted one puts it back. */
-export function proseRejectSentence(file: string, t: SentenceTarget): { file: string } {
-  return inLane('rejecting a sentence', () => rejectSentence(file, t))
+export function proseRejectSentence(file: string, t: SentenceTarget, base: unknown): { file: string } {
+  return inLane('rejecting a sentence', () => rejectSentence(file, t, base))
 }
 
-function rejectSentence(file: string, t: SentenceTarget): { file: string } {
+function rejectSentence(file: string, t: SentenceTarget, base: unknown): { file: string } {
+  assertBase(file, base, 'refuse that sentence')
   const { abs, fm, draftParas, mainParas, main, scene } = sentenceContext(file, t.paragraph)
   const { aligned, hit, arcWrote, mainHad } = sentenceAlignment(mainParas[main], draftParas[t.paragraph], t)
 
@@ -1020,12 +1079,15 @@ function rejectSentence(file: string, t: SentenceTarget): { file: string } {
 
 /** Roll one file back to main. The path arrives from the browser — reject
  *  anything that escapes prose/, including symlink escapes. */
-export function proseDiscard(file: string): void {
-  inLane('discarding a change', () => discardChange(file))
+export function proseDiscard(file: string, base: unknown): void {
+  inLane('discarding a change', () => discardChange(file, base))
 }
 
-function discardChange(file: string): void {
+function discardChange(file: string, base: unknown): void {
   if (!file.startsWith('prose/')) throw new HttpError(400, `not a prose file: ${file}`)
+  // The loudest refusal in the product, and the one an old tab must never be
+  // able to make on words it has not seen.
+  assertBase(file, base, 'throw that change away')
   const abs = resolveWithin(path.join(STORY, 'prose'), file.slice('prose/'.length))
   const change = proseDraft().changes.find(c => c.file === file)
   if (!change) throw new HttpError(404, `no draft change for ${file}`)
@@ -1059,8 +1121,11 @@ function discardChange(file: string): void {
   // one decision that destroyed its own record on the way out.
   const gen = generatedFor(file)
   if (gen) {
+    // A discard puts the book's own words back, or takes an added scene away.
+    const head = headBytes(file)
     judged(file, change.main?.scene ?? null, 'scene', null, 'discarded',
-      parseScene(gen.content, file)?.body ?? gen.content, '')
+      parseScene(gen.content, file)?.body ?? gen.content, '',
+      { base, after: tokenFor(file, head, change.status === 'added' ? null : head) })
   }
 
   if (change.status === 'added') fs.rmSync(abs)

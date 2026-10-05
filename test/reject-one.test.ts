@@ -13,6 +13,7 @@ process.env.ARC_STORY_PATH = STORY
 process.env.ARC_DRAFT_ENGINE = 'none'
 
 const { proseRejectParagraph, proseDraft, countParagraphEdits } = await import('../src/story.ts')
+const { baseOf } = await import('../src/base.ts')
 
 const FILE = 'prose/ch-01/scene-01.md'
 const seed = (draft: string) => {
@@ -43,7 +44,7 @@ test('rejecting one changed paragraph leaves every other change pending', () => 
   seed('One REVISED.\n\nTwo REVISED.\n\nThree as the book has it.\n\nFour REVISED.')
   assert.equal(proseDraft().changes.length, 1)
   // Refuse the second paragraph's change: main's words come back there only.
-  proseRejectParagraph(FILE, { side: 'draft', paragraph: 1 })
+  proseRejectParagraph(FILE, { side: 'draft', paragraph: 1 }, baseOf(FILE))
   assert.deepEqual(body(), ['One REVISED.', 'Two as the book has it.', 'Three as the book has it.', 'Four REVISED.'])
   assert.equal(proseDraft().changes.length, 1, 'the scene is still pending — two changes remain')
 })
@@ -51,10 +52,10 @@ test('rejecting one changed paragraph leaves every other change pending', () => 
 test('a refused insertion goes away alone, and a refused deletion comes back alone', () => {
   seed('One as the book has it.\n\nAN EXTRA PARAGRAPH.\n\nTwo as the book has it.\n\nFour as the book has it.')
   // The draft inserted one paragraph and deleted "Three". Refuse the insertion.
-  proseRejectParagraph(FILE, { side: 'draft', paragraph: 1 })
+  proseRejectParagraph(FILE, { side: 'draft', paragraph: 1 }, baseOf(FILE))
   assert.deepEqual(body(), ['One as the book has it.', 'Two as the book has it.', 'Four as the book has it.'])
   // Now refuse the deletion of "Three": it is put back, nothing else moves.
-  proseRejectParagraph(FILE, { side: 'main', paragraph: 2 })
+  proseRejectParagraph(FILE, { side: 'main', paragraph: 2 }, baseOf(FILE))
   assert.deepEqual(body(), ['One as the book has it.', 'Two as the book has it.', 'Three as the book has it.', 'Four as the book has it.'])
   assert.equal(proseDraft().changes.length, 0, 'every change refused, one at a time — the scene matches the book')
 })
@@ -62,7 +63,7 @@ test('a refused insertion goes away alone, and a refused deletion comes back alo
 test('accepting one changed paragraph puts that paragraph in the book and leaves the rest pending', async () => {
   const { proseAcceptParagraph } = await import('../src/story.ts')
   seed('One REVISED.\n\nTwo REVISED.\n\nThree as the book has it.\n\nFour REVISED.')
-  proseAcceptParagraph(FILE, { side: 'draft', paragraph: 1 })
+  proseAcceptParagraph(FILE, { side: 'draft', paragraph: 1 }, baseOf(FILE))
   // The book took "Two" alone.
   const head = git(STORY, 'show', `HEAD:${FILE}`).replace(/^---\n[\s\S]*?\n---\n/, '').trim().split(/\n{2,}/)
   assert.deepEqual(head, ['One as the book has it.', 'Two REVISED.', 'Three as the book has it.', 'Four as the book has it.'])

@@ -3,9 +3,15 @@
 import type http from 'node:http'
 
 /** A domain error with an HTTP status. Anything else that escapes a
- *  handler is logged server-side and answered with a generic 500. */
+ *  handler is logged server-side and answered with a generic 500.
+ *
+ *  `detail` is structured matter the AUTHOR'S SURFACE needs beside the
+ *  sentence — what a refused decision was read against and what is there now
+ *  (A72-3). It is sent as named fields of the error body; the sentence is
+ *  still the thing a person reads, and nothing may depend on the detail being
+ *  there. Never put a path, a stack or an engine's words in it. */
 export class HttpError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(public status: number, message: string, public detail?: Record<string, unknown>) {
     super(message)
   }
 }

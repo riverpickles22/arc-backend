@@ -12,6 +12,11 @@ const { CRAFT_MOVES, ROW_DRAFT_SCENE } = await import('../src/registry.ts')
 const { gateCtx } = await import('../src/reroute.ts')
 const { SCENARIOS } = await import('./fixture-scenarios.ts')
 const { HttpError } = await import('../src/http.ts')
+const { baseOf } = await import('../src/base.ts')
+/** THE BASE a decision is made about (A72-3), taken the moment before the
+ *  decision — which is what a viewer that has just rendered the diff sends. */
+const basesOf = (files?: string[]): Record<string, string> =>
+  Object.fromEntries((files ?? []).map(f => [f, baseOf(f)]))
 
 const CHAPTER = 'ch.01-ninety-one-stairs'
 const plan = SCENARIOS.find(s => s.row === 'draft.scene.one-shot.craft-plan')!
@@ -168,7 +173,7 @@ test('the decision copies the line and the plan into the evidence log', async ()
   const out = await runDraft(CHAPTER, 'more dread', settled.plan!)
   assert.ok(out.file, 'the draft landed')
 
-  proseAccept(undefined, [out.file!])
+  proseAccept(undefined, [out.file!], basesOf([out.file!]))
   const log = path.join(STORY, 'docs', 'style.evidence.jsonl')
   const rows = fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l))
   const mine = rows.filter(r => r.file === out.file && r.said)

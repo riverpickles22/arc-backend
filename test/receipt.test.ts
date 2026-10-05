@@ -230,9 +230,15 @@ test('the accept that commits an adopted route stamps its commit onto the receip
     adoptAlternative(SCENE, alt.id)
     const scene = proseScenes().find(s => s.scene === SCENE)!
 
+    // THE BASE as the viewer gets it: read off the draft reading it rendered.
+    const draft = await (await fetch(`${base}/api/prose/draft`)).json() as { changes: { file: string; base: string }[] }
     const res = await fetch(`${base}/api/prose/accept`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message: 'prose: another way through', files: [scene.file] }),
+      body: JSON.stringify({
+        message: 'prose: another way through',
+        files: [scene.file],
+        bases: { [scene.file]: draft.changes.find(c => c.file === scene.file)?.base },
+      }),
     })
     assert.equal(res.status, 200)
     const { hash } = await res.json() as { hash: string }

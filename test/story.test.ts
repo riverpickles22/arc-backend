@@ -9,6 +9,11 @@ const story = makeStory()
 process.env.ARC_STORY_PATH = story
 const { proseAccept, proseAcceptParagraph, proseRejectParagraph, proseAcceptSentence, proseRejectSentence, proseDiscard, proseDraft, proseScenes, proseWrite } = await import('../src/story.ts')
 const { HttpError } = await import('../src/http.ts')
+const { baseOf } = await import('../src/base.ts')
+/** THE BASE a decision is made about (A72-3), taken the moment before the
+ *  decision — which is what a viewer that has just rendered the diff sends. */
+const basesOf = (files?: string[]): Record<string, string> =>
+  Object.fromEntries((files ?? []).map(f => [f, baseOf(f)]))
 
 function reset(): void {
   git(story, 'checkout', 'HEAD', '--', '.')
@@ -46,7 +51,7 @@ test('accept commits prose only — a dirty canon file stays dirty', () => {
   writeScene(story, 'prose/ch-01/scene-01.md', 'sc.01-1', 'Accepted revision.')
   fs.appendFileSync(path.join(story, 'canon/story.yaml'), 'logline: dirty\n')
 
-  const result = proseAccept(undefined, ['prose/ch-01/scene-01.md'])
+  const result = proseAccept(undefined, ['prose/ch-01/scene-01.md'], basesOf(['prose/ch-01/scene-01.md']))
   assert.match(result.hash, /^[0-9a-f]{7,}$/)
   assert.deepEqual(result.files, ['prose/ch-01/scene-01.md'])
   assert.equal(proseDraft().changes.length, 0)
@@ -59,34 +64,34 @@ test('accept commits prose only — a dirty canon file stays dirty', () => {
 
 test('accept with a custom message uses it', () => {
   writeScene(story, 'prose/ch-01/scene-01.md', 'sc.01-1', 'Another revision.')
-  proseAccept('prose: my own words', ['prose/ch-01/scene-01.md'])
+  proseAccept('prose: my own words', ['prose/ch-01/scene-01.md'], basesOf(['prose/ch-01/scene-01.md']))
   assert.equal(git(story, 'log', '-1', '--pretty=%s').trim(), 'prose: my own words')
 })
 
 test('accept with no changes is a 409', () => {
   reset()
-  assert.throws(() => proseAccept(undefined, ['prose/ch-01/scene-01.md']),
+  assert.throws(() => proseAccept(undefined, ['prose/ch-01/scene-01.md'], basesOf(['prose/ch-01/scene-01.md'])),
     (e: unknown) => e instanceof HttpError && e.status === 409)
 })
 
 test('discard reverts a modified file and deletes an added one', () => {
   reset()
   writeScene(story, 'prose/ch-01/scene-01.md', 'sc.01-1', 'Doomed edit.')
-  proseDiscard('prose/ch-01/scene-01.md')
+  proseDiscard('prose/ch-01/scene-01.md', baseOf('prose/ch-01/scene-01.md'))
   assert.match(fs.readFileSync(path.join(story, 'prose/ch-01/scene-01.md'), 'utf8'), /Original first paragraph|Accepted|Another/)
   assert.equal(proseDraft().changes.length, 0)
 
   writeScene(story, 'prose/ch-01/scene-03.md', 'sc.01-3', 'Scrap.')
-  proseDiscard('prose/ch-01/scene-03.md')
+  proseDiscard('prose/ch-01/scene-03.md', baseOf('prose/ch-01/scene-03.md'))
   assert.equal(fs.existsSync(path.join(story, 'prose/ch-01/scene-03.md')), false)
 })
 
 test('discard rejects traversal and unknown files', () => {
   reset()
-  assert.throws(() => proseDiscard('../etc/passwd'), (e: unknown) => e instanceof HttpError && e.status === 400)
-  assert.throws(() => proseDiscard('canon/story.yaml'), (e: unknown) => e instanceof HttpError && e.status === 400)
-  assert.throws(() => proseDiscard('prose/../canon/story.yaml'), (e: unknown) => e instanceof HttpError && e.status === 400)
-  assert.throws(() => proseDiscard('prose/ch-01/scene-01.md'), (e: unknown) => e instanceof HttpError && e.status === 404)
+  assert.throws(() => proseDiscard('../etc/passwd', baseOf('../etc/passwd')), (e: unknown) => e instanceof HttpError && e.status === 400)
+  assert.throws(() => proseDiscard('canon/story.yaml', baseOf('canon/story.yaml')), (e: unknown) => e instanceof HttpError && e.status === 400)
+  assert.throws(() => proseDiscard('prose/../canon/story.yaml', baseOf('prose/../canon/story.yaml')), (e: unknown) => e instanceof HttpError && e.status === 400)
+  assert.throws(() => proseDiscard('prose/ch-01/scene-01.md', baseOf('prose/ch-01/scene-01.md')), (e: unknown) => e instanceof HttpError && e.status === 404)
 })
 
 test('a scene in a brand-new chapter directory reports as added (not swallowed as `?? dir/`)', () => {
@@ -136,7 +141,7 @@ test('accepting one paragraph commits it and leaves the rest pending', () => {
   const fm = before.slice(0, before.indexOf('---', 3) + 4)
   fs.writeFileSync(abs, fm + 'FIRST changed.\n\nSECOND changed.\n')
 
-  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 })
+  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file))
 
   // HEAD took paragraph 0 only
   const head = git(story, 'show', `HEAD:${file}`)
@@ -157,18 +162,18 @@ test('accepting the last pending paragraph leaves the scene matching main', () =
   const before = fs.readFileSync(abs, 'utf8')
   const fm = before.slice(0, before.indexOf('---', 3) + 4)
   fs.writeFileSync(abs, fm + 'Only one paragraph, changed.\n')
-  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 })
+  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file))
   assert.equal(proseDraft().changes.filter(c => c.file === file).length, 0)
 })
 
 test('a paragraph accept is refused on an added scene, and on a bad index', () => {
   reset()
   writeScene(story, 'prose/ch-01/scene-09.md', 'sc.01-9', 'Brand new.')
-  assert.throws(() => proseAcceptParagraph('prose/ch-01/scene-09.md', { side: 'draft', paragraph: 0 }), HttpError)
+  assert.throws(() => proseAcceptParagraph('prose/ch-01/scene-09.md', { side: 'draft', paragraph: 0 }, baseOf('prose/ch-01/scene-09.md')), HttpError)
   const file = 'prose/ch-01/scene-01.md'
   const abs = path.join(story, file)
   fs.writeFileSync(abs, fs.readFileSync(abs, 'utf8') + '\n\nAn extra line.\n')
-  assert.throws(() => proseAcceptParagraph(file, { side: 'draft', paragraph: 99 }), HttpError)
+  assert.throws(() => proseAcceptParagraph(file, { side: 'draft', paragraph: 99 }, baseOf(file)), HttpError)
   reset()
 })
 
@@ -184,7 +189,7 @@ test('rejecting one paragraph puts main back and leaves the rest pending', () =>
   const mainFirst = before.slice(fm.length).split(/\n{2,}/)[0].trim()
   fs.writeFileSync(abs, fm + 'FIRST changed.\n\nSECOND changed.\n')
 
-  proseRejectParagraph(file, { side: 'draft', paragraph: 0 })
+  proseRejectParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file))
 
   const wt = fs.readFileSync(abs, 'utf8')
   assert.match(wt, new RegExp(mainFirst.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
@@ -202,7 +207,7 @@ test('rejecting commits nothing — HEAD is untouched by a refusal', () => {
   const before = fs.readFileSync(abs, 'utf8')
   const fm = before.slice(0, before.indexOf('---', 3) + 4)
   fs.writeFileSync(abs, fm + 'CHANGED first.\n\nCHANGED second.\n')
-  proseRejectParagraph(file, { side: 'draft', paragraph: 1 })
+  proseRejectParagraph(file, { side: 'draft', paragraph: 1 }, baseOf(file))
   assert.equal(git(story, 'rev-parse', 'HEAD').trim(), headBefore)
 })
 
@@ -213,7 +218,7 @@ test('rejecting a paragraph the draft invented removes it', () => {
   const before = fs.readFileSync(abs, 'utf8')
   const paras = before.slice(before.indexOf('---', 3) + 4).split(/\n{2,}/).map(s => s.trim()).filter(Boolean)
   fs.writeFileSync(abs, before.trimEnd() + '\n\nA paragraph main never had.\n')
-  proseRejectParagraph(file, { side: 'draft', paragraph: paras.length })
+  proseRejectParagraph(file, { side: 'draft', paragraph: paras.length }, baseOf(file))
   const wt = fs.readFileSync(abs, 'utf8')
   assert.doesNotMatch(wt, /never had/)
   assert.equal(proseDraft().changes.filter(c => c.file === file).length, 0,
@@ -230,16 +235,16 @@ test('rejecting the last pending change leaves the scene matching main', () => {
   // whatever earlier accept tests committed, so reusing their words would
   // mean writing a body git already has and testing nothing.
   fs.writeFileSync(abs, fm + 'One paragraph, and this one is refused.\n')
-  proseRejectParagraph(file, { side: 'draft', paragraph: 0 })
+  proseRejectParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file))
   assert.equal(proseDraft().changes.filter(c => c.file === file).length, 0)
 })
 
 test('a paragraph reject is refused on an added scene, and on a bad index', () => {
   reset()
   writeScene(story, 'prose/ch-01/scene-09.md', 'sc.01-9', 'Brand new.')
-  assert.throws(() => proseRejectParagraph('prose/ch-01/scene-09.md', { side: 'draft', paragraph: 0 }), HttpError)
-  assert.throws(() => proseRejectParagraph('prose/ch-01/scene-01.md', { side: 'draft', paragraph: 99 }), HttpError)
-  assert.throws(() => proseRejectParagraph('prose/ch-01/nope.md', { side: 'draft', paragraph: 0 }), HttpError)
+  assert.throws(() => proseRejectParagraph('prose/ch-01/scene-09.md', { side: 'draft', paragraph: 0 }, baseOf('prose/ch-01/scene-09.md')), HttpError)
+  assert.throws(() => proseRejectParagraph('prose/ch-01/scene-01.md', { side: 'draft', paragraph: 99 }, baseOf('prose/ch-01/scene-01.md')), HttpError)
+  assert.throws(() => proseRejectParagraph('prose/ch-01/nope.md', { side: 'draft', paragraph: 0 }, baseOf('prose/ch-01/nope.md')), HttpError)
   reset()
 })
 
@@ -264,7 +269,7 @@ test('a paragraph verdict leaves other scenes untouched', () => {
   const otherAbs = path.join(story, other)
   fs.writeFileSync(otherAbs, fs.readFileSync(otherAbs, 'utf8').replace('Another scene entirely.', 'Another scene, changed.'))
 
-  proseRejectParagraph(file, { side: 'draft', paragraph: 0 })
+  proseRejectParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file))
 
   assert.match(fs.readFileSync(otherAbs, 'utf8'), /Another scene, changed\./,
     'the other scene keeps its pending change')
@@ -295,7 +300,7 @@ test('a refusal that would break the scene changes nothing and says so', () => {
   fs.writeFileSync(abs, broken + 'First, rewritten again.\n\nSecond paragraph.\n')
   const working = fs.readFileSync(abs, 'utf8')
 
-  assert.throws(() => proseRejectParagraph(file, { side: 'draft', paragraph: 0 }), HttpError)
+  assert.throws(() => proseRejectParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file)), HttpError)
   assert.equal(fs.readFileSync(abs, 'utf8'), working,
     'the author keeps every word they had, to the byte')
   reset()
@@ -343,7 +348,7 @@ test('accepting an inserted paragraph does not remove one the author never judge
   // The draft inserts NEW between A and B. Under the old scheme this arrived
   // as index 1, which is B on main's side, and committing it dropped B.
   fs.writeFileSync(abs, fm + 'Paragraph A.\n\nParagraph NEW.\n\nParagraph B.\n\nParagraph C.\n')
-  proseAcceptParagraph(file, { side: 'draft', paragraph: 1 })
+  proseAcceptParagraph(file, { side: 'draft', paragraph: 1 }, baseOf(file))
 
   const committed = head()
   assert.match(committed, /Paragraph NEW/, 'the accepted insertion is in the book')
@@ -358,7 +363,7 @@ test('the insertion lands where it was written, not at the end', () => {
   const file = 'prose/ch-01/scene-01.md'
   const { abs, fm, head } = threeParagraphs(file)
   fs.writeFileSync(abs, fm + 'Paragraph A.\n\nParagraph NEW.\n\nParagraph B.\n\nParagraph C.\n')
-  proseAcceptParagraph(file, { side: 'draft', paragraph: 1 })
+  proseAcceptParagraph(file, { side: 'draft', paragraph: 1 }, baseOf(file))
   const paras = head().split(/\n{2,}/).map(x => x.trim()).filter(Boolean)
   assert.deepEqual(paras, ['Paragraph A.', 'Paragraph NEW.', 'Paragraph B.', 'Paragraph C.'])
   reset()
@@ -368,7 +373,7 @@ test('rejecting an inserted paragraph leaves no duplicate behind', () => {
   const file = 'prose/ch-01/scene-01.md'
   const { abs, fm, body } = threeParagraphs(file)
   fs.writeFileSync(abs, fm + 'Paragraph A.\n\nParagraph NEW.\n\nParagraph B.\n\nParagraph C.\n')
-  proseRejectParagraph(file, { side: 'draft', paragraph: 1 })
+  proseRejectParagraph(file, { side: 'draft', paragraph: 1 }, baseOf(file))
 
   const paras = body().split(/\n{2,}/).map(x => x.trim()).filter(Boolean)
   assert.deepEqual(paras, ['Paragraph A.', 'Paragraph B.', 'Paragraph C.'],
@@ -382,7 +387,7 @@ test('a deleted paragraph can be judged at all, and accepting commits the deleti
   fs.writeFileSync(abs, fm + 'Paragraph A.\n\nParagraph C.\n')
   // Named on MAIN's side: the paragraph exists only there, which is exactly
   // why the draft-side scheme could not address it.
-  proseAcceptParagraph(file, { side: 'main', paragraph: 1 })
+  proseAcceptParagraph(file, { side: 'main', paragraph: 1 }, baseOf(file))
 
   const committed = head()
   assert.doesNotMatch(committed, /Paragraph B/, 'the accepted deletion is in the book')
@@ -395,7 +400,7 @@ test('rejecting a deletion puts the paragraph back where it stood', () => {
   const file = 'prose/ch-01/scene-01.md'
   const { abs, fm, body } = threeParagraphs(file)
   fs.writeFileSync(abs, fm + 'Paragraph A.\n\nParagraph C.\n')
-  proseRejectParagraph(file, { side: 'main', paragraph: 1 })
+  proseRejectParagraph(file, { side: 'main', paragraph: 1 }, baseOf(file))
 
   const paras = body().split(/\n{2,}/).map(x => x.trim()).filter(Boolean)
   assert.deepEqual(paras, ['Paragraph A.', 'Paragraph B.', 'Paragraph C.'])
@@ -406,7 +411,7 @@ test('an unchanged paragraph has nothing to judge, and says so', () => {
   const file = 'prose/ch-01/scene-01.md'
   const { abs, fm } = threeParagraphs(file)
   fs.writeFileSync(abs, fm + 'Paragraph A.\n\nParagraph B rewritten.\n\nParagraph C.\n')
-  assert.throws(() => proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }), HttpError)
+  assert.throws(() => proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file)), HttpError)
   reset()
 })
 
@@ -423,7 +428,7 @@ test('a sentence decision reads the right before-text under an insertion', () =>
   // main's index 1. Positionally main[2] does not exist, and the old code
   // refused the decision outright.
   fs.writeFileSync(abs, fm + 'Inserted at the top.\n\nParagraph A.\n\nOne sentence. Two sentence. Three sentence.\n')
-  proseAcceptSentence(file, { paragraph: 2, side: 'draft', sentence: 2 })
+  proseAcceptSentence(file, { paragraph: 2, side: 'draft', sentence: 2 }, baseOf(file))
 
   const committed = git(story, 'show', `HEAD:${file}`)
   assert.match(committed, /Three sentence/, 'the accepted sentence reached the book')
@@ -465,7 +470,7 @@ test('accepting one added sentence commits it and leaves the rest pending', () =
   const draftSents = ['He shipped the oars. ', 'The swell ran black. ', 'Salt burned.']
   assert.equal(draftSents.join(''), 'He shipped the oars. The swell ran black. Salt burned.')
 
-  proseAcceptSentence(file, { paragraph: 0, side: 'draft', sentence: 2 })
+  proseAcceptSentence(file, { paragraph: 0, side: 'draft', sentence: 2 }, baseOf(file))
 
   const head = git(story, 'show', `HEAD:${file}`)
   assert.match(head, /Salt burned\./)              // the accepted sentence landed
@@ -482,7 +487,7 @@ test('rejecting one added sentence drops only it, and never commits', () => {
   const { file, abs } = twoSentenceDraft('He shipped the oars. The swell ran black. Salt burned.\n\nSecond paragraph.\n')
   const headBefore = git(story, 'rev-parse', 'HEAD').trim()
 
-  proseRejectSentence(file, { paragraph: 0, side: 'draft', sentence: 2 })
+  proseRejectSentence(file, { paragraph: 0, side: 'draft', sentence: 2 }, baseOf(file))
 
   const wt = fs.readFileSync(abs, 'utf8')
   assert.doesNotMatch(wt, /Salt burned/)          // the refused sentence is gone
@@ -495,12 +500,12 @@ test('rejecting a deleted sentence puts it back; accepting the deletion keeps it
   // The draft removed the second sentence.
   const { file, abs } = twoSentenceDraft('He shipped the oars.\n\nSecond paragraph.\n')
 
-  proseRejectSentence(file, { paragraph: 0, side: 'main', sentence: 1 })
+  proseRejectSentence(file, { paragraph: 0, side: 'main', sentence: 1 }, baseOf(file))
   assert.match(fs.readFileSync(abs, 'utf8'), /The swell ran heavy\./, 'a refused deletion comes back')
 
   // Now the same deletion, accepted instead.
   const again = twoSentenceDraft('He shipped the oars.\n\nSecond paragraph.\n')
-  proseAcceptSentence(again.file, { paragraph: 0, side: 'main', sentence: 1 })
+  proseAcceptSentence(again.file, { paragraph: 0, side: 'main', sentence: 1 }, baseOf(again.file))
   const head = git(story, 'show', `HEAD:${again.file}`)
   assert.doesNotMatch(head, /The swell ran heavy/, 'an accepted deletion is committed as a deletion')
   assert.match(head, /He shipped the oars\./)
@@ -519,7 +524,7 @@ test('a sentence verdict leaves other scenes untouched', () => {
   const otherAbs = path.join(story, other)
   fs.writeFileSync(otherAbs, fs.readFileSync(otherAbs, 'utf8').replace('Another scene entirely.', 'Another scene, changed.'))
 
-  proseRejectSentence(file, { paragraph: 0, side: 'draft', sentence: 1 })
+  proseRejectSentence(file, { paragraph: 0, side: 'draft', sentence: 1 }, baseOf(file))
 
   assert.match(fs.readFileSync(otherAbs, 'utf8'), /Another scene, changed\./, 'the other scene keeps its pending change')
   reset()
@@ -528,9 +533,9 @@ test('a sentence verdict leaves other scenes untouched', () => {
 test('sentence verbs refuse what they cannot honestly do', () => {
   const { file } = twoSentenceDraft('He shipped the oars. The swell ran black.\n\nSecond paragraph.\n')
   // A sentence nobody changed has no verdict to give.
-  assert.throws(() => proseRejectSentence(file, { paragraph: 0, side: 'draft', sentence: 0 }), HttpError)
+  assert.throws(() => proseRejectSentence(file, { paragraph: 0, side: 'draft', sentence: 0 }, baseOf(file)), HttpError)
   // Nor does an index past the end.
-  assert.throws(() => proseRejectSentence(file, { paragraph: 0, side: 'draft', sentence: 9 }), HttpError)
+  assert.throws(() => proseRejectSentence(file, { paragraph: 0, side: 'draft', sentence: 9 }, baseOf(file)), HttpError)
   reset()
 })
 
@@ -541,7 +546,7 @@ test('a paragraph the draft invented offers no sentence granularity', () => {
   const { file } = twoSentenceDraft(
     'He shipped the oars. The swell ran black.\n\nSecond paragraph.\n\nA paragraph main never had. It has two sentences.\n')
   assert.throws(
-    () => proseRejectSentence(file, { paragraph: 2, side: 'draft', sentence: 0 }),
+    () => proseRejectSentence(file, { paragraph: 2, side: 'draft', sentence: 0 }, baseOf(file)),
     (e: Error) => e instanceof HttpError && /new in the draft/.test(e.message),
     'the refusal names why, rather than reporting a bad index')
   reset()
@@ -551,7 +556,7 @@ test('a failed sentence accept leaves the author\'s words on disk', () => {
   const { file, abs } = twoSentenceDraft('He shipped the oars. The swell ran black.\n\nSecond paragraph.\n')
   const working = fs.readFileSync(abs, 'utf8')
   // Nothing to accept at this identity — it throws before touching git.
-  assert.throws(() => proseAcceptSentence(file, { paragraph: 0, side: 'main', sentence: 5 }), HttpError)
+  assert.throws(() => proseAcceptSentence(file, { paragraph: 0, side: 'main', sentence: 5 }, baseOf(file)), HttpError)
   assert.equal(fs.readFileSync(abs, 'utf8'), working, 'the working tree survives a refusal')
   reset()
 })
@@ -561,7 +566,7 @@ test('a sentence appended after main\'s last one keeps a space at the seam', () 
   // version carries no trailing whitespace, so keeping it and then keeping
   // something after it used to produce `…backs.They sent…`.
   const { file } = twoSentenceDraft('He shipped the oars. The swell ran heavy. Salt burned.\n\nSecond paragraph.\n')
-  proseAcceptSentence(file, { paragraph: 0, side: 'draft', sentence: 2 })
+  proseAcceptSentence(file, { paragraph: 0, side: 'draft', sentence: 2 }, baseOf(file))
   const head = git(story, 'show', `HEAD:${file}`)
   assert.match(head, /ran heavy\. Salt burned\./, 'the seam must carry a space')
   assert.doesNotMatch(head, /heavy\.Salt/)
@@ -610,7 +615,7 @@ test('accepting the last visible change does not leave a whitespace ghost behind
   const { abs, fm } = ghostBaseline(file)
   // One real edit AND a trailing space elsewhere — the ghost's recipe.
   fs.writeFileSync(abs, fm + 'Ghost baseline one, revised.\n\nGhost baseline two. \n')
-  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 })
+  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file))
 
   assert.equal(fs.readFileSync(abs, 'utf8'), git(story, 'show', `HEAD:${file}`),
     'the working tree snaps to HEAD when only invisible whitespace remained')
@@ -623,7 +628,7 @@ test('the restore never eats words the model can see', () => {
   const { abs, fm } = ghostBaseline(file)
   // Two real edits; accept one — the other must survive to the byte.
   fs.writeFileSync(abs, fm + 'Ghost baseline one, revised.\n\nGhost baseline two, also revised.\n')
-  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 })
+  proseAcceptParagraph(file, { side: 'draft', paragraph: 0 }, baseOf(file))
   assert.match(fs.readFileSync(abs, 'utf8'), /Ghost baseline two, also revised\./,
     'unaccepted words are restored exactly, as always')
   reset()
