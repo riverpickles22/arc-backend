@@ -55,6 +55,56 @@ export interface LedgerEntry {
    *  made by a version of the row that no longer exists is labelled as such
    *  and not as the author's record having moved. */
   job?: string
+
+  // ---- asking again (A72-13) --------------------------------------------
+  // A69-13 gave ROUTES a re-issue: the same question, asked again, from where
+  // the record stands now. A pending draft had nothing of the kind — the
+  // author's only way back was to discard it and rebuild the request by hand,
+  // which is the request they already made.
+  //
+  // What makes a replay honest is that arc asks the SAME QUESTION, not a
+  // similar one: the row that answered it, the target it answered about, the
+  // scope inside that target, and the author's own words. All of it recorded
+  // at the landing, because a rendered prompt is not a question — it is one
+  // answer to a question, against a record that has since moved.
+
+  /** The request this draft answered, enough to ask it again. */
+  replay?: {
+    /** Which row answered it (`rowKey`), so a replay cannot become a
+     *  different job than the one the author asked for. */
+    row: string
+    /** What it was about: the scene, or for a new scene the reserved file
+     *  that draft was written into — a replay goes back to ITS target, never
+     *  to the next free slot. */
+    scene?: string
+    file: string
+    /** The scope inside the target: the paragraph range a passage rebuild was
+     *  asked about, by index AT THE TIME — and the first and last paragraphs'
+     *  own words beside it, because an index alone is not an anchor.
+     *
+     *  conventions §14: a mark is never silently reattached to whatever now
+     *  occupies its old index. One paragraph inserted above leaves `[2,3]`
+     *  perfectly in bounds and pointing at somebody else's prose, and a
+     *  rebuild of that under the author's original label is the same fault
+     *  the annotation anchors exist to prevent. A replay resolves the words
+     *  and refuses when they have moved. */
+    paragraphs?: [number, number]
+    /** The first and last paragraph of that range, as they read when it was
+     *  asked about. */
+    span?: [string, string]
+    /** The author's own words, and the craft plan they settled on. */
+    guidance?: string
+    plan?: { moves: { move: string; how: string }[] }
+    /** The notes the pass was handed AND the version each was at, so a
+     *  replay can say what changed about them rather than only that
+     *  something did. */
+    notes?: { id: string; version: string }[]
+  }
+
+  /** The proposal this one replaced, when it came from asking again. Links
+   *  the two identities without a second store: the old entry stays exactly
+   *  where it was, and nothing about it is recast as a decision. */
+  supersedes?: { sha: string; run?: string }
 }
 
 /** Record what the drafting pass just wrote.
@@ -69,7 +119,7 @@ export interface LedgerEntry {
  *  `strict` throws when the entry cannot be written. The adopt path keeps the
  *  old contract — it is recording a decision the author already made, and a
  *  lost entry there costs provenance, not safety. */
-export function recordGenerated(file: string, content: string, meta: { engine?: string; scene?: string; origin?: string; notes?: string[]; run?: string; route?: string; reads?: { id: string; version: string }[]; v?: number; job?: string } = {}, strict = false): void {
+export function recordGenerated(file: string, content: string, meta: Partial<Omit<LedgerEntry, 'at' | 'file' | 'sha'>> = {}, strict = false): void {
   try {
     const sha = sha16(content)
     fs.mkdirSync(DIR(), { recursive: true })

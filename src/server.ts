@@ -13,6 +13,7 @@ import type {
   AgentsResponse,
   AnalyzeResponse,
   AnnotationsResponse,
+  AskAgainDraftPlanResponse,
   ApiErrorResponse,
   AttentionResponse,
   BriefingResponse,
@@ -49,6 +50,8 @@ import type {
 import { STORY } from './config'
 import { inLane } from './lane'
 import { baseOf } from './base'
+import { admitReplay, claimReplay, planReplay, releaseReplay } from './replay'
+import { ROUTE_REPLAY_ROW } from './reroute'
 import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
 import { docsArticles, materialItems, updateMaterial, proseAccept, proseAcceptParagraph, proseRejectParagraph, proseAcceptSentence, proseRejectSentence, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig, commitRecords } from './story'
@@ -987,6 +990,105 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         subject: b.alt,
       })
       json(res, 200, await runRevise({ scene: b.scene, alt: b.alt, request, note: typeof b.note === 'string' ? b.note.trim() : undefined }) satisfies RerouteResponse)
+    },
+  },
+
+  // ASK AGAIN, for a pending draft (A72-13). The same question arc was asked
+  // for these words, asked again from where the record stands now — the row
+  // that answered it, its own target, its own scope, the author's own words.
+  // The replacement runs through the ordinary guarded landing, so the words on
+  // screen stay until the new ones are in, and a failure leaves them.
+  '/api/prose/ask-again': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { file?: unknown; base?: unknown; replaceMine?: unknown; plan?: unknown }
+      if (typeof b.file !== 'string' || !b.file) throw new HttpError(400, 'file required')
+
+      // WHAT IT WOULD DO, asked for on its own and running nothing: the
+      // author reads what would be replaced before anything replaces it.
+      if (b.plan === true) {
+        json(res, 200, { plan: planReplay(b.file) } satisfies AskAgainDraftPlanResponse)
+        return
+      }
+
+      const { entry, replaces } = admitReplay(b.file, b.base, b.replaceMine === true)
+      const r = entry.replay!
+      claimReplay(b.file, entry.run ?? 'unknown')
+      try {
+        // BACK TO THE ROW THAT ANSWERED IT. A replay that chose its own row
+        // would be a different job wearing the author's label, so an entry
+        // whose row arc no longer has is refused rather than approximated.
+        // AN ADOPTED ROUTE is not a redraft, and asking again about it is not
+        // asking for a rebuild. It re-issues the ROUTE the words came from —
+        // the same seed, the same question (A69-13) — and puts the answer
+        // into the same destination through the same guarded adopt path, so
+        // the words on screen stay until the new ones are in.
+        if (r.row === ROUTE_REPLAY_ROW) {
+          const was = entry.route
+          const alt = was ? listAlternatives(r.scene!).find(a => a.id === was) : undefined
+          if (!alt) {
+            throw new HttpError(409,
+              'the way through these words came from is no longer on the scene, so arc cannot ask for it again. '
+              + 'Ask for another way through from where the scene stands now.')
+          }
+          const asked = resolveRequest({
+            said: `ask again for this way through ${r.scene}`,
+            job: 'explore', scope: 'scene', mode: 'one-shot', subject: r.scene!,
+          })
+          const out = await runReroute({ scene: r.scene!, request: asked, reissue: alt })
+          const fresh = out.alternatives[0]
+          if (!fresh) {
+            // Nothing came back, and the words on screen are untouched: the
+            // refusal the pass already rendered is what the author reads.
+            json(res, 200, out satisfies RerouteResponse)
+            return
+          }
+          // Into the same destination, through the door that compares the
+          // version the author was looking at (A72-3) before it writes.
+          adoptAlternative(r.scene!, fresh.id, b.base)
+          json(res, 200, out satisfies RerouteResponse)
+          return
+        }
+
+        // U2's notes revision is the quick depth of the same cell as U3's
+        // clean pass, which is exactly why the row key is what dispatches and
+        // not the job: the two ask different questions about the same scene.
+        if (r.row === 'revise.scene.one-shot.quick') {
+          // The notes that apply NOW are the question, which is the whole
+          // point of asking again after one of them changed.
+          json(res, 200, await runWorkNotes({
+            scene: r.scene ?? '', mode: 'revise',
+            ...(r.guidance ? { guidance: r.guidance } : {}), replaces, source: 'ui',
+          }) satisfies WorkNotesResponse)
+          return
+        }
+        if (r.row === 'revise.scene.one-shot' || r.row === 'revise.selection.one-shot') {
+          // U3's rebuild, at its own scope — the range was re-resolved in
+          // `admitReplay` and refused there if it no longer lands.
+          json(res, 200, await runRedraft({
+            scene: r.scene ?? '', ...(r.paragraphs ? { paragraphs: r.paragraphs } : {}),
+            ...(r.guidance ? { guidance: r.guidance } : {}), replaces,
+          }, r.plan ? { moves: r.plan.moves } : undefined) satisfies DraftSceneResponse)
+          return
+        }
+        // U1 DRAFTS A NEW SCENE, and its replay goes back into ITS OWN slot:
+        // `sceneSlot` picks the next FREE one, which after a landing is the
+        // one after this, so a replay without the target would write a new
+        // scene beside the author's rather than in its place.
+        if (r.row === 'draft.scene.one-shot') {
+          const chapter = proseScenes().find(s => s.scene === r.scene)?.chapter
+          if (!chapter) {
+            throw new HttpError(409,
+              'arc cannot find the chapter that scene belongs to, so it cannot ask for it again. Ask for a new scene from where the chapter stands now.')
+          }
+          json(res, 200, await runDraft(chapter, r.guidance, r.plan ? { moves: r.plan.moves } : undefined,
+            { replaces, file: r.file, sceneId: r.scene! }) satisfies DraftSceneResponse)
+          return
+        }
+        throw new HttpError(409,
+          'arc no longer has the pass that wrote these words, so it cannot ask the same question again. Ask for something new from where the scene stands now.')
+      } finally {
+        releaseReplay(b.file)
+      }
     },
   },
 

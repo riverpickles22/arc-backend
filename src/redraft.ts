@@ -47,7 +47,7 @@ import { READ_MAP, readsFrom, rebaseToLanded } from './reads'
 import { fingerprintsAtWrite } from './reroute'
 import { locksOn } from './locks'
 import { andCapFromContract, endingOf, gateCtx as gateCtxOf, wordCapFromContract } from './reroute'
-import { CRAFT_MOVES, jobFingerprint, stageRuns, type StagedRow } from './registry'
+import { CRAFT_MOVES, jobFingerprint, rowKey, stageRuns, type StagedRow } from './registry'
 import { resolveRequest } from './request'
 import { outcomeSentence } from './run'
 import { closeReceipt, openRowRun } from './rowrun'
@@ -111,6 +111,10 @@ export interface RedraftTarget {
   /** Inclusive paragraph range, draft order. Absent: the whole scene. */
   paragraphs?: [number, number]
   guidance?: string
+  /** ASKING AGAIN (A72-13): the pending proposal this run is replacing, by
+   *  the sha the ledger knows it as. The new entry links to it; the old entry
+   *  stays exactly where it is, and nothing about it becomes a decision. */
+  replaces?: { sha: string; run?: string }
 }
 
 const paragraphsOf = (body: string): string[] =>
@@ -381,6 +385,22 @@ export async function runRedraft(t: RedraftTarget, given?: CraftPlanned | null):
       // of looking current. In the same transaction as the prose: a draft
       // with no provenance reads as the author's own hand.
       reads: rebaseToLanded(readAtLaunch, t.scene), v: READ_MAP, job: jobAtLaunch,
+      // THE REQUEST, so the author can ask it again (A72-13) — the row that
+      // answered it, the scene it was about, the scope inside that scene, and
+      // their own words. Never the rendered brief: that is one answer to the
+      // question, against a record that has since moved.
+      replay: {
+        row: rowKey(row), scene: t.scene, file: scene.file,
+        ...(range ? {
+          paragraphs: [range.from, range.to] as [number, number],
+          // The words, not only the indices: an index is not an anchor.
+          span: [paras[range.from] ?? '', paras[range.to] ?? ''] as [string, string],
+        } : {}),
+        ...(t.guidance ? { guidance: t.guidance } : {}),
+        ...(plan ? { plan: { moves: plan.moves } } : {}),
+        notes: readAtLaunch.filter(r => handed.includes(r.id)),
+      },
+      ...(t.replaces ? { supersedes: t.replaces } : {}),
     }, true))
     if (!landing.ok && landing.why === 'moved') {
       closeReceipt(ctx, 'unfinished')

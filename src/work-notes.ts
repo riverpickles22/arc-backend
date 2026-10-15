@@ -47,7 +47,7 @@ import { fingerprintsAtWrite } from './reroute'
 import { locksOn } from './locks'
 import { sha16 } from './records'
 import { notesAnswerable, runRedraft } from './redraft'
-import { CRAFT_MOVES, jobFingerprint, stageRuns, type Stage, type StagedRow } from './registry'
+import { CRAFT_MOVES, jobFingerprint, rowKey, stageRuns, type Stage, type StagedRow } from './registry'
 import { resolveRequest } from './request'
 import { andCapFromContract, endingOf, gateCtx as gateCtxOf, wordCapFromContract } from './reroute'
 import { clusterNotes, parseConflicts } from './revise'
@@ -68,6 +68,10 @@ export interface WorkNotesTarget {
   guidance?: string
   /** Who asked — the viewer, a terminal, a Claude Code session. */
   source?: Source
+  /** ASKING AGAIN (A72-13): the pending proposal this run is replacing, by
+   *  the sha the ledger knows it as. The new entry links to it; the old entry
+   *  stays exactly where it is, and nothing about it becomes a decision. */
+  replaces?: { sha: string; run?: string }
 }
 
 const count = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
@@ -402,6 +406,15 @@ async function runMinimalRevision(
             readAtLaunch.filter(r => !r.id.startsWith('note') || cluster.notes.some(n => n.id === r.id)),
             live.scene),
           v: READ_MAP, job: jobAtLaunch,
+          // THE REQUEST (A72-13). A revision's question is its notes, so the
+          // replay carries which ones and what they said — a replay checks
+          // the notes that apply NOW against those.
+          replay: {
+            row: rowKey(row), scene: live.scene, file: live.file,
+            ...(said ? { guidance: said } : {}),
+            notes: readAtLaunch.filter(r => cluster.notes.some(n => n.id === r.id)),
+          },
+          ...(t.replaces ? { supersedes: t.replaces } : {}),
         }, true))
       if (!landing.ok && landing.why === 'moved') {
         return nothing('unfinished', movedSentence(live.scene), sofar)

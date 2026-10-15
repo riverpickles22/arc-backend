@@ -113,6 +113,30 @@ repo shares. This file is only what is particular to the backend.
   in the author's words and NEVER removed, and a file that changed under a
   restoration is left alone. Nothing in arc may say or imply that the lane
   holds back the author's own editor.
+- **Asking again is the same question, not a similar one** (A72-13). Every
+  writing row records its REQUEST at the landing (`LedgerEntry.replay`): the
+  row that answered it, its own target — for a new scene, the slot THAT draft
+  went into, never the next free one — the scope inside it, the author's words
+  and the notes it was handed with the version each was at. Never the rendered
+  brief: that is one answer to a question, against a record that has moved.
+  A PASSAGE IS REMEMBERED BY ITS WORDS, not its index: one paragraph inserted
+  above leaves `[2,3]` in bounds and pointing at somebody else's prose, which
+  is the fault conventions §14's anchors exist to prevent.
+  `POST /api/prose/ask-again` re-asks it through `src/replay.ts`, dispatching on
+  the recorded ROW — U3 rebuilds at its re-resolved scope, U2 goes back through
+  the notes that apply now, U1 goes back into its own slot, and an adopted
+  route re-issues the route and adopts the answer through the guarded path.
+  It refuses before it runs: no review token is a 400, a moved one a 409
+  (A72-3); a draft the author has edited OR already partly accepted needs
+  `replaceMine` in as many words — a paragraph accept restores the pending
+  draft exactly, so only the evidence log can see a partial decision — and the
+  refusal carries what would have gone; a passage whose words are gone is
+  refused rather than rebuilt from whatever took their place; and `claimReplay`
+  holds the destination so two replays cannot race a replacement into it. The
+  replacement runs through the ordinary guarded landing, so the words on screen
+  stay until the new ones are in and a failure leaves them. The new entry
+  `supersedes` the old one; the old one stays exactly where it is, and the
+  record moving is never recorded as the author deciding.
 - **A pass's answer never lands over words that moved while it ran** (A72-4).
   Every writing row takes `destinationAt(file)` when it LAUNCHES — including
   the absence of a file it is about to create — and lands through

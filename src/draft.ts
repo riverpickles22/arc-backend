@@ -34,7 +34,7 @@ import { resolveWithin } from './safe-path'
 import { resolveRequest, type ResolvedRequest } from './request'
 import { assembleWritingSlice, weightOf, type WritingSubject } from './slice'
 import { runGates, parseCraftPlan, planSentence, type ProseGateCtx } from './gates'
-import { CRAFT_MOVES, jobFingerprint, stageRuns, type Stage, type StagedRow } from './registry'
+import { CRAFT_MOVES, jobFingerprint, rowKey, stageRuns, type Stage, type StagedRow } from './registry'
 import { openRowRun, closeReceipt } from './rowrun'
 import { endRun, stateOf } from './runs'
 import { endingOf } from './reroute'
@@ -106,7 +106,17 @@ export function leansOnSentence(aged: { id: string; as_of: string }[] | undefine
  *
  *  Throws HttpError(400) on an unknown chapter, on a cell the rows do not
  *  list, and — before a token — on a slice that cannot hold its floor. */
-export async function runDraft(chapterId: string, guidance?: string, given?: CraftPlanned | null): Promise<DraftSceneResponse> {
+export async function runDraft(
+  chapterId: string,
+  guidance?: string,
+  given?: CraftPlanned | null,
+  /** ASKING AGAIN (A72-13): the pending proposal this run replaces, and the
+   *  slot it goes back into. A replay of a drafted scene must land in ITS OWN
+   *  target — `sceneSlot` picks the next free one, which after a landing is
+   *  the one after this, so a replay without it would write a new scene
+   *  beside the author's rather than in its place. */
+  into?: { replaces: { sha: string; run?: string }; file: string; sceneId: string },
+): Promise<DraftSceneResponse> {
   const canon = JSON.parse(canonJson()) as CanonDoc
   const chapter = (canon.chapters ?? []).find(c => c.id === chapterId)
   if (!chapter) throw new HttpError(400, `no chapter ${chapterId}`)
@@ -138,7 +148,7 @@ export async function runDraft(chapterId: string, guidance?: string, given?: Cra
   // drops any file whose frontmatter is broken — a scene the author is
   // halfway through editing — and a slot chosen from the parsed list would
   // hand back that exact path and write over their work (A69-3).
-  const { file, sceneId } = sceneSlot(chapterId, chapter.order, proseFiles())
+  const { file, sceneId } = into ?? sceneSlot(chapterId, chapter.order, proseFiles())
   // THE DESTINATION AT LAUNCH (A72-4). For a new scene that is its ABSENCE,
   // which is a state a target can stop being while the pass runs.
   const dest = destinationAt(file)
@@ -309,6 +319,19 @@ export async function runDraft(chapterId: string, guidance?: string, given?: Cra
     }, () => recordGenerated(file, out.checked.body, {
       engine: currentEngine() ?? 'fixture', scene: sceneId, origin: 'draft', run: run.id,
       reads: rebaseToLanded(readAtLaunch, sceneId), v: READ_MAP, job: jobAtLaunch,
+      // THE REQUEST (A72-13). `file` is the slot THIS draft was written into:
+      // asking again goes back to its own target, never to the next free one,
+      // or a replay quietly becomes a different scene.
+      replay: {
+        row: rowKey(row), scene: sceneId, file,
+        ...(guidance ? { guidance } : {}),
+        ...(plan ? { plan: { moves: plan.moves } } : {}),
+        // A new scene is written from no notes of its own — the scene did not
+        // exist to carry any — so this is what the chapter's record said, and
+        // it is recorded for the same reason the other rows record theirs.
+        notes: readAtLaunch.filter(r => r.id.startsWith('note')),
+      },
+      ...(into ? { supersedes: into.replaces } : {}),
     }, true))
     if (!landing.ok && landing.why === 'moved') {
       closeReceipt(ctx, 'unfinished')

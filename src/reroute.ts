@@ -94,6 +94,10 @@ export const KEEP_ALTERNATIVES = 6
  *  of a route is a judgement about the work, and since A58 a route can carry
  *  the author's own notes. Counts ROUTES, not versions — a route rewritten
  *  three times is one way through. */
+/** The row a replay reads to know an adopted route from a redraft (A72-13).
+ *  It is the explore row's key because that is the pass that made the words. */
+export const ROUTE_REPLAY_ROW = 'explore.scene.one-shot'
+
 export const MAX_ROUTES = 4
 
 /** The chain heads on a scene: versions do not count, a route rewritten
@@ -959,6 +963,15 @@ export function adoptAlternative(scene: string, id: string, base?: unknown): Ado
     recordGenerated(s.file, full, {
       engine: currentEngine() ?? 'sdk', scene, origin: 'reroute', run: alt.run, route: alt.id,
       ...(reads ? { reads } : {}), ...(alt.v ? { v: alt.v } : {}),
+      // THE LINEAGE, so the author can ask again (A72-13). A route's replay
+      // is not a redraft: it re-issues the ROUTE — the same seed, the same
+      // question — and puts the answer into the same destination through this
+      // same guarded path. Recording a row of `explore.scene.one-shot` here
+      // is what tells the replay which of those two it is.
+      replay: {
+        row: ROUTE_REPLAY_ROW, scene, file: s.file,
+        ...(alt.guidance ? { guidance: alt.guidance } : {}),
+      },
     })
     return out
   })
