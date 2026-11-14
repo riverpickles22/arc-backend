@@ -219,13 +219,63 @@ export function readJudgments(): Judgment[] {
   try {
     return fs.readFileSync(evidencePath(), 'utf8').split('\n').filter(Boolean)
       .map(l => JSON.parse(l) as Judgment)
-      // Route dispositions share the log and are not pairs: the learning
-      // pass must never read one as an edit.
-      .filter(e => (e as unknown as { kind?: string }).kind !== 'route')
+      // Route dispositions and put-backs share the log and are not pairs:
+      // the learning pass must never read one as an edit. A judgment has no
+      // `kind`; every other record kind names itself.
+      .filter(e => (e as unknown as { kind?: string }).kind === undefined)
   } catch {
     return []
   }
 }
+
+// ---- a decision put back (A72-8) ----------------------------------------------
+//
+// The reversal of ONE accept, as its own record kind: it names the decision
+// it reverses and is never a prose pair — a Verdict carrying "put back" would
+// read, to the learning pass, as the author accepting something, which is
+// the opposite of what happened. The original record stays exactly as it
+// was; this one is the link, and history is read from the two together.
+
+export interface PutBack {
+  at: string
+  kind: 'put-back'
+  /** this reversal's own id, minted like any decision's */
+  decision: string
+  /** the accept it reverses */
+  reverses: string
+  file: string
+  scene: string | null
+  granularity: Granularity
+  paragraph?: number | null
+  /** the preview token the author confirmed — what the reversal was made about */
+  base: string
+  /** the file's token once it landed */
+  after: string
+  touched: { changed: number; added: number; removed: number }
+}
+
+export function recordPutBack(p: Omit<PutBack, 'at' | 'kind'>): void {
+  const entry: PutBack = { at: new Date().toISOString(), kind: 'put-back', ...p }
+  fs.mkdirSync(path.dirname(evidencePath()), { recursive: true })
+  // THROWS, unlike the judgments: a reversal with no record is one that can
+  // be applied twice, so a failure to record is a failure to land, and the
+  // lane puts the prose back.
+  fs.appendFileSync(evidencePath(), JSON.stringify(entry) + '\n')
+}
+
+export function readPutBacks(): PutBack[] {
+  try {
+    return fs.readFileSync(evidencePath(), 'utf8').split('\n').filter(Boolean)
+      .map(l => JSON.parse(l) as PutBack)
+      .filter(e => e.kind === 'put-back')
+  } catch {
+    return []
+  }
+}
+
+// `standingJudgments` — every judgment less the accepts that were put back —
+// lives in put-back.ts, because a reversal counts only once its commit
+// exists, and that is a question for git, which this file never asks.
 
 // ---- the pinned baseline ------------------------------------------------
 //

@@ -42,6 +42,7 @@ import { currentEngine } from './engine'
 import { runGates, type ProseGateCtx } from './gates'
 import { HttpError } from './http'
 import { recordGenerated } from './ledger'
+import { landingSentence } from './refusal'
 import { destinationAt, landOrKeep, movedSentence, restoreIfOurs, trialValidate } from './landing'
 import { READ_MAP, readsFrom, rebaseToLanded } from './reads'
 import { fingerprintsAtWrite } from './reroute'
@@ -410,7 +411,8 @@ export async function runRedraft(t: RedraftTarget, given?: CraftPlanned | null):
     if (!landing.ok) {
       closeReceipt(ctx, 'could not run')
       endRun(run.id, 'could not run', { error: landing.output })
-      throw new HttpError(500, `arc could not write that pass into your story — ${landing.output.split('\n')[0]}. Nothing was written.`)
+      console.error('[info] a pass could not land:\n' + landing.output)
+      throw new HttpError(500, landingSentence('that pass', landing.output))
     }
     landed = true
     closeReceipt(ctx, 'landed')

@@ -12,8 +12,10 @@ import type { AnnotationLike, CreateAnnotationRequest, ResolvedAnnotation } from
 import { orphanedAnnotations, paragraphsOf, resolveAnnotations } from 'arc-canon-graph/annotations.ts'
 import { STORY } from './config'
 import { HttpError } from './http'
-import { proseScenes } from './story'
-import { generatedFor } from './ledger'
+import { proseDraft, proseScenes } from './story'
+import { generatedFiles, generatedFor } from './ledger'
+import { readJudgments } from './evidence'
+import { answeredStates, attributionOf, bodyParagraphs, noteInstruction, recordNoteResolution } from './note-lifecycle'
 
 const DIR = () => path.join(STORY, 'annotations')
 
@@ -208,22 +210,100 @@ export function openNotesOn(scene: string): ResolvedAnnotation[] {
 export function closeAnsweredNotes(files: string[]): string[] {
   const closed: string[] = []
   for (const file of files) {
-    let ids: string[] = []
-    try { ids = generatedFor(file)?.entry.notes ?? [] } catch { continue }
-    for (const id of ids) {
+    let gen: ReturnType<typeof generatedFor>
+    try { gen = generatedFor(file) } catch { continue }
+    if (!gen) continue
+    const attribution = attributionOf(gen.entry)
+    // Only an open note closes. One the author already resolved or dropped
+    // is theirs and stays as they left it; a keypoint is a marker, never a
+    // request; a note arc wrote was never an instruction (A72-7).
+    const closable = (note: ResolvedAnnotation | undefined): note is ResolvedAnnotation =>
+      !!note && (note.kind ?? 'note') === 'note' && (note.by ?? 'author') !== 'agent'
+      && (!note.status || note.status === 'open' || note.status === 'working')
+    const resolve = (id: string, version: string, spans: number): void => {
       try {
-        const note = annotations().find(n => n.id === id)
-        // Only an open note closes. One the author already resolved or
-        // dropped is theirs and stays as they left it; a keypoint is a
-        // marker, never a request, and is never touched.
-        if (!note || (note.kind ?? 'note') !== 'note') continue
-        if (note.status && note.status !== 'open' && note.status !== 'working') continue
         updateAnnotation(id, { status: 'resolved' })
         closed.push(id)
+        recordNoteResolution({ note: id, version, file, decision: lastDecisionOn(file), spans })
       } catch (e) {
         console.error(`[warn] could not close ${id} after the accept (the prose is in):`, e)
       }
     }
+    if (attribution) {
+      // AT PARAGRAPH GRAIN (A72-7): a note resolves when ITS spans are in the
+      // book, whatever else in the scene still waits; a span that is gone —
+      // rejected, discarded, replaced by hand — leaves it open for the author.
+      let main: string[] = [], draft: string[] = []
+      try { ({ main, draft } = sceneSides(file)) } catch { continue }
+      // the scene is at HEAD only once the accept committed it, which is what
+      // makes this a decision and not a write
+      if (!main.length && !draft.length) continue
+      const notes = annotations()
+      for (const s of answeredStates(attribution, main, draft, id => notes.find(n => n.id === id))) {
+        if (s.state !== 'accepted') continue
+        const note = notes.find(n => n.id === s.id)
+        if (!closable(note)) continue
+        resolve(s.id, attribution.find(a => a.id === s.id)!.version, s.of)
+      }
+      continue
+    }
+    // AN ENTRY FROM BEFORE ATTRIBUTION WAS RECORDED closes as it always did:
+    // every handed note, once the scene has nothing pending left.
+    try { if (proseDraft().changes.some(c => c.file === file)) continue } catch { continue }
+    for (const id of gen.entry.notes ?? []) {
+      const note = annotations().find(n => n.id === id)
+      if (!closable(note)) continue
+      resolve(id, noteInstruction(note), 0)
+    }
   }
   return closed
+}
+
+/** The two sides of a scene for the lifecycle: the book and the working
+ *  tree, as paragraphs. The draft layer already holds the book's side of
+ *  every pending scene; a scene with nothing pending is its own book side.
+ *  No git here — the lane's files are the only ones that spawn it. */
+function sceneSides(file: string): { main: string[]; draft: string[] } {
+  const abs = path.join(STORY, file)
+  const draft = fs.existsSync(abs) ? bodyParagraphs(fs.readFileSync(abs, 'utf8')) : []
+  const change = proseDraft().changes.find(c => c.file === file)
+  if (!change) return { main: draft, draft }
+  return { main: change.main ? paragraphsOf(change.main.body) : [], draft }
+}
+
+/** The decision that just landed on this file, for the resolution record —
+ *  the latest judgment the evidence log holds for it. */
+function lastDecisionOn(file: string): string | null {
+  try { return readJudgments().filter(j => j.file === file).at(-1)?.decision ?? null } catch { return null }
+}
+
+/** THE SWEEP, at startup (A72-7, criterion 5): resolution runs after an
+ *  accept returns, so a process that died between the commit and the close
+ *  left a note open that the book had already answered. Every answer here
+ *  is derived from disk, so asking again over every file the ledger knows
+ *  closes exactly those and nothing twice. */
+export function settleAnsweredNotes(): string[] {
+  try { return closeAnsweredNotes(generatedFiles()) } catch { return [] }
+}
+
+/** WHERE EACH HANDED NOTE'S CHANGE STANDS for one pending scene (A72-7) —
+ *  what the rail reads. Only the states the author can act on are served:
+ *  waiting (the badge), partly (some of it is in). Gone, edited and
+ *  nothing-produced carry no badge: the draft does not answer that note. */
+export function answeredNow(change: { file: string; main: { body: string } | null }): { id: string; state: 'waiting' | 'partly'; accepted: number; of: number }[] | null {
+  let gen: ReturnType<typeof generatedFor>
+  try { gen = generatedFor(change.file) } catch { return null }
+  const attribution = attributionOf(gen?.entry)
+  // NULL when there is no provenance to read, and an EMPTY LIST when there
+  // is and no note's change is still pending — the two are different on the
+  // wire: the viewer falls back to the handed list only for the first.
+  if (!gen || !attribution) return null
+  const abs = path.join(STORY, change.file)
+  let draft: string[]
+  try { draft = bodyParagraphs(fs.readFileSync(abs, 'utf8')) } catch { return [] }
+  const main = change.main ? paragraphsOf(change.main.body) : []
+  const notes = annotations()
+  return answeredStates(attribution, main, draft, id => notes.find(n => n.id === id))
+    .filter((s): s is typeof s & { state: 'waiting' | 'partly' } => s.state === 'waiting' || s.state === 'partly')
+    .map(s => ({ id: s.id, state: s.state, accepted: s.accepted, of: s.of }))
 }

@@ -6,6 +6,7 @@ import { currentEngine } from './engine'
 import { createArcServer } from './server'
 import { registryStatus } from './registry'
 import { unfinishedRuns } from './run'
+import { settleAnsweredNotes } from './annotations'
 import { startWatcher } from './watch'
 
 // Probe for the claude CLI here, before anyone is listening. The probe itself
@@ -24,6 +25,9 @@ const rows = registryStatus().map(r => `${r.key} ${r.status}`).join(' · ')
 // Runs a killed backend left behind are found here, at startup, and named by
 // the briefing as *did not finish* (A67-3).
 const unfinished = unfinishedRuns()   // nothing is live yet: this is startup
+// A note the book answered before a crash could close it closes now (A72-7).
+const settledNotes = settleAnsweredNotes()
+if (settledNotes.length) console.log(`  resolved ${settledNotes.length} note${settledNotes.length === 1 ? '' : 's'} the book had already answered`)
 console.log('arc-backend\n' + describeConfig() + `\n  style  ${describeStyle()}` + `\n  engine ${engine ?? 'none'}` + `\n  rows   ${rows}`
   + (unfinished.length ? `\n  runs   ${unfinished.length} did not finish: ${unfinished.map(r => r.id).join(', ')}` : ''))
 createArcServer().listen(PORT, () => {

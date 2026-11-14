@@ -50,9 +50,15 @@ fs.writeFileSync(COUNTER, '')
 process.env.STUB_COUNTER = COUNTER
 process.env.PATH = `${installStubCli({
   name: 'slice1',
+  // EXACTLY ONE CHILD IS FIRST, and it is decided atomically. Reading a
+  // counter and then appending to it is two steps: two seeds launched
+  // together can both read 0 and both answer at once, which is why this
+  // test used to fail under load and pass alone. An exclusive create is
+  // one step — the kernel picks the winner, and the loser sleeps.
   before: [
-    "const fsx = require('node:fs'); const n = fsx.readFileSync(process.env.STUB_COUNTER, 'utf8').length; fsx.appendFileSync(process.env.STUB_COUNTER, 'x')",
-    "if (n > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20000)",
+    "const fsx = require('node:fs'); let first = false",
+    "try { fsx.writeFileSync(process.env.STUB_COUNTER + '.first', 'x', { flag: 'wx' }); first = true } catch { first = false }",
+    "if (!first) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20000)",
   ].join('\n  '),
   answer: JSON.stringify(ANSWER),
 })}${path.delimiter}${process.env.PATH}`
@@ -103,16 +109,28 @@ test('a route stopped from the viewer ends cancelled ON THE RECEIPT, and what la
   // arrives, which is the only shape in which "what landed stays" means
   // anything.
   fs.writeFileSync(COUNTER, '')
+  fs.rmSync(`${COUNTER}.first`, { force: true })   // this run needs its own winner
+  // the test above left a route on this scene; what matters here is the one
+  // THIS run lands
+  const before = ((await (await get('/api/prose/reroute?scene=sc.02-1')).json()) as { alternatives: unknown[] }).alternatives.length
   const request = post('/api/prose/reroute', { scene: 'sc.02-1', count: 2 })
     .then(r => r.json() as Promise<{ alternatives: { id: string }[]; refused: { seed: string; outcome?: string }[]; run?: string }>)
 
+  // WAIT FOR THE SHAPE THIS TEST IS ABOUT: one seed landed, the other still
+  // working. Stopping as soon as the run is merely *listed* is a race — the
+  // fast seed's answer may not have been written yet, and then "what landed
+  // stays" is a claim about nothing. Both conditions, or the wait fails.
   let id: string | undefined
-  for (let i = 0; i < 60 && !id; i++) {
+  let landed = 0
+  for (let i = 0; i < 100 && !(id && landed); i++) {
     await sleep(100)
     const { runs } = await (await get('/api/runs')).json() as { runs: { id: string; state: string; subject?: string }[] }
     id = runs.find(r => r.subject === 'sc.02-1' && r.state === 'running')?.id
+    const { alternatives } = await (await get('/api/prose/reroute?scene=sc.02-1')).json() as { alternatives: unknown[] }
+    landed = alternatives.length - before
   }
   assert.ok(id, 'the run is listed while it works, which is what makes it stoppable')
+  assert.equal(landed, 1, 'and one seed of THIS run has landed, which is what makes "what landed stays" mean anything')
 
   const stopped = await post(`/api/runs/${id}/stop`, {})
   assert.equal(stopped.status, 200)

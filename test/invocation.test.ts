@@ -40,9 +40,9 @@ test('a circular settings object gets the curated refusal, not a raw TypeError',
 })
 
 test('a withholding pass gets --tools "" even when the caller says otherwise', () => {
-  const args = buildCliArgs({ pass: 'analyze', noTools: false })
+  const args = buildCliArgs({ pass: 'judge', noTools: false })
   const i = args.indexOf('--tools')
-  assert.notEqual(i, -1, 'analyze must always run tools-off')
+  assert.notEqual(i, -1, 'judge must always run tools-off')
   assert.equal(args[i + 1], '')
   // capture is registered withholding ahead of its CLI path existing
   assert.ok(buildCliArgs({ pass: 'capture' }).includes('--tools'))
@@ -59,7 +59,7 @@ test('an unregistered pass throws instead of launching with an undeclared postur
 
 test('sessions are refused for withholding passes, in code', () => {
   assert.throws(() => assertSessionAllowed('capture'), /cannot unsee/)
-  assert.throws(() => assertSessionAllowed('analyze'), /cannot unsee/)
+  assert.throws(() => assertSessionAllowed('judge'), /cannot unsee/)
   // material is the non-withholding row whose own answer is still no
   assert.throws(() => assertSessionAllowed('material'), /does not allow/)
   // AND NOTHING LEFT HERE ALLOWS ONE (A69-9). A session is for an iterative
@@ -116,7 +116,7 @@ test('every reading pass runs tools-off on the CLI engine (A55-4)', () => {
   // path, only because the prompt asked. `suggest` left this list with
   // A69-10: rephrase and synonyms carry their envelope on their own rows,
   // where the type refuses a toolbelt rather than a pin forbidding one.
-  for (const pass of ['analyze', 'judge', 'intent', 'lenses', 'bootstrap'] as const) {
+  for (const pass of ['judge', 'intent', 'lenses', 'bootstrap'] as const) {
     assert.equal(PASS_REGISTRY[pass].withholding, true, `${pass} must be withholding`)
     const args = buildCliArgs({ pass })
     const i = args.indexOf('--tools')

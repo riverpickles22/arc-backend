@@ -25,6 +25,7 @@ import { canonJson, validateStory } from './canon'
 import { currentEngine } from './engine'
 import { styleContract } from './style'
 import { recordGenerated } from './ledger'
+import { landingSentence } from './refusal'
 import { destinationAt, landOrKeep, movedSentence, restoreIfOurs } from './landing'
 import { READ_MAP, readsFrom, rebaseToLanded } from './reads'
 import { fingerprintsAtWrite } from './reroute'
@@ -341,13 +342,18 @@ export async function runDraft(
     if (!landing.ok) {
       closeReceipt(ctx, 'could not run')
       endRun(run.id, 'could not run', { error: landing.output })
-      throw new HttpError(500, `arc could not write that draft into your story — ${landing.output.split('\n')[0]}. Nothing was written.`)
+      // THE CHECK IS READ, NOT QUOTED (A72-11): the landing's refusal is
+      // usually the story's own validator, and its summary line is not the
+      // author's language.
+      console.error('[info] a draft could not land:\n' + landing.output)
+      throw new HttpError(500, landingSentence('that draft', landing.output))
     }
     landed = true
     closeReceipt(ctx, 'landed')
     endRun(run.id, 'landed', { landed: [sceneId] })
     return {
-      reply: `Drafted ${sceneId}. It is waiting in ${file} — read it, then accept or discard.${leansOnSentence(receipt.slice?.leaned_on)}`,
+      // the scene, not the path: the author has scenes (A72-11)
+      reply: `Drafted ${sceneId}. It is waiting beside the scene in arc — read it, then accept or discard.${leansOnSentence(receipt.slice?.leaned_on)}`,
       actions: [{ tool: 'draft', path: file, ok: true }],
       file,
       run: run.id,

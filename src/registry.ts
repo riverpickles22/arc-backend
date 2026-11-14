@@ -104,13 +104,19 @@ export type GateId =
   /** the ids the briefing says the prose rests on: a proposed or material id
    *  named there as settled is refused (A69-6) */
   | 'leaned-on'
-  /** designed, slice 3: a minimal revision that changed a paragraph no
-   *  handed note anchors to is refused. Declared on U2's row now so the
-   *  receipt says what is NOT yet checked (A69-9); it judges nothing until
-   *  slice 3 builds it. */
+  /** a minimal revision that changed a paragraph no handed note anchors to
+   *  is refused — measured since A72-6 against the scene the pass was
+   *  handed (`blast-radius.ts`). Declared on U2's row before it was built so
+   *  the receipt said what was not yet checked (A69-9). */
   | 'blast-radius'
   /** three to six drop-in strings, each with something in it (A69-10) */
   | 'options-shape'
+  /** every claim a reading makes must cite something the brief carried — an
+   *  id from the slice, or a paragraph of the scene it read. A claim that
+   *  cites nothing arc can place is dropped and counted, never refused:
+   *  a reading that over-reaches loses that reading, not the whole answer
+   *  (U9, A72-10; §11's citation gate) */
+  | 'citations'
 
 /** How the answer is shaped, so a gate can read it without a model. */
 /** THE CRAFT MOVES (A69-4; §4, "The craft plan"). Q11, decided by the author
@@ -160,6 +166,10 @@ export type AnswerShape =
   /** the revised scene body alone: no frontmatter, no briefing, because a
    *  minimal revision answers instructions and has nothing to argue (A69-9) */
   | 'body-only'
+  /** one fenced JSON array of findings about a pending change, each citing
+   *  what it rests on — a reading that writes nothing, whose unsupported
+   *  claims are DROPPED rather than refusing the answer (U9, A72-10) */
+  | 'reading'
   /** one fenced JSON array of drop-in strings — three to six wordings the
    *  author picks one of, or none. The pass writes nothing, so there is no
    *  prose to gate and no briefing to argue: what the gates do here is drop
@@ -836,10 +846,11 @@ fences, no briefing.`
  *  list, less the two the register makes meaningless — there is no briefing,
  *  so nothing owes a leans-on block — plus the one that defines "minimal".
  *
- *  `blast-radius` is DESIGNED, SLICE 3. It is declared here now so that
- *  every receipt says what is not yet checked: a gate the author cannot see
- *  is a gate the author cannot ask about, and "minimal" is the claim this
- *  row makes loudest. It judges nothing until slice 3 builds it. */
+ *  `blast-radius` is BUILT (A72-6, 2026-10-15): the answer's changes are
+ *  attributed paragraph by paragraph to the scene the pass was handed and
+ *  judged against what the author's notes license. It was declared here
+ *  before it was built so every receipt said "minimal" was not yet checked;
+ *  now the receipt records the licensed scope and the measured changes. */
 export const MINIMAL_REVISION_GATES: readonly GateId[] = [
   'locks', 'lock-order', 'validator', 'withhold-literals', 'blast-radius', 'and-chain', 'sentence-length',
 ]
@@ -997,6 +1008,84 @@ const MENU_BUDGET = { outputTokens: 1_500, wallClockMs: 5 * 60 * 1000, inputToke
  *  than FASTER; a rephrase is both, but A69-9's minimal revision is only the
  *  first. Recorded on A69-10 for the author, beside A69-9's. Synonyms need
  *  none of this: `explore · selection · one-shot` collides with nothing. */
+// ---- U9 · Inspect · scene · the pending diff -------------------------------
+
+/** U9's rules. The reading that already existed as a prompt (`ANALYZE_RULES`,
+ *  removed with its bare seam call in A72-10), now answering in a shape arc
+ *  can check: findings that cite what they rest on. */
+export const INSPECT_RULES = `You are arc's READING PASS. The author has a pending change to ONE scene —
+prose they have not yet accepted into their book — and wants to know what it
+would do to the story BEFORE they decide.
+
+YOU HAVE NO TOOLS. Nothing is fetched, nothing is read, nothing is written by
+you. Everything you may know is in this brief.
+
+YOU WRITE NOTHING AND PROPOSE NOTHING. You do not rewrite the prose, suggest
+replacements, or file anything to the record. You produce one reading. The
+author may ignore every word of it and accept the change anyway.
+
+THE REGISTER RULE (binding, conventions §11): everything you say is an ARGUED
+claim — a reading of prose, offered with its evidence, for a human to judge.
+Never state a claim with the confidence of a proven fact. Where you are
+unsure, say so plainly rather than hedging into vagueness. If the prose is
+clean on a dimension, say nothing about it: do not manufacture findings.
+
+EVERY CLAIM CITES, OR IT IS DROPPED. Arc resolves your citations against what
+this brief carried. A claim whose citations arc cannot place is dropped from
+the reading and the author is told how many were dropped. You may cite:
+- an id from the record below, exactly as it is written there (\`char.ines\`,
+  \`event.the-wreck\`, \`place.whitcombe-light\`);
+- a paragraph of the pending scene, as \`¶3\` — counting the blank-line
+  separated paragraphs of the scene as this change proposes it.
+
+ANSWER WITH ONE FENCED JSON ARRAY AND NOTHING ELSE. Each element:
+{"section": "...", "claim": "one or two sentences", "cites": ["¶3", "char.ines"]}
+
+\`section\` is one of, in this order:
+- "what this changed" — the canon this prose would propose if accepted: facts
+  established, state changes, relationship shifts, events depicted. Say what
+  is STATED on the page rather than what is merely implied.
+- "contract" — each must_establish the scene's contract names: met, partly
+  met, or not met, citing the line that does it. Each must_withhold: honored,
+  or leaked, citing the leak.
+- "conflicts" — anything in the prose that contradicts the record below:
+  dates, locations, who was present, what a character could know at that
+  moment. Cite both sides: the paragraph and the record id.
+- "to verify" — period or historical assertions a human should check, and
+  inventions the prose introduces that the record does not know about.
+- "style" — how the prose holds against the author's own style contract
+  below, item by item. Their contract, not generic craft advice.
+
+An empty array is a real answer and a good one: it says this change does
+nothing the author needs to know about before deciding.`
+
+/** U9's slice: the record a reading is judged against, and nothing it could
+ *  write from. The pending diff itself is the subject and comes with the ask,
+ *  not from the assembler. */
+export const INSPECT_SLICE: SliceSpec = {
+  id: 'inspect',
+  layers: ['contract', 'canon', 'promoted-rules', 'locks'],
+  dropOrder: ['locks', 'promoted-rules'],
+  floor: ['contract', 'canon'],
+}
+
+/** U9 · Inspect · scene · one-shot (A72-10). The ceilings are A69's, declared
+ *  on the row: a reading is one pass over one scene and the record behind it.
+ *  It is NOT withholding — the pending prose is its subject, and a leak gate
+ *  over the thing you are asked to read would refuse every honest brief. */
+export const ROW_INSPECT_SCENE: SealedRow = {
+  job: 'inspect', scope: 'scene', mode: 'one-shot', depth: 'standard', stage: null,
+  pattern: 'sealed',
+  withholding: false,
+  slice: INSPECT_SLICE,
+  envelope: ROUTE_ENVELOPE,
+  gates: ['citations'],
+  answer: 'reading',
+  budget: { outputTokens: 12_000, wallClockMs: 20 * 60 * 1000, inputTokens: 40_000 },
+  rules: INSPECT_RULES,
+  fixtures: ['lands', 'drops'],
+}
+
 export const ROW_REPHRASE: SealedRow = {
   job: 'revise', scope: 'selection', mode: 'one-shot', depth: 'quick', stage: null,
   pattern: 'sealed',
@@ -1031,6 +1120,9 @@ export const ROWS: readonly Row[] = [
   // the standard register rather than a lighter one.
   ROW_REVISE_SCENE, ROW_REVISE_SELECTION, ROW_REVISE_SCENE_STAGED, ROW_REPHRASE,
   ROW_SYNONYMS,
+  // The first row that writes nothing at all: a reading of the pending diff
+  // (U9, A72-10).
+  ROW_INSPECT_SCENE,
 ]
 
 /** The row for a cell, or nothing: a job × scope × mode the rows do not
@@ -1047,6 +1139,17 @@ export function findRow(cell: { job: Job; scope: Scope; mode: Mode; depth?: Dept
  *  it; a proposal whose fingerprint no longer matches is "written by an
  *  older arc"; a row is attended only by receipts that match. The fixture
  *  list is left out: recording a fixture does not change the job. */
+/** THE ROW A PROPOSAL NAMES, by the key it recorded (A72-5). A proposal
+ *  carries `replay.row` — `rowKey` as it was at the landing — and comparing
+ *  its recorded job fingerprint against this row's current one is what tells
+ *  "the record moved" from "the pass that wrote this has changed". Undefined
+ *  when arc no longer has a row by that key, which is the same fact stated
+ *  more strongly. */
+export function rowByKey(key: string): Row | undefined {
+  return ROWS.find(r => rowKey(r) === key)
+    ?? ROWS.find(r => 'stages' in r && (r as StagedRow).stages.some(st => rowKey({ ...r, stage: st.id }) === key))
+}
+
 export function jobFingerprint(row: Row): string {
   const withoutFixtures = JSON.stringify(row, (key, value) => (key === 'fixtures' ? undefined : value))
   return sha16(withoutFixtures)

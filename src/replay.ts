@@ -29,7 +29,7 @@ import { STORY } from './config'
 import { HttpError } from './http'
 import { assertBase } from './base'
 import { generatedFor } from './ledger'
-import { readJudgments } from './evidence'
+import { standingJudgments } from './put-back'
 import { annotations } from './annotations'
 import { noteVersion } from './reads'
 import { proseScenes } from './story'
@@ -101,7 +101,9 @@ export const theirsNow = (file: string, wrote: string): boolean => {
  *  the author reads which paragraph they already took. */
 export function decidedPartly(file: string, since: string): string[] {
   try {
-    return readJudgments()
+    // standing only: an accept the author put back is not a decision the
+    // replay has to ask about replacing (A72-8)
+    return standingJudgments()
       .filter(j => j.file === file && j.at > since
         && (j.granularity === 'paragraph' || j.granularity === 'sentence')
         && (j.verdict === 'accepted' || j.verdict === 'approved' || j.verdict === 'rejected'))

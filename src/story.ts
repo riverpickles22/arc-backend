@@ -13,6 +13,7 @@ import type { AlignedParagraph, AlignedSentence, DocArticle, MaterialItem, Prose
 import { alignParagraphs, alignSentences, mainInsertionPoint, splitSentences } from 'arc-canon-graph'
 import { clearGenerated, generatedFor } from './ledger'
 import { EVIDENCE_REL, clearBaseline, counterpartOf, pinBaseline, recordJudgment, type Granularity, type Verdict } from './evidence'
+import { editRefusal } from './refusal'
 import { STORY } from './config'
 import { HttpError } from './http'
 import { assertUnlocked, locksOn } from './locks'
@@ -20,6 +21,8 @@ import { resolveWithin } from './safe-path'
 import { git, inLane, type Tx } from './lane'
 import { assertBase, assertBases, baseOf, tokenFor } from './base'
 import { fingerprintsNow as readsNow, staleAgainst } from './reads'
+import { candidates } from './landing'
+import { jobFingerprint, rowByKey } from './registry'
 // The style projection a pass is shown lives with the routes; the import is
 // used inside functions only, so the cycle never runs at module init.
 import { styleForPass } from './reroute'
@@ -204,7 +207,10 @@ export function updateMaterial(
     fs.writeFileSync(hit.abs, prev)
     const wasBroken = validateStory()
     if (wasBroken.ok) {
-      throw new HttpError(422, `that change does not validate — nothing was written:\n${wasBroken.output}`)
+      // THE CHECK'S OWN WORDS ARE NOT THE AUTHOR'S (A72-11). The fault is
+      // named in their terms; the tool's summary line goes to the log.
+      console.error('[info] the story validator refused a material edit:\n' + wasBroken.output)
+      throw new HttpError(422, editRefusal(wasBroken.output))
     }
     // Already failing. Not this edit's doing, and not this route's business.
     fs.writeFileSync(hit.abs, canonicalYaml(next))
@@ -294,7 +300,10 @@ export function proseDraft(): ProseDraft {
           // all the annotations and the locks and composes the style
           // contract; doing that once per pending change made a listing cost
           // O(changes × prose), which a chapter mid-revision feels.
-          const stale = staleAgainst(gen.entry, mapFor(gen.entry.scene ?? ''))
+          // AND WHETHER THE PASS ITSELF HAS CHANGED: the row the entry names,
+          // fingerprinted as it stands now, against the fingerprint it recorded.
+          const row = gen.entry.replay?.row ? rowByKey(gen.entry.replay.row) : undefined
+          const stale = staleAgainst(gen.entry, mapFor(gen.entry.scene ?? ''), row ? jobFingerprint(row) : undefined)
           if (stale) change.stale = stale
         }
       }
@@ -309,7 +318,9 @@ export function proseDraft(): ProseDraft {
       .map(l => { const [hash, date, ...rest] = l.split('\t'); return { hash, date, subject: rest.join('\t') } })
   } catch { /* no commits yet */ }
 
-  return { git: true, changes, history }
+  // What a pass wrote and could not put in (A72-4): beside the reading, never
+  // in it — none of this is in the manuscript and none of it can be accepted.
+  return { git: true, changes, history, candidates: candidates() }
 }
 
 /** The scenes an accept is allowed to ratify, checked before anything is
@@ -357,7 +368,11 @@ export function proseAccept(message: string | undefined, files: string[], bases:
 
 function acceptScenes(tx: Tx, message: string | undefined, files: string[], bases: unknown): { hash: string; files: string[] } {
   const all = proseDraft()
-  if (!all.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer to accept')
+  // THE AUTHOR'S LANGUAGE, here too (A72-11). Arc keeps unaccepted words
+  // beside the book, and a story set up without that has nowhere to keep
+  // them — which is a fact about their story, not about a tool they never
+  // asked about.
+  if (!all.git) throw new HttpError(400, 'this story has nowhere to keep unaccepted words, so there is nothing waiting to be accepted. Open it with arc once to set that up.')
   if (!all.changes.length) throw new HttpError(409, 'no draft changes to accept')
   const wanted = acceptScope(files, all.changes)
   // EVERY base before ANY mutation (A72-3): one scene that moved refuses the
@@ -493,7 +508,7 @@ interface ParagraphTarget { side: 'main' | 'draft'; paragraph: number }
  *  paragraph of main a draft paragraph answers to. */
 function paragraphContext(file: string) {
   const draft = proseDraft()
-  if (!draft.git) throw new HttpError(400, 'this story is not a git repository — there is no draft layer')
+  if (!draft.git) throw new HttpError(400, 'this story has nowhere to keep unaccepted words, so there is nothing here to decide about. Open it with arc once to set that up.')
   const change = draft.changes.find(c => c.file === file)
   if (!change) throw new HttpError(404, `no draft change for ${file}`)
   if (change.status !== 'modified' || !change.main) {
@@ -769,7 +784,8 @@ function acceptParagraph(tx: Tx, file: string, t: ParagraphTarget, base: unknown
   const touched = countParagraphEdits(mainParas, merged)
   if (touched !== 1) {
     throw new HttpError(409,
-      `accepting that paragraph would have changed ${touched} paragraphs of ${file} — nothing was written. Refresh and try again`)
+      // the scene, not the path: a writer has scenes (A72-11)
+      `accepting that paragraph would have changed ${touched} paragraphs of ${scene ?? 'that scene'} — nothing was written. Read it again and try once more`)
   }
 
   // Locks first, evidence second, commit third: a refused accept costs no

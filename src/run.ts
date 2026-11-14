@@ -586,10 +586,13 @@ const GATE_NAMES: Record<string, string> = {
   engine: 'the pass ran',
   'options-shape': 'a readable list of wordings',
   'plan-vocabulary': 'the craft is something arc can ask for',
-  // Declared by U2's row and not built until slice 3, so the receipt can say
-  // what is NOT yet checked. A name it can be listed under is the whole
-  // point of declaring it early (A69-9).
+  // Declared by U2's row before it was built (A69-9) and measured since
+  // A72-6: the author reads this when the revision stayed inside the
+  // passages their notes point at.
   'blast-radius': 'the revision stayed where the notes are',
+  // U9's reading (A72-10): what the author reads when a claim rested on
+  // nothing arc was shown — the claim goes, the reading stands.
+  citations: 'everything it said rested on something you were shown',
 }
 export const gateName = (gate: string): string => GATE_NAMES[gate] ?? `the ${gate} check`
 

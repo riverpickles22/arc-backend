@@ -101,6 +101,13 @@ export interface LedgerEntry {
     notes?: { id: string; version: string }[]
   }
 
+  /** WHAT EACH HANDED NOTE IS OWED (A72-7): the paragraphs it was about and
+   *  the spans its change produced, from the same alignment the gate
+   *  measured. The accept resolves a note from this, never by resolving an
+   *  old quote against text the revision replaced. Absent on an entry that
+   *  predates it, which then closes at scene grain as before. */
+  attribution?: import('./note-lifecycle').NoteAttribution[]
+
   /** The proposal this one replaced, when it came from asking again. Links
    *  the two identities without a second store: the old entry stays exactly
    *  where it was, and nothing about it is recast as a decision. */
@@ -139,6 +146,11 @@ function entries(): LedgerEntry[] {
   } catch {
     return []
   }
+}
+
+/** Every path the ledger still holds an entry for (A72-7's startup sweep). */
+export function generatedFiles(): string[] {
+  return [...new Set(entries().map(e => e.file))]
 }
 
 /** The most recent generation for a path, or null when arc never wrote it

@@ -138,15 +138,15 @@ export const forgetReviews = (): void => { shown.clear() }
 
 /** What changed between the version the author read and the one on disk, in
  *  the author's nouns. Null when nothing did. */
-function whatMoved(was: Shown | null, now: ReviewedVersions): string | null {
+function whatMoved(was: Shown | null, now: ReviewedVersions): { moved: string; side: BaseConflict['side'] } | null {
   if (!was) return null
   const wasAccepted = sideOf(was.accepted)
   const wasPending = sideOf(was.pending)
   const acceptedMoved = wasAccepted.present !== now.accepted.present || wasAccepted.sha !== now.accepted.sha
   const pendingMoved = wasPending.present !== now.pending.present || wasPending.sha !== now.pending.sha
-  if (acceptedMoved && pendingMoved) return 'both the book and the pending words have changed'
-  if (acceptedMoved) return now.accepted.present ? 'the book has changed here' : 'this scene is no longer in the book'
-  if (pendingMoved) return now.pending.present ? 'you have changed these words since' : 'the pending words are gone'
+  if (acceptedMoved && pendingMoved) return { moved: 'both the book and the pending words have changed', side: 'both' }
+  if (acceptedMoved) return { moved: now.accepted.present ? 'the book has changed here' : 'this scene is no longer in the book', side: 'accepted' }
+  if (pendingMoved) return { moved: now.pending.present ? 'you have changed these words since' : 'the pending words are gone', side: 'pending' }
   return null
 }
 
@@ -156,9 +156,18 @@ function whatMoved(was: Shown | null, now: ReviewedVersions): string | null {
 export interface BaseConflict {
   file: string
   moved: string
+  /** WHICH SIDE MOVED, so the page shows the pair that differs and not two
+   *  identical blocks under a sentence asserting a difference. */
+  side: 'accepted' | 'pending' | 'both'
+  /** Bodies only. The frontmatter — `scene:`, `status:`, `events:` — is the
+   *  id the author-facing surface must not carry (the epic's decision 3). */
   reviewed: { accepted: string | null; pending: string | null } | null
   current: { accepted: string | null; pending: string | null }
 }
+
+const FM_RE = /^---\n[\s\S]*?\n---\n?/
+/** The prose without its frontmatter, for display. Null stays null. */
+const bodyOf = (text: string | null): string | null => text === null ? null : text.replace(FM_RE, '')
 
 /** Refuse unless the decision names the versions it was made about.
  *
@@ -174,16 +183,17 @@ export function assertBase(file: string, base: unknown, doing: string): void {
   if (sha16(JSON.stringify(now)) === base) return
 
   const was = reviewed(base)
-  const moved = whatMoved(was, now)
-    ?? 'this scene has changed since that was read'   // the token is older than arc's memory of it
+  const what = whatMoved(was, now)
+    ?? { moved: 'this scene has changed since that was read', side: 'both' as const }   // older than arc's memory of it
   const conflict: BaseConflict = {
     file,
-    moved,
-    reviewed: was ? { accepted: was.accepted, pending: was.pending } : null,
-    current: { accepted: acceptedText(file), pending: pendingText(file) },
+    moved: what.moved,
+    side: what.side,
+    reviewed: was ? { accepted: bodyOf(was.accepted), pending: bodyOf(was.pending) } : null,
+    current: { accepted: bodyOf(acceptedText(file)), pending: bodyOf(pendingText(file)) },
   }
   throw new HttpError(409,
-    `${moved}, so arc did not ${doing}. Read it again, and decide about the words that are there now.`,
+    `${what.moved}, so arc did not ${doing}. Read it again, and decide about the words that are there now.`,
     { conflict: conflict as unknown as Record<string, unknown> })
 }
 

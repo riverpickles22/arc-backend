@@ -112,7 +112,17 @@ export function fingerprintsNow(scene: string, styleFor: (s: { scene: string; fi
  *  differently. `the record moved` is a warning about THEIR record changing;
  *  `written by an older arc` is arc saying it cannot tell, which is never the
  *  author's fault and is never called stale (A69's Q14 answer). */
-export interface Staleness { changed: string[]; why: 'the record moved' | 'written by an older arc' }
+export interface Staleness {
+  changed: string[]
+  why: 'the record moved' | 'written by an older arc'
+  /** TRUE WHEN THE PASS THAT WROTE IT IS NOT THE PASS ARC HAS NOW. Separate
+   *  from `why` because the two can be independently true: a proposal whose
+   *  versions are still comparable can have a moved record AND have been made
+   *  by a row that has since changed, and the author reads those as two
+   *  different facts. When arc cannot compare at all, this is the only fact
+   *  there is. */
+  older?: boolean
+}
 
 /** The ONE comparison. A proposal with no reads at all predates the governed
  *  path; a proposal whose job fingerprint has moved was made by a version of
@@ -124,16 +134,16 @@ export function staleAgainst(
   job?: string,
 ): Staleness | null {
   if (!proposal.reads?.length || !proposal.run) {
-    return { changed: [], why: 'written by an older arc' }
+    return { changed: [], why: 'written by an older arc', older: true }
   }
-  // Minted under a different enumeration, or by a different version of the
-  // pass: either way arc cannot compare, and labelling is the honest answer.
+  // MINTED UNDER A DIFFERENT ENUMERATION: arc cannot compare the versions at
+  // all, so there is nothing it can honestly say about the record.
   if (proposal.v !== READ_MAP) {
-    return { changed: [], why: 'written by an older arc' }
+    return { changed: [], why: 'written by an older arc', older: true }
   }
-  if (job && proposal.job && proposal.job !== job) {
-    return { changed: [], why: 'written by an older arc' }
-  }
+  // A DIFFERENT VERSION OF THE PASS, but versions arc can still compare. Two
+  // independent facts, and the author reads them as two.
+  const older = Boolean(job && proposal.job && proposal.job !== job)
   const changed = proposal.reads.filter(r => {
     const cur = now.at.get(r.id)
     // Gone counts as changed: an open note the pass read and the author has
@@ -142,7 +152,8 @@ export function staleAgainst(
     if (cur === undefined) return now.full ? r.id !== 'route' : recomputableAtRest(r.id)
     return cur !== r.version
   }).map(r => r.id)
-  return changed.length ? { changed, why: 'the record moved' } : null
+  if (changed.length) return { changed, why: 'the record moved', ...(older ? { older: true } : {}) }
+  return older ? { changed: [], why: 'written by an older arc', older: true } : null
 }
 
 /** WHAT A PASS WAS SHOWN, recorded. The other half of the comparison, and in

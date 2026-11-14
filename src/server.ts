@@ -9,11 +9,12 @@
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
-import type {
+import type { DecisionHistoryResponse, PutBackPreview, PutBackResult, ProseDraft,
   AgentsResponse,
-  AnalyzeResponse,
+  InspectDraftResponse,
   AnnotationsResponse,
   AskAgainDraftPlanResponse,
+  CandidateResponse,
   ApiErrorResponse,
   AttentionResponse,
   BriefingResponse,
@@ -52,23 +53,23 @@ import { inLane } from './lane'
 import { baseOf } from './base'
 import { admitReplay, claimReplay, planReplay, releaseReplay } from './replay'
 import { ROUTE_REPLAY_ROW } from './reroute'
+import { candidateText, dropCandidate } from './landing'
 import { HttpError, corsOrigin, json, readBody } from './http'
 import { canonJson, validateStory } from './canon'
 import { docsArticles, materialItems, updateMaterial, proseAccept, proseAcceptParagraph, proseRejectParagraph, proseAcceptSentence, proseRejectSentence, proseDiscard, proseDraft, proseWrite, proseScenes, readAsset, viewConfig, commitRecords } from './story'
-import { annotations, closeAnsweredNotes, createAnnotation, deleteAnnotation, updateAnnotation } from './annotations'
+import { annotations, answeredNow, closeAnsweredNotes, createAnnotation, deleteAnnotation, updateAnnotation } from './annotations'
 
-/** After a paragraph or sentence accept: if the scene has nothing pending
- *  left, its change is wholly in the book and the notes it answered close
- *  (A63-4). While anything is still pending, the note stays open — the
- *  author has not finished deciding. */
-function notesClosedIfSettled(file: string): string[] {
-  if (proseDraft().changes.some(c => c.file === file)) return []
-  return closeAnsweredNotes([file])
-}
+/** After a paragraph or sentence accept, the notes whose change is now
+ *  wholly in the book resolve — AT PARAGRAPH GRAIN (A72-7): one note's
+ *  paragraph taken resolves that note while the rest of the scene still
+ *  waits, and a note whose paragraph was discarded stays open however much
+ *  else was accepted. `closeAnsweredNotes` reads the provenance; this is
+ *  only the door the three accepts share. */
+const notesClosedAfter = (file: string): string[] => closeAnsweredNotes([file])
 import { attention } from './attention'
 import { briefing } from './briefing'
 import { runCapture } from './capture'
-import { runAnalysis } from './analyze'
+import { runInspect } from './inspect'
 import { runSuggest } from './suggest'
 import { runDraft } from './draft'
 import { CRAFT_MOVES } from './registry'
@@ -102,6 +103,8 @@ import { authorStylePath, commitAuthorStyle, loadStyleLayers } from './style'
 import { DISMISSED_REL, QUEUE_REL, ratifyRule, ratifyTouchstone, readQueue, readTouchstones } from './style-queue'
 import { runLearnStyle } from './learn-style'
 import { readJudgments } from './evidence'
+import { landedThenFailed } from './refusal'
+import { decisionHistory, previewPutBack, putBack } from './put-back'
 import { proposeTouchstoneRefresh, touchstoneStates } from './touchstones'
 import { proseChecks } from 'arc-canon-graph'
 import { runBootstrapStyle } from './bootstrap-style'
@@ -653,8 +656,44 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   },
 
   // The draft layer: working tree vs HEAD, plus ratification history.
+  // PUT IT BACK (A72-8). History is read from the records; the preview is
+  // read-only and returns the token the confirm must echo; the confirm goes
+  // through the lane and is idempotent on the record.
+  '/api/prose/history': {
+    GET: (req, res) => {
+      const scene = new URL(req.url ?? '/', 'http://x').searchParams.get('scene') ?? undefined
+      json(res, 200, { decisions: decisionHistory(scene || undefined) } satisfies DecisionHistoryResponse)
+    },
+  },
+  '/api/prose/put-back/preview': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { decision?: unknown }
+      if (typeof b.decision !== 'string' || !b.decision) throw new HttpError(400, 'decision required')
+      json(res, 200, previewPutBack(b.decision).preview satisfies PutBackPreview)
+    },
+  },
+  '/api/prose/put-back': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { decision?: unknown; token?: unknown }
+      if (typeof b.decision !== 'string' || !b.decision) throw new HttpError(400, 'decision required')
+      json(res, 200, putBack(b.decision, b.token) satisfies PutBackResult)
+    },
+  },
+
   '/api/prose/draft': {
-    GET: (_req, res) => json(res, 200, proseDraft()),
+    // WHERE EACH HANDED NOTE'S CHANGE STANDS rides on the change (A72-7):
+    // the rail's badge is read off provenance and the two versions of the
+    // scene, never stored, and never a model's view of whether a note was met.
+    GET: (_req, res) => {
+      const draft = proseDraft()
+      json(res, 200, {
+        ...draft,
+        changes: draft.changes.map(c => {
+          const answered = answeredNow(c)
+          return answered ? { ...c, answered } : c
+        }),
+      } satisfies ProseDraft)
+    },
   },
 
   // The re-entry briefing: where the author left off, what is in flight,
@@ -718,7 +757,19 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       // The notes this change answered close with it (A63-4): the ledger
       // says which, so nothing is judged — the thought goes because the
       // prose written from it is now the book.
-      const notesResolved = closeAnsweredNotes(result.files)
+      //
+      // AND THE COMMIT HAS ALREADY LANDED (A72-11). Everything from here is
+      // arc's own bookkeeping; a failure in it must not reach the author as
+      // if their accept had not happened. The words are in; what did not
+      // finish is said as what it is.
+      let notesResolved: string[] = []
+      let afterwards: string | null = null
+      try {
+        notesResolved = closeAnsweredNotes(result.files)
+      } catch (e) {
+        console.error('[error] the notes this accept answered could not be closed (the accept itself landed):', e)
+        afterwards = landedThenFailed('the notes it answered are still open — close them by hand, or ask again')
+      }
       let capture
       if (body.capture === true && (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN)) {
         try {
@@ -742,7 +793,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         console.error('[error] style learning pass failed (the accept itself succeeded):', e)
       }
 
-      json(res, 200, { ...result, ...(capture ? { capture } : {}), ...(learned ?? {}), notesResolved } satisfies ProseAcceptResponse)
+      json(res, 200, { ...result, ...(capture ? { capture } : {}), ...(learned ?? {}), notesResolved, ...(afterwards ? { afterwards } : {}) } satisfies ProseAcceptResponse)
     },
   },
 
@@ -765,7 +816,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     POST: async (req, res) => {
       const t = paragraphTarget(await parsedBody(req))
       const out = proseAcceptParagraph(t.file, t, t.base, t.message)
-      json(res, 200, { ...out, notesResolved: notesClosedIfSettled(t.file) })
+      json(res, 200, { ...out, notesResolved: notesClosedAfter(t.file) })
     },
   },
 
@@ -785,7 +836,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     POST: async (req, res) => {
       const t = sentenceTarget(await parsedBody(req))
       const out = proseAcceptSentence(t.file, t, t.base, t.message)
-      json(res, 200, { ...out, notesResolved: notesClosedIfSettled(t.file) })
+      json(res, 200, { ...out, notesResolved: notesClosedAfter(t.file) })
     },
   },
 
@@ -1092,6 +1143,26 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     },
   },
 
+  // THE WORDS A PASS COULD NOT PUT IN (A72-4, read in A72-5). Read one, or
+  // let it go. Neither is a decision about the manuscript: nothing here is in
+  // it, so nothing here can be accepted or rejected.
+  '/api/prose/candidate': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { run?: unknown; drop?: unknown }
+      if (typeof b.run !== 'string' || !/^run\.\d+$/.test(b.run)) throw new HttpError(400, 'run required')
+      if (b.drop === true) {
+        if (!dropCandidate(b.run)) {
+          throw new HttpError(500, 'arc could not let those words go — they are still kept beside the scene. Try again.')
+        }
+        json(res, 200, { ok: true } satisfies OkResponse)
+        return
+      }
+      const text = candidateText(b.run)
+      if (text === null) throw new HttpError(404, 'arc is no longer holding those words')
+      json(res, 200, { run: b.run, text } satisfies CandidateResponse)
+    },
+  },
+
   // Discard rolls one draft file back to main (a surfaced git checkout).
   '/api/prose/discard': {
     POST: async (req, res) => {
@@ -1172,24 +1243,17 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     },
   },
 
-  '/api/prose/analyze': {
+  // U9 · WHAT WOULD THIS CHANGE DO TO THE STORY (A72-10). One pending scene,
+  // read against the record it was briefed with — rowed, receipted, gated,
+  // and it writes nothing. The base of the diff the author is reading comes
+  // with the question, so a reading is never made about words they have not
+  // seen, and the answer carries it back so the page can tell a current
+  // reading from one the draft has moved past.
+  '/api/prose/inspect': {
     POST: async (req, res) => {
-      if (!currentEngine()) {
-        throw new HttpError(503,
-          'No generation engine. Either set ANTHROPIC_API_KEY in the environment, ' +
-          'or install and log in the claude CLI (its subscription login works — no key needed), then restart the backend.')
-      }
-      // Scoped to one scene when the reading stands beside that scene's own
-      // decision (A64-4); the whole draft when it does not.
-      const b = (await parsedBody(req)) as { files?: unknown }
-      let files: string[] | undefined
-      if (b?.files !== undefined) {
-        if (!Array.isArray(b.files) || !b.files.every(f => typeof f === 'string' && f)) {
-          throw new HttpError(400, 'files must be an array of scene paths')
-        }
-        files = b.files as string[]
-      }
-      json(res, 200, await runAnalysis(files) satisfies AnalyzeResponse)
+      const b = (await parsedBody(req)) as { scene?: unknown; base?: unknown }
+      if (typeof b?.scene !== 'string' || !b.scene) throw new HttpError(400, 'scene required')
+      json(res, 200, await runInspect(b.scene, b.base) satisfies InspectDraftResponse)
     },
   },
 }

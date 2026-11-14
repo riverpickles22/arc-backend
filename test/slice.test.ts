@@ -12,7 +12,7 @@ const STORY = copyExampleStory()
 process.env.ARC_STORY_PATH = STORY
 process.env.ARC_AUTHOR_STYLE = path.join(STORY, 'no-author-layer.md')
 
-const { assembleWritingSlice, WRITING_LAYERS } = await import('../src/slice.ts')
+const { assembleWritingSlice, weightNote, WRITING_LAYERS } = await import('../src/slice.ts')
 const { WRITING_SLICE, ROW_EXPLORE_SCENE } = await import('../src/registry.ts')
 const { proseScenes } = await import('../src/story.ts')
 const { HttpError } = await import('../src/http.ts')
@@ -631,6 +631,29 @@ test('every fact in the record layer is tagged with whether it may bear weight, 
   assert.match(text, /`char\.ines` \[canon\]/)
   assert.match(text, /`obj\.keepers-log` \[proposed — reference only\]/, 'the log the author has not decided on')
   assert.match(text, /`rel\.ines-log` \[proposed — reference only\]/, 'and the edge that hangs off it')
+})
+
+test('the record layer\'s note says what is actually there — nothing tagged is not everything settled (A72-11)', () => {
+  // A69-12's walk read `0 items tagged with status`: a count where the
+  // author expects a sentence, and a claim that does not follow from it.
+  // Three different facts, three sentences.
+  assert.equal(weightNote(0, 0, 0), 'this moment has nothing on record yet',
+    'an empty layer says it is empty — never that nothing is tagged, which would imply facts are here')
+  assert.equal(weightNote(4, 0, 0), 'nothing here carries a status, so nothing here may be rested on',
+    'untagged facts: the consequence, not a count — and never "everything is settled"')
+  assert.equal(weightNote(4, 4, 0), '4 items tagged with whether it may bear weight')
+  assert.equal(weightNote(1, 1, 0), '1 item tagged with whether it may bear weight')
+  assert.match(weightNote(4, 3, 2), /; 2 state facts given past the freshness distance$/)
+  assert.match(weightNote(4, 3, 1), /; 1 state fact given past/)
+  for (const s of [weightNote(0, 0, 0), weightNote(4, 0, 0), weightNote(4, 4, 1)]) {
+    assert.doesNotMatch(s, /tagged with status/, 'the phrase the walk found, gone')
+    assert.doesNotMatch(s, /settled/, 'and no claim that anything is settled')
+  }
+
+  // and the layer the assembler actually builds carries it, with proposed
+  // and canon facts both present on the example
+  const note = draftOf().forReceipt().layers.find(l => l.layer === 'canon')!.note ?? ''
+  assert.match(note, /\d+ items? tagged with whether it may bear weight/)
 })
 
 test('a state fact says when the record last looked, and is aged from the last moment its precision still covers', () => {

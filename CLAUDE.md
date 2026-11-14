@@ -113,6 +113,95 @@ repo shares. This file is only what is particular to the backend.
   in the author's words and NEVER removed, and a file that changed under a
   restoration is left alone. Nothing in arc may say or imply that the lane
   holds back the author's own editor.
+- **"Minimal" is measured, not declared** (A72-6). `src/blast-radius.ts` is a
+  PURE gate: the before side is the scene AS THE PASS WAS HANDED IT (`ctx.
+  sceneBody`, pending edits included — never HEAD, never `paragraphContext`),
+  the licensed scope is what the AUTHOR'S open notes point at resolved against
+  that same text (`licensedScope`: a scene note licenses the scene, a
+  multi-paragraph note its whole covered range, an agent note or a key point
+  nothing, an orphaned or ambiguous passage nothing), and every difference the
+  shared `alignParagraphs` finds is attributed to a source paragraph and
+  judged there — an insertion by the passage it sits beside. Ambiguity REFUSES
+  rather than widens. A row naming the gate without `ctx.handedNotes` is
+  refused at the gate, never passed. The receipt records the licensed scope
+  (`measured_against`) and what changed outside it (`measured`); the author
+  reads the rendered sentence with the paragraph number. Fixtures: the
+  `overreach` pair under `revise.scene.one-shot.quick.*`.
+- **A refusal is READ to the author, never quoted at them** (A72-11).
+  `src/refusal.ts` translates the story's own validator: the path and the
+  `FAIL — n finding(s)` summary go, the fault is said in the author's terms
+  (*it names char.nobody, which your record does not hold*), and the check's
+  own words stay on the receipt's gate record (`validatorDetail`), which is
+  where the author opened them on purpose. The validator gate and the
+  material edit both go through it. "Nothing was written" is a claim about
+  the disk and only the paths that wrote nothing may make it — a test names
+  them, and `landedThenFailed` is the sentence for a decision that landed and
+  then failed at arc's own bookkeeping. THE BOUNDARY IS A TEST, NEVER A
+  FILTER: `arc-canon-graph/author-language.ts` reads what a diagnostic looks
+  like — a validator summary, a stack frame, a shell invocation, an object
+  id, a path into the machinery — and `test/refusal.test.ts` sweeps what arc
+  actually renders against it. Nothing scans a message on its way out, and
+  ordinary English a writer owns (branch, stage, index, head) is not a
+  forbidden word. Two sweeps hold it: one over the sentences the renderers
+  PRODUCE, and one over every literal refusal in `src/` — the second is what
+  caught *this story is not a git repository*, which no run ever reaches.
+- **A reading of a pending change is rowed, or it has no surface** (A72-10).
+  `src/inspect.ts` is U9: ONE scene, the base of the diff the author is
+  reading (a moved one refuses before a token), the record it is judged
+  against from the assembler, and the pending diff as the ask. It answers
+  with findings, each citing ids the brief actually carried or paragraphs of
+  the scene it read; `resolveCitations` places them against the slice's own
+  layer record and the `citations` gate runs once per finding — a drop costs
+  that finding, never the answer, and when nothing survives the author reads
+  *not reported* with the count. An answer arc cannot read ends the run
+  `unreadable`, never as a reading that found nothing. It writes nothing:
+  no path here opens a file for writing, and the accept stays exactly as
+  available during and after. `analyze.ts`, its bare seam call and its
+  `PASS_REGISTRY` entry went with it — the ratchet fell from seven to six.
+- **Put it back reverses one decision, never a scene** (A72-8).
+  `src/put-back.ts`: the accept's commit is found by the decision id in the
+  evidence log (`git log -S` on the record line, never a subject), the inverse
+  of THAT change is computed against the scene as the book now holds it by the
+  shared paragraph alignment (`inverseOf`, pure), later unrelated edits are
+  kept, a later edit on a paragraph the accept touched is an overlap and
+  refuses, pending prose on the scene refuses, a lock the inverse would change
+  answers 423. Preview is read-only and returns a token over the accepted
+  bytes, the working tree, the locks and the inverse; confirm recomputes it
+  inside the lane, refuses a moved token, and ANSWERS FROM THE RECORD FIRST —
+  a decision already put back returns its reversal and appends nothing, where
+  a record counts only once its own commit exists (`reversalOf`): a line
+  left by a crash before the commit is never read as a reversal. A deleted
+  paragraph goes back only if the seam it came from is intact.
+  `recordPutBack` throws so a reversal with no record never lands. The
+  reversal is its own record kind (`kind: 'put-back'`); `readJudgments`
+  excludes every kind that names itself, `standingJudgments` drops reversed
+  accepts for readers that ask what stands, and `decisionHistory` serves all
+  of it with a state. A put-back never recreates a draft, reopens a note,
+  relocks prose or touches canon or style; the preview names those as what
+  remains.
+- **A note resolves from what the landing said it was owed** (A72-7).
+  `src/note-lifecycle.ts`: at the landing `attribute(before, after, notes)`
+  records on the ledger entry, per handed note, the paragraphs it was about and
+  the spans its change produced (text that must be in the book, text that must
+  be gone), from the same alignment the blast-radius gate measured. At every
+  accept `closeAnsweredNotes` asks `answeredStates` whether those spans are at
+  HEAD (accepted), in the working tree only (waiting) or in neither (GONE —
+  rejected, discarded, or the author's own hand) — COUNTED against how many
+  times each text read at HEAD when the pass landed, so a repeated line is
+  not in until the book says it twice and a deletion of words the book never
+  held is never accepted — and resolves — never
+  deletes — a passage note when every span is in, a scene note when the scene
+  settles with at least one of its changes taken. Gone leaves the note OPEN
+  however much else was accepted; a note edited since the landing is a new
+  instruction (`noteInstruction`: body and anchor, never status); a note that
+  produced no change, an agent note, a key point never resolve on their own.
+  Derived from state, never remembered, so a restart changes nothing and
+  `settleAnsweredNotes` sweeps every ledger file at startup (a crash between
+  an accept's commit and its close); each resolution is one line in
+  `.arc/note-resolutions.jsonl` with the decision that completed it.
+  `ProseChange.answered` is served whenever provenance exists — EMPTY when
+  nothing of it pends, so the viewer's handed-list fallback fires only for an
+  entry with no attribution, which closes at scene grain as before.
 - **Asking again is the same question, not a similar one** (A72-13). Every
   writing row records its REQUEST at the landing (`LedgerEntry.replay`): the
   row that answered it, its own target — for a new scene, the slot THAT draft
@@ -156,7 +245,13 @@ repo shares. This file is only what is particular to the backend.
   records `v` (`READ_MAP`); one minted under an older rule reads *written by
   an older arc* rather than pretending to compare, and the same answer covers
   a moved job fingerprint. BUMP `READ_MAP` whenever a fingerprint's coverage
-  changes. A stale draft is a WARNING — it still accepts, because accepting
+  changes. The two facts — the record moved, and the pass that wrote it has
+  changed — are INDEPENDENT (`Staleness.older`, A72-5): the listing passes the
+  current job fingerprint of the row the entry names (`rowByKey`), so both can
+  be true at once and the author reads them as two. What a pass could not put
+  in is served beside the reading (`ProseDraft.candidates`) and read or let go
+  through `/api/prose/candidate`; it is never a pending change. A stale draft
+  is a WARNING — it still accepts, because accepting
   destroys nothing the author wrote. The moved BASE is the other bar, and that
   one refuses; never collapse them.
   What it does NOT yet cover: the obligations layer, and the difference

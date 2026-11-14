@@ -205,7 +205,7 @@ function asOf(at: TimeRef): string {
  *  representation, never the record. */
 function canonWithStatus(
   canon: CanonDoc, pack: string, T: number | undefined, freshness: number | undefined,
-): { text: string; leaned_on: LeanedOn[]; tagged: number } {
+): { text: string; leaned_on: LeanedOn[]; tagged: number; items: number } {
   const eras = canon.timeline?.eras ?? []
   const status = new Map<string, string | undefined>()
   for (const e of Object.values(canon.entities ?? {})) status.set(e.id, e.status)
@@ -275,7 +275,24 @@ function canonWithStatus(
     'Material — the story\'s filed thoughts, listed under WHAT IS LIVE HERE — binds nothing.',
     'A state fact says when the record last looked (as of); one marked AGED is older than this pass may treat as current.',
   ].join('\n')
-  return { text: `${rule}\n\n${out.join('\n')}`, leaned_on, tagged }
+  return { text: `${rule}\n\n${out.join('\n')}`, leaned_on, tagged, items: out.length }
+}
+
+/** WHAT THE RECORD LAYER'S NOTE SAYS, and it has to match its data
+ *  (A72-11; A69-12's walk read `0 items tagged with status`). Three
+ *  different facts, said as three different sentences: the layer carried
+ *  nothing at all; it carried items and none of them is tagged, so none of
+ *  them may be rested on; or it carried tagged items, the ordinary case.
+ *  NOTHING TAGGED MUST NEVER READ AS EVERYTHING SETTLED. */
+export function weightNote(items: number, tagged: number, leanedOn: number): string {
+  const head = items === 0
+    ? 'this moment has nothing on record yet'
+    : tagged === 0
+      ? 'nothing here carries a status, so nothing here may be rested on'
+      : `${tagged} item${tagged === 1 ? '' : 's'} tagged with whether it may bear weight`
+  return head + (leanedOn
+    ? `; ${leanedOn} state fact${leanedOn === 1 ? '' : 's'} given past the freshness distance`
+    : '')
 }
 
 /** WHAT IS LIVE HERE (A69-6; §4, "Dramatic condition"): how the people
@@ -658,10 +675,7 @@ function candidates(row: Row, subject: WritingSubject, stage: SliceStage, intent
       ...b('canon', [...(scene?.facts ?? []), ...(scene?.events ?? [])],
         'what is true at this moment, each fact tagged with whether it may bear weight, and the reason it is here',
         withStatus.text,
-        { note: `${withStatus.tagged} item${withStatus.tagged === 1 ? '' : 's'} tagged with status` +
-          (withStatus.leaned_on.length
-            ? `; ${withStatus.leaned_on.length} state fact${withStatus.leaned_on.length === 1 ? '' : 's'} given past the freshness distance`
-            : '') }),
+        { note: weightNote(withStatus.items, withStatus.tagged, withStatus.leaned_on.length) }),
       leaned_on: withStatus.leaned_on,
     },
 

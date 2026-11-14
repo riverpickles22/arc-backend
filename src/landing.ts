@@ -113,7 +113,9 @@ export function landOrKeep(
           if (d.bytes === null) fs.rmSync(path.join(STORY, d.file), { force: true })
           else fs.writeFileSync(path.join(STORY, d.file), d.bytes)
         } catch { /* the message below is what the author reads either way */ }
-        return { ok: false, why: 'refused', output: `arc could not record where those words came from, so it did not leave them in your story: ${(e as Error).message}` } as Landing
+        // the message goes to the log; the author reads the sentence (A72-11)
+        console.error('[warn] the provenance of a landing could not be recorded:', e)
+        return { ok: false, why: 'refused', output: 'arc could not record where those words came from, so it did not leave them in your story.' } as Landing
       }
     }
     return { ok: true } as Landing
@@ -181,6 +183,37 @@ export function restoreIfOurs(d: Destination, wrote: string): boolean {
     console.error(`[landing] could not put ${d.file} back:`, e)
     return false
   }
+}
+
+/** What arc wrote and could not put in: one entry per candidate still on
+ *  disk, newest first. Working state, so it is read fresh and never cached. */
+export interface Candidate { run: string; file: string; at: string }
+
+export function candidates(): Candidate[] {
+  try {
+    const index = fs.readFileSync(path.join(STORY, '.arc', 'candidates', 'index.jsonl'), 'utf8')
+    const seen = new Map<string, Candidate>()
+    for (const line of index.split('\n').filter(Boolean)) {
+      const e = JSON.parse(line) as Candidate
+      // Only what is still there: a candidate the author has read and taken,
+      // or cleaned up, is not something to go on offering them.
+      if (!fs.existsSync(candidatePath(e.run))) continue
+      seen.set(e.run, { run: e.run, file: e.file, at: e.at })
+    }
+    return [...seen.values()].sort((a, b) => b.at.localeCompare(a.at))
+  } catch {
+    return []
+  }
+}
+
+/** The words of one candidate, for the author to read. */
+export function candidateText(run: string): string | null {
+  try { return fs.readFileSync(candidatePath(run), 'utf8') } catch { return null }
+}
+
+/** The author has read it and is done with it. */
+export function dropCandidate(run: string): boolean {
+  try { fs.rmSync(candidatePath(run), { force: true }); return true } catch { return false }
 }
 
 /** The author's sentence when a pass finished and could not land. No id, no

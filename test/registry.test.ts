@@ -37,6 +37,9 @@ const ALL_ROWS = [
   // register of Revise over a passage, beside the clean pass's standard one
   // (A69-10); synonyms explores and collides with nobody.
   'revise.selection.one-shot.quick', 'explore.selection.one-shot',
+  // The first row that writes nothing at all: U9 reads the pending diff
+  // and answers with findings that cite what they rest on (A72-10).
+  'inspect.scene.one-shot',
 ]
 
 test('U4 and U5 are the first rows: sealed, withholding, keyed by their cell', () => {

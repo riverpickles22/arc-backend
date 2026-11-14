@@ -49,7 +49,9 @@ export function canonJson(): string {
     // The full tool output (often a python traceback) belongs in the backend
     // log, not the browser.
     console.error('[error] export-canon.py failed:\n' + res.output)
-    throw new HttpError(500, 'canon export failed — see the backend log, or run tools/validate.py on the story')
+    // THE AUTHOR'S LANGUAGE (A72-11): the tool and its traceback are in the
+    // log above; what the author gets is what happened and what to type.
+    throw new HttpError(500, 'arc could not read your story\'s record, so it cannot answer about it. Run  arc doctor  to see what is wrong with it.')
   }
   cached = res.output
   cachedStamp = stamp

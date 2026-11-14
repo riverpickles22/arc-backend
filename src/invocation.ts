@@ -49,7 +49,6 @@ export interface PassSpec {
  *  iterative verbs a scene session would serve (`idea-scene-session`) — a
  *  session and a withheld set cannot coexist, by the rule below. */
 export const PASS_REGISTRY = {
-  analyze: { rung: 1, withholding: true, sessionAllowed: false },
   judge: { rung: 1, withholding: true, sessionAllowed: false },
   intent: { rung: 1, withholding: true, sessionAllowed: false },
   material: { rung: 1, withholding: false, sessionAllowed: false },

@@ -159,13 +159,13 @@ test('the failure kinds are the closed set: timed out, died, rate-limited, unrea
 })
 
 test('the interim launch for an unrowed pass runs the same way: streamed, from scratch, no cwd in the story', async () => {
-  const a = await runCliPrompt('read this', { pass: 'analyze', runId: 'run.0011' })
+  const a = await runCliPrompt('read this', { pass: 'judge', runId: 'run.0011' })
   const seen = lastLaunch()
   assert.equal(a.text, 'the answer')
   assert.ok(seen.cwd.startsWith(scratchParent()))
   assert.equal(seen.run, 'run.0011')
   assert.ok(!seen.argv.includes('--session-id'), 'no session is pre-assigned unless the caller names one')
-  const b = await runCliPrompt('read this', { pass: 'analyze' })
+  const b = await runCliPrompt('read this', { pass: 'judge' })
   assert.ok(lastLaunch().cwd.startsWith(scratchParent()), 'even without a run id, never the story')
   assert.equal(b.sessionId, 'stub-session')
 })

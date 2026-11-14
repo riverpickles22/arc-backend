@@ -180,12 +180,16 @@ test('attention on a broken canon is a clean 500 (same contract as /api/canon)',
   assert.doesNotMatch(body.error, /Traceback/)
 })
 
-test('canon export failure is a clean 500, not a traceback', async () => {
+test('canon export failure is a clean 500 in the author\'s language, not a traceback and not a tool name', async () => {
+  const { diagnosticsIn } = await import('arc-canon-graph/author-language.ts')
   const res = await get('/api/canon')   // fixture canon is deliberately incomplete
   assert.equal(res.status, 500)
   const body = await res.json()
-  assert.match(body.error, /canon export failed/)
-  assert.doesNotMatch(body.error, /Traceback/)
+  assert.match(body.error, /arc could not read your story's record/)
+  assert.match(body.error, /arc doctor/, 'and it ends in the thing the author types next')
+  // A72-11: the traceback goes to the log, and so does the tool's name —
+  // `run tools/validate.py on the story` was the old second half.
+  assert.deepEqual(diagnosticsIn(body.error), [])
 })
 
 // The sanitising layer is where a scene note nearly died: coercing an absent

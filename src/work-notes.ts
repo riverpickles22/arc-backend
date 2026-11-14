@@ -30,7 +30,7 @@
 // so the viewer can say "answered in the draft" beside a note and the accept
 // can close it — provenance, never a model's judgement that a note was met.
 // A scene with no open notes is refused, not run on nothing.
-import type { NoteConflict, WorkNotesMode, WorkNotesResponse } from 'arc-canon-graph'
+import type { NoteConflict, ResolvedAnnotation, WorkNotesMode, WorkNotesResponse } from 'arc-canon-graph'
 import fs from 'node:fs'
 import path from 'node:path'
 import { openNotesOn } from './annotations'
@@ -41,6 +41,9 @@ import { currentEngine } from './engine'
 import { parseCraftPlan, runGates, type ProseGateCtx } from './gates'
 import { HttpError } from './http'
 import { recordGenerated } from './ledger'
+import { attribute } from './note-lifecycle'
+import { paragraphsOf } from './blast-radius'
+import { landingSentence } from './refusal'
 import { destinationAt, landOrKeep, movedSentence, trialValidate } from './landing'
 import { READ_MAP, readsFrom, rebaseToLanded } from './reads'
 import { fingerprintsAtWrite } from './reroute'
@@ -56,7 +59,7 @@ import { closeReceipt, openRowRun } from './rowrun'
 import { endRun, stateOf } from './runs'
 import { assembleWritingSlice, weightOf } from './slice'
 import { literalWithholds } from './redraft'
-import { materialItems, parseScene, proseScenes } from './story'
+import { materialItems, parseScene, proseDraft, proseScenes } from './story'
 import { styleContract } from './style'
 import type { CanonDoc, CraftPlanned } from 'arc-canon-graph'
 
@@ -378,7 +381,7 @@ async function runMinimalRevision(
         brief, repair: repairOf(brief),
         // A MINIMAL REVISION RETURNS WHAT IT WAS NOT ASKED ABOUT, word for
         // word, so the countable style rules measure only what it wrote.
-        gateCtx: { ...writeGateCtx(live, canon), validate, exemptUnchanged: true },
+        gateCtx: { ...writeGateCtx(live, canon, cluster.notes), validate, exemptUnchanged: true },
       })
       const sofar = { wrote, file: lastFile }
       if (stateOf(run.id) === 'cancelled') {
@@ -397,6 +400,11 @@ async function runMinimalRevision(
         () => recordGenerated(live.file, next, {
           engine: currentEngine() ?? 'fixture', scene: live.scene, origin: 'revise',
           notes: cluster.notes.map(n => n.id), run: run.id,
+          // WHAT EACH NOTE IS OWED (A72-7): which of the paragraphs the pass
+          // changed are attributable to which handed note, from the handed
+          // scene to the landed one — the provenance the accept resolves from.
+          attribution: attribute(paragraphsOf(live.body), paragraphsOf(body), cluster.notes,
+            paragraphsOf(proseDraft().changes.find(c => c.file === live.file)?.main?.body ?? live.body)),
           // WHAT IT READ (A72-4), captured at launch — a revision is written
           // FROM notes, so a note whose status or anchor moved while the pass
           // was out is the clearest case there is of an answer to read again.
@@ -420,8 +428,8 @@ async function runMinimalRevision(
         return nothing('unfinished', movedSentence(live.scene), sofar)
       }
       if (!landing.ok) {
-        return nothing('could not run',
-          `arc could not write that revision into your story — ${landing.output.split('\n')[0]}. Nothing was written.`, sofar)
+        console.error('[info] a revision could not land:\n' + landing.output)
+        return nothing('could not run', landingSentence('that revision', landing.output), sofar)
       }
       wrote = wrote || body !== live.body.trim()
       lastFile = live.file
@@ -455,7 +463,7 @@ function parseCraftPlanned(text: string): CraftPlanned | undefined {
 
 /** What the write stage's gates measure against: this scene's locks, the
  *  contract's quoted withholds, and the two countable style rules. */
-function writeGateCtx(live: { scene: string; body: string; contract: unknown }, canon: CanonDoc): ProseGateCtx {
+function writeGateCtx(live: { scene: string; body: string; contract: unknown }, canon: CanonDoc, handedNotes: ResolvedAnnotation[]): ProseGateCtx {
   const sceneLocks = locksOn(live.scene, live.body)
     .filter(l => l.scope === 'paragraph' && l.resolution.paragraph !== null)
     .sort((x, y) => (x.resolution.paragraph as number) - (y.resolution.paragraph as number))
@@ -472,6 +480,9 @@ function writeGateCtx(live: { scene: string; body: string; contract: unknown }, 
       destination: [],
       known: [],
     }),
+    // what the blast-radius gate measures against: this cluster's notes,
+    // resolved against the body the pass was handed
+    handedNotes,
     ...weightOf(canon, materialItems()),
   }
 }

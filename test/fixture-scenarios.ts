@@ -33,6 +33,8 @@ const { runDraft } = await import('../src/draft.ts')
 const { runRedraft } = await import('../src/redraft.ts')
 const { runWorkNotes } = await import('../src/work-notes.ts')
 const { runSuggest } = await import('../src/suggest.ts')
+const { runInspect } = await import('../src/inspect.ts')
+const { baseOf } = await import('../src/base.ts')
 const { createAnnotation } = await import('../src/annotations.ts')
 const { ROWS, rowKey } = await import('../src/registry.ts')
 const { observeBriefs } = await import('../src/fixtures.ts')
@@ -57,7 +59,7 @@ export interface Scenario {
   /** what the fixture's `expect` field must say. `leak` is the one that
    *  never reaches the engine: the gate proves the brief and refuses before
    *  the send (A67-7), so the scenario carries no recorded answer. */
-  expect: 'lands' | 'overlap' | 'coverage-drop' | 'leak' | 'validator-refused' | 'leaned-on' | 'lock-touched' | 'conflict-found'
+  expect: 'lands' | 'overlap' | 'coverage-drop' | 'leak' | 'validator-refused' | 'leaned-on' | 'lock-touched' | 'conflict-found' | 'overreach'
   /** the story state and request, in one breath — copied into the fixture */
   scenario: string
   prepare?: () => Promise<void>
@@ -72,6 +74,14 @@ export interface Scenario {
  *  a notes revision has nothing to work until the author leaves a note. */
 function oneNote(): void {
   createAnnotation({ scene: SCENE, paragraph: 4, quote: 'Then the log.', body: 'the log entry should cost her something', by: 'author' })
+}
+
+/** ONE NOTE, WORDED SO ITS BRIEF IS ITS OWN (A72-6): the over-reach fixtures
+ *  need a brief the `lands` fixtures do not already answer, and the brief
+ *  carries the note's body. Same paragraph as `oneNote`, so what the gate
+ *  licenses is the same ¶5 — and what the recorded answer touches is not. */
+function overreachNote(): void {
+  createAnnotation({ scene: SCENE, paragraph: 4, quote: 'Then the log.', body: 'cut the log entry to a single line', by: 'author' })
 }
 
 /** TWO NOTES THAT CANNOT BOTH BE SATISFIED. The reading's whole job. */
@@ -113,6 +123,17 @@ const rewrite = (name: string, expect: Scenario['expect'], scenario: string, not
     run: () => runRevise({ scene: SCENE, alt: parent!.id }),
   }
 }
+
+/** U9 reads a PENDING CHANGE, so its scenarios make one: the author's own
+ *  edit to the example scene, waiting to be decided. Two different edits,
+ *  because two fixtures on one row need two different briefs. */
+const SCENE_FILE = 'prose/ch-01/scene-01.md'
+const pendingEdit = (from: string, to: string): string => {
+  const abs = path.join(STORY, SCENE_FILE)
+  fs.writeFileSync(abs, fs.readFileSync(abs, 'utf8').replace(from, to))
+  return baseOf(SCENE_FILE)
+}
+let inspectBase: string | null = null
 
 export const SCENARIOS: Scenario[] = [
   {
@@ -222,6 +243,22 @@ export const SCENARIOS: Scenario[] = [
     prepare: async () => { oneNote() },
     run: () => runWorkNotes({ scene: SCENE, guidance: 'more dread' }),
   },
+  // THE BLAST RADIUS (A72-6). The reading first, so its fixture is on disk
+  // before the write scenario runs through it; then the write, whose
+  // recorded answer rewrites the paragraph the note points at AND one it
+  // does not. "Minimal" is measured, and the second rewrite is refused.
+  {
+    row: 'revise.scene.one-shot.quick.conflict', name: 'overreach-none', expect: 'overreach',
+    scenario: 'one note on sc.01-1 asking the log entry be cut to a line; one note cannot pull against itself, so the reading answers with the empty array',
+    prepare: async () => { overreachNote() },
+    run: () => runWorkNotes({ scene: SCENE }),
+  },
+  {
+    row: 'revise.scene.one-shot.quick.write', name: 'overreach', expect: 'overreach',
+    scenario: 'the same note, past a reading that found no conflict: the answer cuts the log entry as asked and ALSO rewrites the lamp-room paragraph nobody pointed at. The blast-radius gate refuses it by number, the repair goes unanswered, and the scene is byte-equal afterwards',
+    prepare: async () => { overreachNote() },
+    run: () => runWorkNotes({ scene: SCENE }),
+  },
   {
     row: 'revise.scene.one-shot.quick.conflict', name: 'conflict-found', expect: 'conflict-found',
     scenario: 'two notes on sc.01-1 that pull against each other — more of the dog, and less of the dog. The reading names the tension, the run waits for the author, and nothing is written',
@@ -251,6 +288,24 @@ export const SCENARIOS: Scenario[] = [
   rewrite('leak', 'leak',
     `the landed explore.scene.one-shot/lands route with one note on the whole route that quotes the manuscript — "${QUOTED_SENTENCE}" — so the brief would carry a sentence of the withheld prose. The leak gate refuses before the send.`,
     `the book has "${QUOTED_SENTENCE}"; get that pressure in without the sentence`, null),
+
+  // ---- U9 · Inspect · scene · the pending diff (A72-10) --------------------
+  {
+    row: 'inspect.scene.one-shot', name: 'lands', expect: 'lands',
+    scenario: 'the example scene with one pending edit of the author\'s own — the wind paragraph rewritten; the reading answers with findings that cite the record and the paragraph they rest on',
+    prepare: async () => {
+      inspectBase = pendingEdit('The wind did what it did.', 'The wind got up at midnight and did not stop.')
+    },
+    run: () => runInspect(SCENE, inspectBase!),
+  },
+  {
+    row: 'inspect.scene.one-shot', name: 'drops', expect: 'lands',
+    scenario: 'the same scene with a different pending edit — the log paragraph rewritten; the reading over-reaches, and the claims that rest on nothing arc was shown are dropped and counted',
+    prepare: async () => {
+      inspectBase = pendingEdit('Then the log.', 'Then the log, which she had started keeping for her sister.')
+    },
+    run: () => runInspect(SCENE, inspectBase!),
+  },
 ]
 
 /** EVERY SCENARIO NAMES A REAL LAUNCH — a row, or a stage of one, which is

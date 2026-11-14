@@ -235,14 +235,58 @@ test('a ratified rule binds what arc writes, never the prose the author already 
   assert.match(caught.ok ? '' : caught.reason, /where the contract stops at 20/)
 })
 
-test('the row declares what "minimal" will be checked against, and says what is not checked yet', () => {
+test('the row declares what "minimal" is checked against, locks before the blast radius', () => {
   assert.deepEqual([...MINIMAL_REVISION_GATES], [
     'locks', 'lock-order', 'validator', 'withhold-literals', 'blast-radius', 'and-chain', 'sentence-length',
   ])
-  // blast-radius is DESIGNED, SLICE 3. It is on the row now so every receipt
-  // says this is not yet checked — "minimal" is the claim the row makes
-  // loudest, and a gate the author cannot see is one they cannot ask about.
+  // blast-radius is MEASURED (A72-6). It was declared on the row before it
+  // was built so every receipt said "minimal" was not yet checked; now the
+  // order matters too: a locked paragraph is refused by `locks` before the
+  // blast radius is even measured, so a scene note cannot license past a lock.
   assert.ok(MINIMAL_REVISION_GATES.includes('blast-radius'))
+  assert.ok(MINIMAL_REVISION_GATES.indexOf('locks') < MINIMAL_REVISION_GATES.indexOf('blast-radius'))
+})
+
+test('a scene note licenses the scene, but never past a lock: locks refuses before the blast radius is measured', async () => {
+  const { runRowGates } = await import('../src/gates.ts')
+  const { gateCtx } = await import('../src/reroute.ts')
+  const { ROW_REVISE_SCENE_STAGED } = await import('../src/registry.ts')
+  const write = ROW_REVISE_SCENE_STAGED.stages.find(s => s.id === 'write')!
+  const row = { ...ROW_REVISE_SCENE_STAGED, stage: write.id, gates: write.gates, answer: write.answer } as never
+
+  const settled = 'Two. The paragraph the author marked settled.'
+  const before = `One. The first paragraph.\n\n${settled}\n\nThree. The third.`
+  const lock = {
+    id: 'lock.001', anchor: { scene: 'sc.01-1', paragraph: 1, quote: 'Two.' },
+    scope: 'paragraph' as const, resolution: { state: 'resolved' as const, paragraph: 1 },
+  }
+  // the author's note is about the whole scene, so the blast radius would
+  // license every paragraph — the lock is the only thing standing
+  const sceneNote = {
+    id: 'note-0001', body: 'slower, all of it', status: 'open', anchor: { scene: 'sc.01-1' },
+    resolution: { state: 'resolved' as const, paragraph: null },
+  } as never
+  const ctx = { ...gateCtx({
+    sceneName: 'sc.01-1', sceneBody: before, sceneLocks: [lock], lockedTexts: [settled],
+    literals: [], andCap: null, wordCap: null, destination: [], known: [],
+  // the story's validator is a stand-in here: this test is about the order
+  // of two gates, and the row refuses without one
+  }), handedNotes: [sceneNote], validate: () => ({ ok: true, output: '' }) }
+
+  const out = runRowGates(row, ctx, `One, slower.\n\nTwo, rewritten though it was settled.\n\nThree, slower.`)
+  assert.equal(out.ok, false)
+  assert.match(out.ok ? '' : out.reason, /paragraph 2 is locked \(lock\.001\)/)
+  const ran = out.gates.map(g => g.gate)
+  assert.equal(out.gates.find(g => g.gate === 'locks')?.verdict, 'refused')
+  assert.ok(!ran.includes('blast-radius'), `the walk stopped at the lock; the blast radius was never measured: ${ran.join(', ')}`)
+
+  // and with the settled paragraph left verbatim, the same scene note
+  // licenses the rest and both gates hold — the record names what changed
+  const kept = runRowGates(row, ctx, `One, slower.\n\n${settled}\n\nThree, slower.`)
+  assert.equal(kept.ok, true, kept.ok ? '' : kept.reason)
+  const radius = kept.gates.find(g => g.gate === 'blast-radius')!
+  assert.equal(radius.verdict, 'held')
+  assert.deepEqual(radius.measured_against?.slice(0, 3), ['scene', 'changed: ¶1', 'changed: ¶3'])
   assert.equal(ROW_REVISE_SCENE_STAGED.gates, MINIMAL_REVISION_GATES)
   // And no leans-on: a minimal revision answers instructions and argues
   // nothing, so there is no briefing to carry the block.

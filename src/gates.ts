@@ -22,7 +22,10 @@
 //
 // A gate never repairs; it refuses and says why. `could not judge` is not a
 // pass: the author reads it as *not checked*.
-import type { ResolvedLock } from 'arc-canon-graph'
+import { blastRadius, changedNames, licensedScope, overreachSentence, scopeNames } from './blast-radius'
+import { readFindings, resolveCitations, type CiteScope } from './citations'
+import { validatorDetail, validatorSentence } from './refusal'
+import type { ResolvedAnnotation, ResolvedLock } from 'arc-canon-graph'
 import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
 import { readConflicts } from './revise'
 import { load as yamlLoad } from 'js-yaml'
@@ -61,6 +64,16 @@ export interface ProseGateCtx {
    *  any paragraph byte-identical to one already in the scene, exactly as it
    *  exempts a locked one. */
   exemptUnchanged?: boolean
+  /** THE NOTES THIS PASS WAS HANDED (A72-6), resolved against `sceneBody` —
+   *  what the blast-radius gate measures a minimal revision's changes
+   *  against. Set by the row that hands notes; a row naming the gate without
+   *  them is refused at the gate rather than passed. */
+  handedNotes?: ResolvedAnnotation[]
+  /** WHAT A READING MAY CITE (U9, A72-10): the ids the brief actually
+   *  carried, and how many paragraphs the scene it read has. The citation
+   *  gate resolves against this and nothing wider — arc will not look a
+   *  claim up somewhere the pass was never shown. */
+  cites?: CiteScope
   destination: string[]
   /** the overlap bar and where it came from */
   maxOverlap: number
@@ -216,8 +229,6 @@ export function withoutFrontmatter(file: string): string {
   return m ? file.slice(m[0].length).trim() : file
 }
 
-const firstLine = (out: string): string => (out.trim().split('\n').find(l => l.trim()) ?? 'it did not say why').trim()
-
 const refuse = (reason: string, record: Omit<GateRecord, 'gate' | 'attempt' | 'verdict'>): GateVerdict => ({ verdict: 'refused', reason, record })
 
 /** The gate ids of slice 1, each an implementation the runner calls by id.
@@ -331,9 +342,12 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
     const check = ctx.validate(a.body)
     return check.ok
       ? held({ stage: 'answer', bar: 'the story validates', measured: 'it does', bar_from: "the story's own validator" })
+      // THE CHECK IS READ, NOT QUOTED (A72-11). The author gets the fault in
+      // their own terms; the check's own words go on the receipt's record,
+      // which is where they opened them on purpose.
       : refuse(
-        `that draft does not fit your record — ${firstLine(check.output)}. Nothing was written; ask again.`,
-        { stage: 'answer', bar: 'the story validates', measured: firstLine(check.output), bar_from: "the story's own validator" })
+        validatorSentence(check.output),
+        { stage: 'answer', bar: 'the story validates', measured: validatorDetail(check.output), bar_from: "the story's own validator" })
   },
   locks: (ctx, a) => {
     const violated = lockViolations(ctx.sceneBody, ctx.assembled ? ctx.assembled(a.prose) : a.prose, ctx.sceneLocks)
@@ -341,6 +355,26 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
     return violated.length
       ? refuse(`touched locked prose — ${describeViolation(ctx.sceneName, violated[0])}`, record)
       : held(record)
+  },
+  /** EVERY CLAIM CITES SOMETHING THE BRIEF CARRIED (U9, A72-10). Run once
+   *  per finding by the reading branch below: a refusal here DROPS that
+   *  finding and never the answer, because a reading that over-reaches on
+   *  one point is still a reading on the others. */
+  citations: (ctx, a) => {
+    const bar = 'every claim rests on something arc was shown'
+    const bar_from = 'the ids this brief carried, and the paragraphs of the scene it read'
+    if (!ctx.cites) {
+      return refuse('arc could not tell what that reading was allowed to cite, so it has nothing to show you. Ask again.',
+        { stage: 'answer', bar, measured: 'nothing was given to resolve citations against', bar_from })
+    }
+    const finding = JSON.parse(a.body) as { claim: string; cites: string[] }
+    const { kept, dropped } = resolveCitations([{ section: 'what this changed', ...finding }], ctx.cites)
+    const record = {
+      stage: 'answer' as const, bar, bar_from,
+      measured: kept.length ? 0 : dropped[0]?.why ?? 'it cites nothing',
+      measured_against: [...ctx.cites.ids].slice(0, 40),
+    }
+    return kept.length ? held(record) : refuse(dropped[0]?.why ?? 'it cites nothing', record)
   },
   // DESIGNED, SLICE 3 (A69-9). Declared on U2's row so every receipt says
   // this is not yet checked — `not applicable` would read as "there was
@@ -364,10 +398,43 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
     }
     return held({ stage: 'answer', bar: '3 to 6', measured: options.length, bar_from: "the row's answer shape" })
   },
-  'blast-radius': () => ({
-    verdict: 'could not judge',
-    record: { stage: 'answer', bar: 'no paragraph changes that no handed note anchors to', bar_from: 'designed, slice 3 — arc does not check this yet' },
-  }),
+  /** "MINIMAL" MEANS MINIMAL (A72-6; U2's row, invariant 3 in spirit). The
+   *  before side is the scene AS THE PASS WAS HANDED IT — pending edits
+   *  included, never HEAD — and the licensed scope is what the AUTHOR'S open
+   *  notes point at, resolved against that same text. Every difference the
+   *  alignment finds is attributed to a source paragraph and judged there;
+   *  an insertion belongs to the passage it sits beside. Ambiguity refuses
+   *  rather than widens: a note whose passage cannot be placed licenses
+   *  nothing. A row that names this gate and hands no notes is refused,
+   *  never quietly passed — a gate that cannot run is not a gate that held. */
+  'blast-radius': (ctx, a) => {
+    const bar = 'no paragraph changes that no handed note anchors to'
+    const bar_from = 'the author notes handed to this pass, resolved against the scene as it was handed'
+    if (!ctx.handedNotes) {
+      // A row that names the gate and hands no notes is arc's own fault, not
+      // the answer's; the record says so, in the slot the sentence renders.
+      return refuse('arc could not tell which passages your notes point at, so nothing was written. Ask again.',
+        { stage: 'answer', bar, measured: 'no notes were handed to measure against',
+          bar_from: 'the row names the blast-radius gate and this pass handed no notes to measure against' })
+    }
+    const before = paragraphsOf(ctx.sceneBody)
+    const after = paragraphsOf(ctx.assembled ? ctx.assembled(a.prose) : a.prose)
+    const scope = licensedScope(before, ctx.handedNotes)
+    const radius = blastRadius(before, after, scope)
+    // ALLOWED AND CHANGED, both on the record: what the notes licensed, what
+    // the answer changed inside that, and what reached outside it.
+    const record = {
+      stage: 'answer' as const, bar, bar_from,
+      measured: radius.outside.length ? radius.outside.join(', ') : 0,
+      measured_against: [
+        ...scopeNames(scope),
+        ...changedNames(radius).map(c => `changed: ${c}`),
+        ...scope.because,
+        ...scope.ignored.map(s => `ignored: ${s}`),
+      ],
+    }
+    return radius.ok ? held(record) : refuse(overreachSentence(radius.outside), record)
+  },
   'lock-order': (ctx, a) => {
     const record = { measured_against: ctx.sceneLocks.map(l => l.id), stage: 'answer' as const }
     return ctx.lockOrderViolation(ctx.assembled ? ctx.assembled(a.prose) : a.prose, ctx.lockedTexts)
@@ -459,6 +526,58 @@ export function runRowGates(row: LaunchSpec, ctx: ProseGateCtx, text: string, at
     }
     gates.push({ gate: 'shape', verdict: 'held', attempt, ...(launch ? { launch } : {}), stage: 'answer' })
     return { ok: true, body: text, briefing: '', coverage: null, dropped: [], returned: 0, overlap: null, gates }
+  }
+  // A READING IS NOT A DRAFT EITHER (U9, A72-10). It writes nothing, so
+  // there is no prose to gate and no briefing to split: what the gates do
+  // here is drop a FINDING that rests on nothing, never refuse the answer.
+  // An answer that could not be read at all is a different thing and ends
+  // the run unreadable — a reading that did not look must never stand as a
+  // reading that found nothing (§5, P2 fails closed).
+  if (row.answer === 'reading') {
+    const findings = readFindings(text)
+    if (findings === null) {
+      gates.push({ gate: 'shape', verdict: 'refused', attempt, ...(launch ? { launch } : {}), stage: 'answer', measured: 0, bar: 'a json array of findings, empty when there is nothing to say', bar_from: "the row's answer shape" })
+      return { ok: false, reason: 'arc could not read that reading of your change, so it has nothing to show you. Ask again.', gates, unreadable: true }
+    }
+    gates.push({ gate: 'shape', verdict: 'held', attempt, ...(launch ? { launch } : {}), stage: 'answer' })
+    let kept = findings
+    const droppedClaims: { claim: string; why: string }[] = []
+    for (const id of row.gates) {
+      const fn = GATES[id]
+      if (!fn) {
+        gates.push({ gate: id, verdict: 'could not judge', attempt, ...(launch ? { launch } : {}), stage: 'answer', bar_from: 'this arc has no implementation for that gate' })
+        return { ok: false, reason: `arc could not check ${id} on that reading, so it has nothing to show you. Ask again.`, gates }
+      }
+      const shaped: ParsedAnswer = { body: '', prose: '', briefing: '', coverage: null, dropped: [], returned: 0, overlap: null, leansOn: null }
+      const verdicts = kept.map(f => ({ f, v: fn(ctx, { ...shaped, body: JSON.stringify(f) }) }))
+      for (const x of verdicts) if (x.v.verdict === 'refused') droppedClaims.push({ claim: x.f.claim, why: x.v.reason })
+      // THE TRIMMED finding, not the one that went in: a citation arc could
+      // not place must not come back out rendered as one it could.
+      const survivors = ctx.cites
+        ? resolveCitations(verdicts.filter(x => x.v.verdict !== 'refused').map(x => x.f), ctx.cites).kept
+        : verdicts.filter(x => x.v.verdict !== 'refused').map(x => x.f)
+      // A GATE THAT CANNOT JUDGE STOPS THE READING. "could not judge" reaches
+      // the author as *not checked*, never as passed (A67-6), and an unchecked
+      // reading is one arc cannot say rests on anything.
+      if (verdicts.some(x => x.v.verdict === 'could not judge')) {
+        gates.push({ gate: id, verdict: 'could not judge', attempt, ...(launch ? { launch } : {}), ...verdicts.find(x => x.v.verdict === 'could not judge')!.v.record })
+        return { ok: false, reason: `arc could not check what that reading rests on, so it has nothing to show you. Ask again.`, gates }
+      }
+      gates.push({
+        gate: id,
+        // A DROP IS NOT A REFUSAL. Dropping every finding is still an answer:
+        // it says nothing the reading claimed rested on anything, which the
+        // author reads as *not reported* with the count beside it.
+        verdict: 'held',
+        attempt, ...(launch ? { launch } : {}),
+        stage: 'answer',
+        measured: droppedClaims.length,
+        bar: 0,
+        bar_from: 'claims dropped for resting on nothing arc was shown',
+      })
+      kept = survivors
+    }
+    return { ok: true, body: JSON.stringify({ findings: kept, dropped: droppedClaims }), briefing: '', coverage: null, dropped: [], returned: kept.length, overlap: null, gates }
   }
   // A MENU IS NOT A DRAFT, so a rule it breaks costs it an OPTION and never
   // the answer (A69-10). The shape gate runs on the list; every other gate

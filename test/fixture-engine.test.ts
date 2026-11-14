@@ -56,13 +56,13 @@ test('a brief the store has never seen is refused with its fingerprint named —
 
 test('under the fixture engine an unrowed pass refuses before the SDK, even with a key in the environment', async () => {
   const { getClient } = await import('../src/agent.ts')
-  const { runAnalysis } = await import('../src/analyze.ts')
+  const { runInspect } = await import('../src/inspect.ts')
   process.env.ANTHROPIC_API_KEY = 'a-key-that-must-never-be-used'
   try {
     assert.throws(() => getClient(), /this pass has no fixture/)
     // analyze is unrowed until slice 3: a draft change exists once the fixture
     // scenarios have run, so the only thing between it and the SDK is this.
-    await assert.rejects(runAnalysis(), (e: unknown) => /this pass has no fixture|no draft changes/.test((e as Error).message))
+    await assert.rejects(runInspect('sc.01-1', 'x'), (e: unknown) => /this pass has no fixture|nothing waiting to be decided|has no scene/.test((e as Error).message))
   } finally {
     delete process.env.ANTHROPIC_API_KEY
   }
@@ -244,6 +244,25 @@ for (const s of SCENARIOS) {
 
     // U2, THE MINIMAL REVISION (A69-9). Its conflict reading writes nothing
     // whatever it answers; its write stage answers with the body alone.
+    // U9 · the READING (A72-10): it writes nothing, so what the fixture
+    // proves is the brief, the citations that survived and the ones dropped.
+    if (s.row.startsWith('inspect.')) {
+      const out = result as { findings: { claim: string; cites: string[] }[]; dropped: { claim: string }[]; register: string; base: string }
+      assert.equal(out.register, 'argued')
+      // A READING WRITES NOTHING: the pending words are the author's own
+      // edit, exactly as `prepare` left them.
+      assert.ok(paragraphsOf(scene().body).some(p => /midnight|for her sister/.test(p)),
+        'the author\'s pending edit is still on disk, untouched by the reading')
+      if (s.name === 'lands') {
+        assert.equal(out.dropped.length, 0, 'every claim rested on something arc was shown')
+        assert.ok(out.findings.length >= 2, 'and the reading came back')
+        assert.ok(out.findings.every(f => f.cites.length > 0), 'each citing what it rests on')
+      } else {
+        assert.ok(out.dropped.length >= 2, 'the claims that rested on nothing were dropped')
+        assert.ok(out.findings.length >= 1, 'and the one that rested on something stands')
+      }
+      return
+    }
     if (s.row.startsWith('revise.scene.one-shot.quick')) {
       const out = result as unknown as { file: string; changed: boolean; conflicts: { between: string[]; tension: string }[]; reply: string; run: string | null }
       assert.ok(out.run, 'the response names the run that made it')
@@ -270,6 +289,38 @@ for (const s of SCENARIOS) {
         assert.equal(summary?.state, 'refused')
         assert.equal(summary?.ending, 'refused')
         assert.equal(readWorkingReceipt(out.run!)!.ending, 'refused')
+      } else if (s.expect === 'overreach') {
+        // "MINIMAL" IS MEASURED (A72-6). The answer cut the log entry as
+        // asked and rewrote the lamp-room paragraph nobody pointed at; the
+        // blast-radius gate refuses it BY NUMBER, the one repair goes
+        // unanswered, and the scene on disk is what the author left.
+        assert.equal(out.conflicts.length, 0, 'the reading found no conflict — it is the write that is refused')
+        assert.equal(out.changed, false)
+        assert.deepEqual(now, PRISTINE, 'the scene on disk is byte-equal — nothing was written')
+        // The sentence the author reads is rendered by code from the gate's
+        // record (`outcomeSentence`, run.ts): the gate's name in their words,
+        // and what was measured — the paragraph number — against the bar.
+        assert.match(out.reply, /would not keep it: the revision changed prose no note asked about \(¶3 against/,
+          'refused by paragraph number, in the author\'s words')
+        assert.match(out.reply, /ask again/)
+        if (s.row.endsWith('.write')) assert.equal(seen.length, 2, 'one repair was attempted, and the store had no answer for it')
+        else assert.equal(seen.length, 1, 'the reading sent its one brief; the refusal came at the write')
+        const summary = listRuns().find(r => r.id === out.run)
+        assert.equal(summary?.state, 'refused')
+        const receipt = readWorkingReceipt(out.run!)!
+        assert.equal(receipt.ending, 'refused')
+        // THE RECEIPT RECORDS THE SCOPE AND THE MEASURE: what the notes
+        // licensed, and what the answer changed outside it.
+        const gate = receipt.gates.find(g => g.gate === 'blast-radius')
+        assert.ok(gate, 'the blast-radius gate ran and is on the receipt')
+        assert.equal(gate!.verdict, 'refused')
+        assert.equal(gate!.measured, '¶3')
+        assert.ok(gate!.measured_against?.includes('¶5'), `the licensed scope is on the record: ${JSON.stringify(gate!.measured_against)}`)
+        assert.ok(gate!.measured_against?.some(m => /points at ¶5/.test(m)), 'and why it was licensed')
+        // AND THE LANDS FIXTURE, SAME ROW, STILL HOLDS: a gate that refused
+        // this one must have measured that one and found nothing outside.
+        assert.ok(!receipt.gates.some(g => g.gate === 'blast-radius' && g.verdict === 'could not judge'),
+          'the gate judges now — it is no longer the stub that said "designed, slice 3"')
       } else {
         assert.equal(out.conflicts.length, 0, 'one note cannot pull against itself')
         assert.notDeepEqual(now, PRISTINE, 'the revision landed in the draft layer')
