@@ -303,8 +303,9 @@ repo shares. This file is only what is particular to the backend.
   are read from the style contract, never hard-coded.
 - **The gate runner owns the child** (A67-6). `runGates(job)` in
   `src/gates.ts` is where a rowed pass hands over: it launches, walks the
-  ROW'S GATE IDS in order (`GATES`, keyed by id — locks, lock-order,
-  withhold-literals, and-chain, sentence-length, overlap, coverage-tail),
+  ROW'S GATE IDS in order (`GATES`, keyed by id — for example locks,
+  lock-order, validator, withhold-literals, and-chain, sentence-length,
+  overlap, coverage-tail, blast-radius, answer-whole; `gates.ts` is the list),
   writes a typed record for every gate that ran, keeps the refused text with
   the run, and offers exactly ONE repair. Where the engine keeps a transcript
   (the CLI) the repair resumes the first attempt's from the same directory
@@ -320,6 +321,33 @@ repo shares. This file is only what is particular to the backend.
   coverage tail does not land. A row naming a gate this arc has no
   implementation for is refused, never quietly skipped. Every record names
   the launch it belongs to, so two seeds of one run never blur.
+- **A prose answer comes back whole, or says why it cannot be measured**
+  (A75-1, A75-2). `GATES['answer-whole']` is the one gate that reads the
+  answer as a whole — overlap scores a fragment well and the coverage tail
+  only resolves claims — and it proves two things by count, either of which
+  refuses: *paragraphs*, every paragraph a coverage claim names exists in the
+  body — every claim the tail made (`ParsedAnswer.claims`), dropped ones
+  included, because a dropped claim still said where a beat lands; *floor*, the body holds at least the row's `minShareOfSubject` of the
+  subject's words. The subject is the scene (`ctx.sceneBody`), on the route
+  rewrite too and never the parent route; at selection scope it is the
+  passage the pass hands over as `ProseGateCtx.subjectPassage`. A row with no
+  floor is not measured and the record says so; a body opening on a
+  lowercase letter is recorded in `measured_against` and never refuses
+  alone. Both failing keeps the floor's figures structured beside the
+  paragraph proof's, and `gateSentence` renders the proof that failed with
+  whole percentages rounded DOWN (*too short to be the whole scene (14%
+  against 30%)*; *the whole passage it rebuilds* at selection scope). It runs
+  LAST on five rows: reroute and route rewrite through `ROUTE_GATES` (both
+  proofs), and `CLEAN_PASS_GATES` (revise · scene and revise · selection,
+  standard) and `MINIMAL_REVISION_GATES` (revise · scene · quick) with the
+  floor alone, since they carry no coverage claims — on a staged row the
+  write stage lists it and the launch carries the row's floor. The floor is
+  `ROUTE_MIN_SHARE_OF_SUBJECT`, 0.30, the author's bar (2026-11-14): a
+  truncated route measured 0.14, a sound short route 0.47. Every row whose
+  answer is prose (`WRITES_PROSE`) either lists the gate with a floor or
+  carries a one-line `noAnswerWhole` — draft, rephrase and synonyms do — and
+  `test/answer-whole-rows.test.ts` holds it: never both, never neither. The
+  reason is left out of the job fingerprint, as the fixture list is.
 - **A gesture is resolved to a cell by code, at the door** (A67-8).
   `src/request.ts` turns what the author did — the route button on a scene,
   *rewrite from these notes* on a route — into a cell (job · scope · mode ·
