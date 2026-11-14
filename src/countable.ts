@@ -7,12 +7,40 @@
 import { splitSentences } from 'arc-canon-graph'
 import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
 
+/** The header the composed contract (style.ts composeStyle) opens the book's
+ *  own layer with. Defined here, and composed from here, so the readers and
+ *  the composition cannot drift apart. */
+export const BOOK_LAYER_HEADER = '=== STYLE LAYER 2 — THIS BOOK (docs/style.md) ==='
+
+/** A body line that reads as a layer header — pasted from a brief, quoted
+ *  in a note. composeStyle quotes it ("> ") so the composed contract carries
+ *  exactly one header line of its own per layer: a reader, or a model, can
+ *  never take a quoted header for the place the book's layer begins. */
+const HEADER_LIKE = /^[ \t]*=== STYLE LAYER\b/gm
+export const quoteLayerHeaders = (body: string): string => body.replace(HEADER_LIKE, m => `> ${m}`)
+
+/** The book layer's own header, as a whole line: what composeStyle writes,
+ *  and never a header quoted inside either layer's body. */
+const BOOK_HEADER_LINE = new RegExp(`^${BOOK_LAYER_HEADER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm')
+
+/** The statement a reader takes, honouring the contract's own precedence
+ *  (A77-2): "layer 2 wins on any conflict; layer 1 applies wherever layer 2
+ *  is silent". In a composed contract the book's layer is read first, and the
+ *  whole text only where the book states nothing — which then finds the
+ *  author's layer, the only other place a statement can be. A text without
+ *  the header line (one rule, one contract line, one layer) is read as it is. */
+function statementOf(style: string, re: RegExp): RegExpExecArray | null {
+  const at = BOOK_HEADER_LINE.exec(style)?.index ?? -1
+  return (at >= 0 ? re.exec(style.slice(at)) : null) ?? re.exec(style)
+}
+
 /** The one countable style rule the contract states as a number: "A chain
  *  stops at three." Read from the ratified contract, never from a constant,
  *  so the author owns the number; absent from the contract, there is no gate.
- *  Words up to twelve are accepted alongside digits. */
+ *  Words up to twelve are accepted alongside digits. The book's number wins
+ *  over the author's (statementOf). */
 export function andCapFromContract(style: string): number | null {
-  const m = /\bchain stops at (\w+)\b/i.exec(style)
+  const m = statementOf(style, /\bchain stops at (\w+)\b/i)
   if (!m) return null
   const words: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 }
   const n = words[m[1].toLowerCase()] ?? Number(m[1])
@@ -23,9 +51,9 @@ export function andCapFromContract(style: string): number | null {
  *  run-on however it is joined — the first live route carried a 64-word
  *  sentence on two "and"s and six commas, longer than anything in the
  *  author's own manuscript (max 63, 95th percentile 44). Read from the
- *  contract like the and-cap; absent, no gate. */
+ *  contract like the and-cap, the book's number first; absent, no gate. */
 export function wordCapFromContract(style: string): number | null {
-  const m = /\bsentence stops at (\d+) words?\b/i.exec(style)
+  const m = statementOf(style, /\bsentence stops at (\d+) words?\b/i)
   if (!m) return null
   const n = Number(m[1])
   return Number.isInteger(n) && n > 0 ? n : null

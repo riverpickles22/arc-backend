@@ -22,7 +22,9 @@ export type Predicate = `and-chain:${number}` | `sentence-length:${number}`
 /** The countable predicates a text states, read by the SAME readers the prose
  *  gates read the contract with (countable.ts) — one definition of what
  *  "a chain stops at three" means. Called on one rule or one contract line at
- *  a time, as those readers find the first statement in what they are given. */
+ *  a time, as those readers find the first statement in what they are given
+ *  — and on a whole composed contract they give the book's number, not every
+ *  number stated, so this function is meant for one rule or one line. */
 export function predicatesOf(text: string): Predicate[] {
   const out: Predicate[] = []
   const chain = andCapFromContract(text)

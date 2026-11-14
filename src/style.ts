@@ -17,6 +17,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { StyleLayerPayload as StyleLayer } from 'arc-canon-graph'
 import { STORY } from './config'
+import { BOOK_LAYER_HEADER, quoteLayerHeaders } from './countable'
 
 /** Where the author-level contract canonically lives.
  *  Pure: environment and home directory come in as arguments.
@@ -130,10 +131,10 @@ export function composeStyle(layers: { author: StyleLayer | null; story: StyleLa
   }
   const out = [
     '=== STYLE LAYER 1 — THE AUTHOR (constant across every book) ===',
-    layers.author?.body.trim() ?? '(this author has no author-level style file)',
+    (layers.author && quoteLayerHeaders(layers.author.body.trim())) ?? '(this author has no author-level style file)',
     '',
-    "=== STYLE LAYER 2 — THIS BOOK (docs/style.md) ===",
-    layers.story?.body.trim() ?? '(this story has no style contract of its own)',
+    BOOK_LAYER_HEADER,
+    (layers.story && quoteLayerHeaders(layers.story.body.trim())) ?? '(this story has no style contract of its own)',
     '',
     'PRECEDENCE: layer 2 wins on any conflict; layer 1 applies wherever layer 2',
     'is silent. Both bind prose FORM only — canon still wins on any question of',
