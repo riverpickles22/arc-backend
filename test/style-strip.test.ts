@@ -119,7 +119,7 @@ test('a run that overruns the quotation keeps the contract\'s line structure', (
 })
 
 test('the composition the pass uses strips a touchstone AND an inline quotation', async () => {
-  const { styleForPass } = await import('../src/reroute.ts')
+  const { styleForPass } = await import('../src/style-projection.ts')
   const { proseScenes } = await import('../src/story.ts')
   const fs = await import('node:fs')
   const path = await import('node:path')
@@ -148,7 +148,7 @@ test('the composition the pass uses strips a touchstone AND an inline quotation'
 })
 
 test('a contract that quotes BOTH scenes keeps the sibling and loses the subject', async () => {
-  const { styleForPass } = await import('../src/reroute.ts')
+  const { styleForPass } = await import('../src/style-projection.ts')
   const { proseScenes } = await import('../src/story.ts')
   const fs = await import('node:fs')
   const path = await import('node:path')

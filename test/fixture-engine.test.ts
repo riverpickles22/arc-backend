@@ -21,7 +21,8 @@ import type { RouteAlternative } from 'arc-canon-graph/api-types.ts'
 
 const { chooseEngine, currentEngine } = await import('../src/engine.ts')
 const { briefFingerprint, loadFixtures, runFixturePrompt, FixtureMiss, FIXTURES_DIR } = await import('../src/fixtures.ts')
-const { MAX_OVERLAP, buildDestination, sceneKeypoints } = await import('../src/reroute.ts')
+const { buildDestination, sceneKeypoints } = await import('../src/reroute.ts')
+const { MAX_OVERLAP } = await import('../src/gate-ctx.ts')
 const { ROW_EXPLORE_SCENE } = await import('../src/registry.ts')
 const ROW_RULES_HEAD = ROW_EXPLORE_SCENE.rules.slice(0, 40)
 const { annotations } = await import('../src/annotations.ts')

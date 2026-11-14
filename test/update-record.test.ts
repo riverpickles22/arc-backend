@@ -54,7 +54,7 @@ const { ROW_UPDATE_RECORD_SCENE } = await import('../src/registry.ts')
 const { validateStory } = await import('../src/canon.ts')
 const { proposalOrigins, retractionOrigins, recordProposalOrigin } = await import('../src/ledger.ts')
 const { readWorkingReceipt } = await import('../src/run.ts')
-const { gateCtx } = await import('../src/reroute.ts')
+const { gateCtx } = await import('../src/gate-ctx.ts')
 
 // ---- the pure half -------------------------------------------------------
 

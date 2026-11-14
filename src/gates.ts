@@ -41,7 +41,7 @@ import type { GateId, LaunchSpec } from './registry'
 import { keepWithRun, recordLaunch, writeWorkingReceipt, type GateRecord, type Receipt, type Run } from './run'
 import { sha16 } from './records'
 import { attachLaunch } from './runs'
-import { splitBriefing } from './redraft'
+import { splitBriefing } from './gate-ctx'
 
 // ---- what a gate is given, and what it says ------------------------------
 

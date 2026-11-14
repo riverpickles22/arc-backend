@@ -103,9 +103,16 @@ export function noEngineSentence(env: EngineEnv = process.env): string {
  *  and press Return"). */
 const REOPEN = 'press Control-C in the window arc is running in, type  arc  and press Return, and ask again.'
 
-/** How the author takes a setting away, wherever they put it. */
+/** How the author takes a setting away. A setting reaches arc only from the
+ *  terminal it was started in — nothing reads a settings file (A78-2). A new
+ *  window clears one typed into the old window; one that comes back is in
+ *  the terminal's own settings file, so the sentence opens it in keystrokes. */
 const unset = (setting: string): string =>
-  `Remove ${setting} from your terminal's settings, or delete that line from arc-backend/.env if it is there; then ${REOPEN}`
+  'Press Control-C in the window arc is running in, close that window, open a new terminal window, '
+  + 'type  arc  and press Return, and ask again. '
+  + `If this message comes back, ${setting} is in your terminal's settings: type  open -e ~/.zshrc  and press Return, `
+  + `delete the line with ${setting}, save with Command-S, close that window, and open a new terminal window. `
+  + 'If the line is not there, do the same with  open -e ~/.zprofile  instead.'
 
 /** The fix for a refusal on the `sdk` engine, which is only ever chosen by
  *  name: take the name away. */

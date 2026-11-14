@@ -11,7 +11,7 @@ process.env.ARC_STORY_PATH = makeStory()
 process.env.ARC_DRAFT_ENGINE = 'none'
 
 const { GATES } = await import('../src/gates.ts')
-const { gateCtx } = await import('../src/reroute.ts')
+const { gateCtx } = await import('../src/gate-ctx.ts')
 const registry = await import('../src/registry.ts')
 const { ROWS, WRITES_PROSE, rowKey, jobFingerprint, ROUTE_MIN_SHARE_OF_SUBJECT,
   ROW_DRAFT_SCENE, ROW_REVISE_SCENE, ROW_REVISE_SELECTION, ROW_REVISE_SCENE_STAGED, ROW_REPHRASE, ROW_SYNONYMS } = registry

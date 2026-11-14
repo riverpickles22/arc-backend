@@ -14,7 +14,7 @@ process.env.ARC_STORY_PATH = makeStory()
 process.env.ARC_DRAFT_ENGINE = 'none'
 
 const { GATES, runRowGates } = await import('../src/gates.ts')
-const { gateCtx } = await import('../src/reroute.ts')
+const { gateCtx } = await import('../src/gate-ctx.ts')
 const { outcomeSentence } = await import('../src/run.ts')
 const { ROW_EXPLORE_SCENE, ROW_EXPLORE_ROUTE, ROUTE_MIN_SHARE_OF_SUBJECT } = await import('../src/registry.ts')
 

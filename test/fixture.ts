@@ -33,24 +33,29 @@ export function writeScene(dir: string, rel: string, id: string, body: string, e
  *  example's prose were written against it, and a scene anchored on ids that
  *  resolve is what gives a lens a non-empty context to read. */
 export function makeExampleStory(): string {
-  return copyExampleStory(dir => {
-    fs.mkdirSync(path.join(dir, 'prose', 'ch-02'), { recursive: true })
-    fs.writeFileSync(path.join(dir, 'prose', 'ch-02', 'scene-01.md'),
-      [
-        '---',
-        'scene: sc.02-1',
-        'chapter: ch.02-the-aurelia',
-        'status: proposed',
-        'pov: char.ines',
-        'facts: [char.ines, char.wren, place.whitcombe-light]',
-        'events: [event.the-wreck]',
-        '---',
-        '',
-        'The light held. Below it the sea did what the sea does, and Ines counted',
-        'the stairs down because counting was the only arithmetic left to her.',
-        '',
-      ].join('\n'))
-  })
+  return copyExampleStory(writeAureliaScene)
+}
+
+/** The second scene `makeExampleStory` adds — sc.02-1, in ch.02, bound to
+ *  the wreck. Exported so a test on the fixture story can add it for itself
+ *  and take it away again, without moving any recorded brief (A80-1). */
+export function writeAureliaScene(dir: string): void {
+  fs.mkdirSync(path.join(dir, 'prose', 'ch-02'), { recursive: true })
+  fs.writeFileSync(path.join(dir, 'prose', 'ch-02', 'scene-01.md'),
+    [
+      '---',
+      'scene: sc.02-1',
+      'chapter: ch.02-the-aurelia',
+      'status: proposed',
+      'pov: char.ines',
+      'facts: [char.ines, char.wren, place.whitcombe-light]',
+      'events: [event.the-wreck]',
+      '---',
+      '',
+      'The light held. Below it the sea did what the sea does, and Ines counted',
+      'the stairs down because counting was the only arithmetic left to her.',
+      '',
+    ].join('\n'))
 }
 
 /** The worked example exactly as arc-core ships it, in one commit — one

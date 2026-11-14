@@ -27,7 +27,7 @@ process.env.ARC_DRAFT_ENGINE = 'none'
 const { proseDraft, proseScenes } = await import('../src/story.ts')
 const { recordGenerated } = await import('../src/ledger.ts')
 const { READ_MAP, noteVersion, readManifest, readsFrom, staleAgainst } = await import('../src/reads.ts')
-const { fingerprintsNow } = await import('../src/reroute.ts')
+const { fingerprintsNow } = await import('../src/style-projection.ts')
 const { createAnnotation, updateAnnotation } = await import('../src/annotations.ts')
 const { destinationAt, keepCandidate, candidatePath, landOrKeep, moved, restoreIfOurs } = await import('../src/landing.ts')
 

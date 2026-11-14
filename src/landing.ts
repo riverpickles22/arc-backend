@@ -22,6 +22,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { STORY } from './config'
+import { validateStory } from './canon'
+import { resolveWithin } from './safe-path'
 import { inLane } from './lane'
 import { sha16 } from './records'
 
@@ -220,3 +222,32 @@ export function dropCandidate(run: string): boolean {
  *  path, no git word — what happened and what they can do next. */
 export const movedSentence = (where: string): string =>
   `You changed ${where} while that was being written, so arc did not put its words over yours. What it wrote is kept beside the scene — ask again from where the scene stands now.`
+
+/** THE VALIDATED WRITE: the file on disk, the story's validator run over it,
+ *  and the previous bytes put back — or the file removed — when it refuses.
+ *  Shared by every writing row (A80-1, from draft.ts). */
+export function writeValidated(rel: string, content: string): { ok: boolean; output: string } {
+  const abs = resolveWithin(STORY, rel)
+  const existed = fs.existsSync(abs)
+  const prev = existed ? fs.readFileSync(abs, 'utf8') : null
+  fs.mkdirSync(path.dirname(abs), { recursive: true })
+  fs.writeFileSync(abs, content)
+  const check = validateStory()
+  if (!check.ok) {
+    if (prev !== null) fs.writeFileSync(abs, prev)
+    else fs.unlinkSync(abs)
+  }
+  return check
+}
+
+/** WHAT THE AUTHOR IS TOLD AT THE LANDING about the age of what the pass
+ *  was given — proven from the manifest, never argued (A69-6). A season-old
+ *  snapshot belongs where they are already reading, not in a receipt they
+ *  have to open. Nothing stale, nothing said: a sentence that fires on every
+ *  draft teaches the author to skip it.
+ *
+ *  Pure, so both halves of the claim can be held by a test. */
+export function leansOnSentence(aged: { id: string; as_of: string }[] | undefined): string {
+  if (!aged?.length) return ''
+  return ` It leans on ${aged.map(l => `${l.id} as of ${l.as_of}`).join(', ')} — the record has not looked since.`
+}

@@ -14,8 +14,8 @@ import type { ResolvedRequest } from './request'
 import type { LayerReading, LeanedOn } from './slice'
 import type { Row } from './registry'
 import { jobFingerprint } from './registry'
-import { Run, emptyReceipt, writeWorkingReceipt, type Receipt, type Source } from './run'
-import { arcRevision } from './records'
+import { Run, emptyReceipt, receiptsOf, writeWorkingReceipt, type Receipt, type Source } from './run'
+import { arcRevision, sha16 } from './records'
 import { registerRun } from './runs'
 import type { RunEnding } from 'arc-canon-graph'
 
@@ -81,4 +81,17 @@ export function closeReceipt(ctx: RunCtx, ending: RunEnding): void {
   ctx.receipt.ending = ending
   ctx.receipt.decided_at = new Date().toISOString()
   writeWorkingReceipt(ctx.receipt)
+}
+
+/** THE KEY OF A TRIGGERED RUN: the job, the scene, the commits it read and a
+ *  fingerprint of the combined diff it was given. The same key is the same
+ *  reading — a run that finds a landed receipt carrying it does nothing, and
+ *  one that finds only failed or cancelled ones runs again. */
+export const runKey = (job: string, scene: string, range: { from: string; to: string }, diffText: string): string =>
+  sha16([job, scene, range.from, range.to, sha16(diffText)].join('\u0000'))
+
+/** The receipt of a LANDED run of `job` (U7 by default; U12 since A74-6) that carries this key, apart from `except`
+ *  (the run asking). Read from the record (history/) and the open runs. */
+export function landedByKey(key: string, except?: string, job: 'update-record' | 'learn' = 'update-record'): string | null {
+  return receiptsOf(job).find(r => r.key === key && r.ending === 'landed' && r.run_id !== except)?.run_id ?? null
 }

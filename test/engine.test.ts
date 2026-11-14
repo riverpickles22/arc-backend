@@ -50,9 +50,14 @@ test('a key and no CLI is told how to get an engine, in keystrokes; the SDK fix 
   assert.match(told, /press Control-C in the window arc is running in, type {2}arc {2}and press Return/)
   assert.match(told, /A key on its own is not enough/)
   assert.doesNotMatch(noEngineSentence({}), /key/)
-  assert.match(noEngineSentence({ ARC_DRAFT_ENGINE: 'none' }), /ARC_DRAFT_ENGINE=none is on\. Remove ARC_DRAFT_ENGINE=none from your terminal's settings, or delete that line from arc-backend\/\.env/)
+  assert.match(noEngineSentence({ ARC_DRAFT_ENGINE: 'none' }), /ARC_DRAFT_ENGINE=none is on\. Press Control-C in the window arc is running in, close that window, open a new terminal window/)
   assert.match(noEngineSentence({ ARC_DRAFT_ENGINE: 'sdk' }), /no key is set, so nothing can answer/)
-  assert.match(SDK_ENGINE_FIX, /^Remove ARC_DRAFT_ENGINE=sdk from your terminal's settings, or delete that line from arc-backend\/\.env/)
+  assert.match(SDK_ENGINE_FIX, /^Press Control-C in the window arc is running in, close that window, open a new terminal window, type {2}arc {2}and press Return, and ask again\./)
+  assert.match(SDK_ENGINE_FIX, /type {2}open -e ~\/\.zshrc {2}and press Return, delete the line with ARC_DRAFT_ENGINE=sdk, save with Command-S/)
+  assert.match(SDK_ENGINE_FIX, /open -e ~\/\.zprofile/)
+  // Nothing reads a settings file (A78-2): no sentence may send the author to one.
+  for (const said of [SDK_ENGINE_FIX, noEngineSentence({ ARC_DRAFT_ENGINE: 'none' }), noEngineSentence({ ARC_DRAFT_ENGINE: 'sdk' })])
+    assert.doesNotMatch(said, /\.env\b/)
 })
 
 test('ARC_DRAFT_ENGINE=sdk with no key is no engine, and the banner says so', () => {

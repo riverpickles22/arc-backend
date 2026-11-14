@@ -202,7 +202,7 @@ test('a gate that genuinely cannot judge is recorded as such — never as passed
 
 test('a row naming a gate this arc cannot run is refused, never quietly skipped', async () => {
   const { runRowGates, GATES } = await import('../src/gates.ts')
-  const { gateCtx } = await import('../src/reroute.ts')
+  const { gateCtx } = await import('../src/gate-ctx.ts')
   // `validator` was the stand-in here until A69-3 implemented it. The rule is
   // about a gate id with no implementation, so the stand-in is now an id the
   // registry declares and no slice has built.

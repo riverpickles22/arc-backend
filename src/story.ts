@@ -23,9 +23,11 @@ import { assertBase, assertBases, baseOf, tokenFor } from './base'
 import { fingerprintsNow as readsNow, staleAgainst } from './reads'
 import { candidates } from './landing'
 import { jobFingerprint, rowByKey } from './registry'
-// The style projection a pass is shown lives with the routes; the import is
-// used inside functions only, so the cycle never runs at module init.
-import { styleForPass } from './reroute'
+// The style projection a pass is shown lives in style-projection.ts, which
+// reads proseScenes from here: story.ts ⇄ style-projection.ts is a cycle, and
+// both sides use the other inside functions only, so it never runs at module
+// init.
+import { styleForPass } from './style-projection'
 import { canonicalYaml } from './agent'
 import { validateStory } from './canon'
 import { draftSettled, readWorkingReceipt, type Receipt } from './run'

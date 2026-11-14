@@ -24,7 +24,7 @@ const { overreachSentence } = await import('../src/blast-radius.ts')
 const { inspectReply } = await import('../src/inspect.ts')
 const { movedSentence } = await import('../src/landing.ts')
 const { GATES } = await import('../src/gates.ts')
-const { gateCtx } = await import('../src/reroute.ts')
+const { gateCtx } = await import('../src/gate-ctx.ts')
 
 /** What `validate.py` prints when a draft names an id the record lacks. */
 const FAILED = `FAIL — 1 finding(s):

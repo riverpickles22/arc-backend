@@ -23,9 +23,11 @@ With no story configured it serves arc-core's worked example, so a fresh checkou
 npm install
 npm run dev               # http://localhost:8787 — serves the example story
 
-# to use your own story and enable the agent:
-cp .env.example .env      # add ANTHROPIC_API_KEY, set ARC_STORY_PATH
+# to serve your own story:
+ARC_STORY_PATH=../my-story npm run dev
 ```
+
+Settings are read from the environment the server starts in, and only from there: nothing loads a `.env` file. `dev.sh` at the workspace root sets `ARC_CORE_PATH`, `ARC_STORY_PATH` and `PORT` itself and passes the rest of its own environment through, so a setting goes in the shell that runs it.
 
 Startup resolves and checks both repo paths and prints them, so a missing or mispointed checkout fails immediately with a message naming the variable to set, rather than throwing on the first request.
 
@@ -37,6 +39,7 @@ Startup resolves and checks both repo paths and prints them, so a missing or mis
 | `ARC_CORE_PATH` | `../arc-core` | Schemas, conventions, python tools |
 | `ARC_STORY_PATH` | `../arc-core/examples/example-story` | The story to serve and edit |
 | `ARC_PYTHON` | arc-core's `.venv`, else `python3` | Needs pyyaml + jsonschema |
+| `ARC_DRAFT_ENGINE` | unset | What writes: `none` · `fixture` · `sdk` · `claude-cli`. Unset, the claude CLI on your login when it is present; the SDK only when named and a key is set |
 | `ARC_MODEL` | `claude-opus-5` | Model for the passes |
 | `PORT` | `8787` | |
 | `ARC_CORS_ORIGIN` | `*` | Set to your frontend origin in production |
@@ -69,6 +72,10 @@ Every path is resolved and checked against the story root before use, so no tool
 
 The agent's system prompt puts arc-core's `conventions.md` in a cached prefix and the canon graph after it, so a canon write invalidates only the volatile half.
 
+## Releases
+
+A release is an annotated git tag (`v0.1.0` and on), cut by the author, with the date it was made available in the tag message and a matching line in [CHANGELOG.md](CHANGELOG.md). The date is there because the FSL converts each version to Apache 2.0 on the second anniversary of the day that version was made available, so every version needs a date nobody has to argue about.
+
 ## License
 
 This repository's code is source-available under the
@@ -76,7 +83,7 @@ This repository's code is source-available under the
 (FSL-1.1-Apache-2.0). In plain words: use it, run it for your own books, change
 it, redistribute it, build on it — but do not offer it, or something
 substantially like it, as a competing product or service. Each version becomes
-Apache 2.0 two years after its release, so nothing here stays closed for good.
+Apache 2.0 two years after the day it was made available, so nothing here stays closed for good.
 
 The story format is a different matter, and always will be:
 [arc-core](https://github.com/riverpickles22/arc-core) — the conventions, the

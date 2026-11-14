@@ -178,7 +178,7 @@ test('an empty selection, and no engine at all, are refused before a run is mint
     (e: unknown) => {
       const err = e as { status?: number; message?: string }
       assert.equal(err.status, 503)
-      assert.match(err.message!, /ARC_DRAFT_ENGINE=none is on\. Remove ARC_DRAFT_ENGINE=none from your terminal's settings/)
+      assert.match(err.message!, /ARC_DRAFT_ENGINE=none is on\. Press Control-C in the window arc is running in/)
       return true
     })
   assert.equal(listRuns().length, before, 'and neither opened a run')

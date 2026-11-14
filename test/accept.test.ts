@@ -9,6 +9,13 @@
 // commits the receipt and nothing else; the receipt carries none of the
 // draft's prose; the draft row reads attended after one accepted run; and a
 // draft with no run behind it writes no receipt at all.
+//
+// THE ACCEPT IS ONE MODULE, AND THIS IS ITS TEST FILE (A80-1). Every decision
+// on a pending draft — accept, reject, discard, at every grain — goes through
+// src/accept.ts; the route handlers only narrow the wire shape, and the first
+// test below holds that. The last two tests are the route field's (A67-10),
+// which were accept-routes.test.ts: they add the second scene they need for
+// themselves and reset takes it away, so no recorded brief ever sees it.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -18,7 +25,7 @@ import { load as yamlLoad } from 'js-yaml'
 import type { Receipt } from '../src/run.ts'
 // Sets the story and the fixture engine before anything under src/ loads.
 import { SCENARIOS, SCENE, STORY, renderScenario, reset } from './fixture-scenarios.ts'
-import { git } from './fixture.ts'
+import { git, writeAureliaScene } from './fixture.ts'
 
 const { createArcServer } = await import('../src/server.ts')
 const { runDraft } = await import('../src/draft.ts')
@@ -29,7 +36,9 @@ const { proseScenes, parseScene } = await import('../src/story.ts')
 const { generatedFor } = await import('../src/ledger.ts')
 const { baseOf } = await import('../src/base.ts')
 const { ROW_DRAFT_SCENE, rowKey, registryStatus } = await import('../src/registry.ts')
-const { listAlternatives, adoptAlternative } = await import('../src/reroute.ts')
+const { listAlternatives, adoptAlternative, addRouteNote, writeAlternative } = await import('../src/reroute.ts')
+const { readDispositions } = await import('../src/evidence.ts')
+const { READ_MAP, sceneVersion } = await import('../src/reads.ts')
 const { alignParagraphs } = await import('arc-canon-graph')
 
 const server = createArcServer()
@@ -57,6 +66,20 @@ async function accept(file: string): Promise<string> {
   assert.equal(res.status, 200, JSON.stringify(res.json))
   return res.json.hash as string
 }
+
+test('no handler in server.ts holds the accept\'s ceremony: it is accept.ts\'s', () => {
+  const src = (f: string): string => fs.readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8')
+  const server = src('server.ts')
+  for (const step of ['recordDraftDecision', 'commitRecords', 'clearAlternatives', 'closeAnsweredNotes', 'generatedFor',
+    'proseAccept', 'proseAcceptParagraph', 'proseRejectParagraph', 'proseAcceptSentence', 'proseRejectSentence', 'proseDiscard']) {
+    assert.doesNotMatch(server, new RegExp(`\\b${step}\\b`), `server.ts names ${step}`)
+  }
+  const accept = src('accept.ts')
+  for (const door of ['acceptScenes', 'acceptParagraph', 'rejectParagraph', 'acceptSentence', 'rejectSentence', 'discardDraft']) {
+    assert.match(accept, new RegExp(`export function ${door}\\(`), `accept.ts exports ${door}`)
+    assert.match(server, new RegExp(`\\b${door}\\(`), `server.ts calls ${door}`)
+  }
+})
 
 /** The record receipt must carry no paragraph of what the run wrote. */
 function assertNoProse(text: string, file: string): void {
@@ -361,5 +384,84 @@ test('a sentence accept records its step at sentence grain', async () => {
   const step = r.author_decision?.taken?.[0] as { grain: string; verdict: string; paragraph: number; sentence: number }
   assert.deepEqual([step.grain, step.verdict, step.paragraph, step.sentence], ['sentence', 'accepted', hit!.paragraph, hit!.sentence])
   assert.equal(r.result.commit, hit!.hash)
+  reset()
+})
+
+// ---- the routes beside an accepted scene (A67-10, criterion 2 and Q13) -----
+//
+// These go through the HTTP accept, because the decision they turn on —
+// WHICH accepts clear a field, and which route is already spoken for — lives
+// in the accept (`acceptScenes`), not in `clearAlternatives`, which the unit
+// tests call directly. They need a second scene, sc.02-1: written and
+// committed here on top of the example, and gone at the next reset(), so the
+// fixture story every recorded brief is fingerprinted over is never changed.
+
+const ROUTE_SCENE = 'sc.02-1'
+const ROUTE_OTHER = 'sc.01-1'
+const withRouteScene = (): void => {
+  reset()
+  writeAureliaScene(STORY)
+  git(STORY, 'add', '-A')
+  git(STORY, 'commit', '-qm', 'a second scene, for the route tests')
+}
+const routeSceneOf = (id: string) => proseScenes().find(s => s.scene === id)!
+const putRoute = (scene: string, id: string, at: string, over: Record<string, unknown> = {}) => writeAlternative({
+  scene, seed: 'late-entry', based_on: 'b', briefing: '', coverage: null, overlap: 0,
+  run: 'run.0001', v: READ_MAP, reads: [{ id: scene, version: sceneVersion(routeSceneOf(scene)) }],
+  id, created_at: at, body: `Body ${id}.`, ...over,
+} as never)
+const dispositionsFor = (id: string) => readDispositions().filter(d => d.route === id)
+/** THE BASE as a CLIENT gets it (A72-3): read from what the draft reading
+ *  served, and echoed back with the decision — never recomputed here. */
+const servedBases = async (files: string[]): Promise<Record<string, string>> => {
+  const draft = await (await fetch(`${base}/api/prose/draft`)).json() as { changes: { file: string; base: string }[] }
+  return Object.fromEntries(files.map(f => [f, draft.changes.find(c => c.file === f)?.base ?? 'missing']))
+}
+
+test('the accept supersedes the routes waiting beside the one it adopted, and never the adopted route itself', async () => {
+  withRouteScene()
+  putRoute(ROUTE_SCENE, 'alt-1111aaaa', '2026-09-10T00:00:00Z', { body: 'A wholly different way in tonight.' })
+  putRoute(ROUTE_SCENE, 'alt-1111bbbb', '2026-09-11T00:00:00Z')
+  addRouteNote(ROUTE_SCENE, 'alt-1111bbbb', 'nearly, but the coat is late', null)
+
+  // The destination as this view was served it (A72-3); the route requires it.
+  const destination = (await (await fetch(`${base}/api/prose`)).json() as { bases: Record<string, string> }).bases[routeSceneOf(ROUTE_SCENE).file]
+  assert.equal((await post('/api/prose/reroute/adopt', { scene: ROUTE_SCENE, alt: 'alt-1111aaaa', base: destination })).status, 200)
+  const acceptFiles = [routeSceneOf(ROUTE_SCENE).file]
+  const accepted = await post('/api/prose/accept',
+    { message: 'a route taken', files: acceptFiles, bases: await servedBases(acceptFiles) })
+  assert.equal(accepted.status, 200)
+
+  // The one the author took: adopted, once. A `superseded` entry here would
+  // put two readings of the same route on record and the later one would be
+  // the lie.
+  assert.deepEqual(dispositionsFor('alt-1111aaaa').map(d => d.disposition), ['adopted'])
+  // The one waiting beside it: superseded, with the author's words kept.
+  const [waiting] = dispositionsFor('alt-1111bbbb')
+  assert.equal(waiting.disposition, 'superseded')
+  assert.deepEqual(waiting.notes.map(n => n.body), ['nearly, but the coat is late'])
+  // And the field is empty either way: both files are gone, each behind a
+  // disposition of its own.
+  assert.deepEqual(listAlternatives(ROUTE_SCENE), [])
+  assert.deepEqual(fs.existsSync(path.join(STORY, '.arc', 'alternatives', ROUTE_SCENE))
+    ? fs.readdirSync(path.join(STORY, '.arc', 'alternatives', ROUTE_SCENE)) : [], [])
+  reset()
+})
+
+test('an accept that adopted no route clears nothing: the routes wait, stale by the change', async () => {
+  withRouteScene()
+  putRoute(ROUTE_SCENE, 'alt-2222aaaa', '2026-09-10T00:00:00Z')
+  const before = readDispositions().length
+
+  // The author edits a different scene by hand and accepts that.
+  const other = routeSceneOf(ROUTE_OTHER)
+  fs.writeFileSync(path.join(STORY, other.file),
+    fs.readFileSync(path.join(STORY, other.file), 'utf8') + '\nOne more line, typed by hand.\n')
+  const accepted = await post('/api/prose/accept',
+    { message: 'a hand edit', files: [other.file], bases: await servedBases([other.file]) })
+  assert.equal(accepted.status, 200)
+
+  assert.equal(readDispositions().length, before, 'no route was disposed of by an accept that took none')
+  assert.deepEqual(listAlternatives(ROUTE_SCENE).map(a => a.id), ['alt-2222aaaa'], 'the route is still waiting')
   reset()
 })

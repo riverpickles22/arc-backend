@@ -13,8 +13,11 @@ process.env.ARC_STORY_PATH = story
 process.env.ARC_DRAFT_ENGINE = 'none'
 const {
   authority, sceneKeypoints, buildDestination, buildKnownRoute, inferredRoute, buildReroutePrompt, flattenPrompt,
-  parseCoverageTail, lexicalOverlap, lockOrderViolation, wordSurvival, stripSceneTouchstones, resolveCoverage, andCapFromContract, andChainViolations, wordCapFromContract, longSentenceViolations, runReroute, SEEDS,
+  runReroute, SEEDS,
 } = await import('../src/reroute.ts')
+const { parseCoverageTail, lexicalOverlap, lockOrderViolation, wordSurvival, resolveCoverage, andChainViolations, longSentenceViolations } = await import('../src/gate-ctx.ts')
+const { stripSceneTouchstones } = await import('../src/style-projection.ts')
+const { andCapFromContract, wordCapFromContract } = await import('../src/countable.ts')
 const { HttpError } = await import('../src/http.ts')
 
 const reset = () => { git(story, 'checkout', 'HEAD', '--', '.'); git(story, 'clean', '-fdq') }

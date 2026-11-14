@@ -357,7 +357,7 @@ repo shares. This file is only what is particular to the backend.
   silently mapped to standard; both before any token. The receipt records
   the gesture as the author made it and the cell it became.
 - **Evidence resolves against the destination the pass was given** (A67-8).
-  `resolveCoverage()` checks each coverage claim against the destination and
+  `resolveCoverage()` (`src/gate-ctx.ts`) checks each coverage claim against the destination and
   DROPS what does not resolve, counting it by reason — unresolvable ·
   outside the slice (it names one of arc's own key points, which are context
   and never the destination) · unparseable. A beat stated twice is a
@@ -385,7 +385,7 @@ repo shares. This file is only what is particular to the backend.
   notes, and a note carries its quote. A row that declares the gate and
   hands over no set is refused, never silently skipped. A pass supplies the
   brief, the repair's line, and what its gates measure against
-  (`gateCtx()` in reroute.ts); it owns no launch, no retry and no receipt
+  (`gateCtx()` in `src/gate-ctx.ts`); it owns no launch, no retry and no receipt
   bookkeeping of its own.
 - **The engine seam is `src/engine.ts`, and it takes the row first**
   (A67-2). `askRow(row, brief, opts)` answers a brief from whichever
@@ -447,7 +447,8 @@ repo shares. This file is only what is particular to the backend.
   entry — never the call site — decides whether the child gets tools.
   `test/pass-registry.test.ts` enumerates the launch sites, reads a real
   child's argv, and holds the RATCHET: the count of launches with no row
-  (twelve) may only fall, and a migration lowers it in the same change it
+  (`BARE_SEAM_CALLS`, four today: the lenses, intake, the material worker,
+  the judgment) may only fall, and a migration lowers it in the same change it
   deletes the entry it replaces. `src/registry.types.test.ts` is the
   negative type test — a sealed row cannot carry a toolbelt, a session or a
   subagent pool — proven by `npm run typecheck`.

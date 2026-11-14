@@ -36,8 +36,7 @@
 // overlap — which proves the answer reused too much of the original WORDING
 // and nothing more. Whether the scene took a different dramatic route is a
 // reading; it stays argued, in the briefing and in the author's eye.
-import { andCapFromContract, sentencesOver, wordCapFromContract } from './countable'
-export { andCapFromContract, wordCapFromContract }
+import { andCapFromContract, wordCapFromContract } from './countable'
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -51,24 +50,26 @@ import { STORY } from './config'
 import { annotations, openNotesOn } from './annotations'
 import { canonJson } from './canon'
 import { currentEngine, renderBrief, type Brief, type EngineErrorKind, noEngineSentence } from './engine'
-import { runGates, stripQuotedSpans, type ProseGateCtx, type WithheldSet } from './gates'
-import { ROUTE_WITHHELD, ROW_EXPLORE_ROUTE, ROW_EXPLORE_SCENE, findRow, jobFingerprint, type SealedRow } from './registry'
+import { runGates, type WithheldSet } from './gates'
+import { ROW_EXPLORE_ROUTE, ROW_EXPLORE_SCENE, findRow, jobFingerprint, type SealedRow } from './registry'
 import type { ResolvedRequest } from './request'
 import { Run, emptyReceipt, gateName, outcomeSentence, readWorkingReceipt, writeReceipt, writeWorkingReceipt, type GateRecord, type Receipt } from './run'
 import { endRun, registerRun, stateOf } from './runs'
 import type { RunEnding } from 'arc-canon-graph'
 import { HttpError } from './http'
-import { READ_MAP, fingerprintsNow as readsNow, readManifest, rebase, sceneVersion, staleAgainst, type Fingerprints } from './reads'
+import { READ_MAP, readManifest, rebase, sceneVersion, staleAgainst, type Fingerprints } from './reads'
 import { recordDisposition, type Disposition } from './evidence'
 import { recordGenerated } from './ledger'
 import { locksOn } from './locks'
-import { siblingLadder } from './ladder'
-import { contractBlock, literalWithholds, splitBriefing, withholdViolations } from './redraft'
+import { endingOf, gateCtx, literalWithholds, splitBriefing } from './gate-ctx'
+import { fingerprintsAtWrite, fingerprintsNow, packAndSiblings, styleForPass } from './style-projection'
+// test/suggest.test.ts still reads gateCtx from here; it carries another
+// card's open work (A78-2), so this one name stays until that test moves.
+export { gateCtx }
 import { arcRevision, sha16, storyRevision } from './records'
 import { proseScenes, writeSceneBody } from './story'
 import { inLane } from './lane'
 import { assertBase } from './base'
-import { styleContract } from './style'
 
 // The rules are the row's (registry.ts, ROW_EXPLORE_SCENE.rules): one
 // address per job, and this module reads them from there.
@@ -83,13 +84,6 @@ export const SEEDS: { id: string; text: string }[] = [
   { id: 'unseeded', text: 'NO SEED: take whatever route the destination invites that neither a late entry nor an opening on the withheld pressure would produce.' },
 ]
 
-export const MAX_OVERLAP = 0.4
-/** Below this many words a paragraph is not counted on either side of the
- *  overlap gate: nearestParagraph measures survival over the passage's own
- *  words, so "No." survives in almost anything. */
-export const MIN_COUNTED_WORDS = 8
-/** Under this many countable paragraphs the gate cannot judge and says so. */
-export const MIN_COUNTED_PARAS = 3
 export const KEEP_ALTERNATIVES = 6
 /** How many other ways through a scene may hold at once. At the cap arc asks
  *  the author to cancel one rather than evicting the oldest itself: letting go
@@ -133,56 +127,6 @@ export function withStaleness(alt: RouteAlternative, now = fingerprintsNow(alt.s
   const stale = staleAgainst(alt, now)
   return stale ? { ...alt, stale } : alt
 }
-
-export type { Fingerprints }
-
-/** The cheap map, for listing routes: the scene, the style contract, every
- *  annotation and every lock the scene carries. No canon read. The
- *  enumeration itself is `reads.ts`'s. */
-export function fingerprintsNow(scene: string): Fingerprints {
-  return readsNow(scene, styleForPass)
-}
-
-/** The whole map, for the write path (invariant 1: a changed fingerprint
- *  makes a route stale AT THE WRITE PATH). Adds the two ids the listing map
- *  leaves out, each of which costs a canon read. */
-export function fingerprintsAtWrite(scene: string): Fingerprints {
-  const { at } = fingerprintsNow(scene)
-  const s = proseScenes().find(x => x.scene === scene)
-  if (s) {
-    const { pack, siblings } = packAndSiblings(s)
-    at.set(`pack:${scene}`, sha16(pack))
-    at.set(`siblings:${scene}`, sha16(siblings))
-  }
-  return { at, full: true }
-}
-
-/** The canon pack and the sibling scenes for one scene, built exactly once
- *  here so the reroute's brief and the staleness check can never drift into
- *  fingerprinting two different things. */
-export function packAndSiblings(s: ProseScene): { pack: string; siblings: string } {
-  const canon = JSON.parse(canonJson()) as CanonDoc
-  const chapter = (canon.chapters ?? []).find(c => c.id === s.chapter)
-  const at = dateOf(chapter?.span?.end) ?? dateOf(chapter?.span?.start)
-  const pack = at
-    ? buildContextPack(canon, { at, events: s.events, pov: s.pov ?? chapter?.pov })
-    : buildContextPack(canon, { chapter: s.chapter })
-  // The siblings go in stripped of THIS scene's prose for the same reason the
-  // contract does: two scenes of one chapter that share a sentence — a refrain,
-  // a line that comes back — would otherwise hand the pass the very scene it is
-  // meant to work without, through the neighbour rather than through itself.
-  // On the ladder the writing rows read (A69-7): the scene either side in
-  // full, the next at its contract, the rest as a line — one definition of
-  // "the chapter's other scenes" for every row that hands them over.
-  const siblings = withoutSubjectProse(
-    siblingLadder({ chapter: s.chapter, sceneId: s.scene }, proseScenes()).text(),
-    { scene: s.scene, body: s.body },
-  )
-  return { pack, siblings }
-}
-
-const words = (s: string): number => s.split(/\s+/).filter(Boolean).length
-const norm = (s: string): string => s.replace(/\s+/g, ' ').trim()
 
 /** Who a key point answers to. `by` records who originated the statement and
  *  is never rewritten; confirmation, when the refresh pass exists, is a
@@ -264,6 +208,19 @@ export interface ReroutePrompt {
   user: string
 }
 
+/** The contract block as a brief shows it. reader_before / reader_after
+ *  are deliberately absent — review-pass fields, not drafting fuel. */
+export function contractBlock(c: SceneContract | null): string {
+  if (!c) return '(this scene declares no contract)'
+  const lines: string[] = []
+  if (c.purpose) lines.push(`purpose: ${String(c.purpose).trim()}`)
+  if (Array.isArray(c.must_establish) && c.must_establish.length) lines.push(`must_establish:\n${c.must_establish.map(x => `  - ${x}`).join('\n')}`)
+  if (Array.isArray(c.must_withhold) && c.must_withhold.length) lines.push(`must_withhold:\n${c.must_withhold.map(x => `  - ${x}`).join('\n')}`)
+  if (Array.isArray(c.motifs) && c.motifs.length) lines.push(`motifs: ${c.motifs.join(', ')}`)
+  if (c.constraints) lines.push(`constraints: ${String(c.constraints).trim()}`)
+  return lines.length ? lines.join('\n') : '(this scene declares no contract)'
+}
+
 /** Pure prompt assembly. The scene body is not an input by construction. */
 export function buildReroutePrompt(a: ReroutePromptInput): ReroutePrompt {
   const notes = a.notes.length
@@ -303,308 +260,6 @@ export const toBrief = (p: ReroutePrompt): Brief => ({
     { id: 'user', text: p.user, cached: false },
   ],
 })
-
-/** The one way the current prose reaches a reroute prompt is the style
- *  contract's own touchstones: §6 quotes passages of the manuscript, and a
- *  passage of the scene being rerouted is the current route in the model's
- *  hands — the first live run treated it as exactly that. Strip every
- *  touchstone drawn from the target scene (by its label's file, or its
- *  anchor's scene) and say so in place, so the section stays honest. */
-/** THE STYLE CONTRACT AS A WITHHOLDING PASS MAY SEE IT (A67-14).
- *
- *  Two strips, in order, and one place that does both — because the brief and
- *  the fingerprint of what the brief read must be the same string, and two
- *  call sites composing them separately is how they stop being.
- *
- *  First the touchstone blocks drawn from this scene, which go whole: a
- *  touchstone is an example and an example of the current route teaches the
- *  pass the thing it is meant to find another way to. Then any remaining run
- *  of this scene's own prose, wherever it sits — a Rhythm rule quoting the
- *  paragraph it is about is the same leak in a different shape, and the leak
- *  gate counts it the same way. */
-export function styleForPass(target: { scene: string; file: string; body: string }): string {
-  return styleForPassRead(target).text
-}
-
-/** THE CONTRACT AS RENDERED FOR ONE PASS, and what the rendering did.
- *
- *  `abbreviated` is the number of passages the projection left out — the
- *  author's ratified contract is never touched (it is a file, and this reads
- *  it), and a brief that carries less than all of it says so on the receipt
- *  rather than pretending it carried the whole (A69-2, the author's
- *  decision of 2026-09-24: constrain the representation, never the record). */
-export function styleForPassRead(target: { scene: string; file: string; body: string }): { text: string; abbreviated: number } {
-  const contract = styleContract()
-  const key = `${target.scene}\n${sha16(contract)}\n${sha16(target.body)}`
-  const had = STYLE_FOR_PASS.get(key)
-  if (had !== undefined) return had
-  const touchstones = stripSceneTouchstonesRead(contract, target)
-  const quoted = withoutSubjectProseRead(touchstones.text, target)
-  const out = { text: quoted.text, abbreviated: touchstones.stripped + quoted.stripped }
-  // One manuscript render asks this once per scene through `routeCounts`, and
-  // the answer only changes when the contract or the scene body does — which
-  // is exactly what the key is.
-  if (STYLE_FOR_PASS.size > 256) STYLE_FOR_PASS.clear()
-  STYLE_FOR_PASS.set(key, out)
-  return out
-}
-const STYLE_FOR_PASS = new Map<string, { text: string; abbreviated: number }>()
-
-/** Cut any run of the subject scene's own prose out of a layer of the brief,
- *  by the leak gate's rule and minus what the row allows through.
- *
- *  It is not only the style contract. ANY layer can carry the scene: a rule
- *  that quotes the paragraph it is about, and a sibling scene that shares a
- *  sentence with this one — two scenes of a chapter that repeat a line are a
- *  thing authors do on purpose, and the pass is handed the scene either side
- *  in full (the ladder, A69-7). Whatever the layer, the fix is the same and
- *  it is applied in one place. */
-export function withoutSubjectProse(layer: string, target: { scene: string; body: string }, spanWords?: number): string {
-  return withoutSubjectProseRead(layer, target, spanWords).text
-}
-
-/** The same cut, saying how many runs it took out — so a brief can record
- *  that a layer it carried was abbreviated (A69-2). One definition, because
- *  a second copy of the marker or the allowance is how the brief and the
- *  fingerprint of what the brief read become two different strings. */
-export function withoutSubjectProseRead(
-  layer: string, target: { scene: string; body: string }, spanWords: number = ROUTE_WITHHELD.spanWords,
-): { text: string; stripped: number } {
-  return stripQuotedSpans(
-    layer,
-    target.body,
-    spanWords,
-    `**(a quotation from ${target.scene} is withheld from this pass — it is the current route)**`,
-    allowedThrough(target),
-  )
-}
-
-/** What the row lets through even though it is the scene: the locked
- *  paragraphs, which the brief hands over verbatim by design, and the
- *  contract's own quoted withholds. Computed here rather than passed in, so
- *  the brief and the fingerprint of what the brief read can never be built
- *  from two different allowances. */
-function allowedThrough(target: { scene: string; body: string }): string[] {
-  const s = proseScenes().find(x => x.scene === target.scene)
-  if (!s) return []
-  const paras = paragraphsOf(target.body)
-  const locked = locksOn(target.scene, target.body)
-    .filter(l => l.scope === 'paragraph' && l.resolution.paragraph !== null)
-    .map(l => paras[l.resolution.paragraph as number] ?? '')
-  return [...locked, ...literalWithholds(s.contract?.must_withhold)].filter(Boolean)
-}
-
-export function stripSceneTouchstones(style: string, target: { scene: string; file: string }): string {
-  return stripSceneTouchstonesRead(style, target).text
-}
-
-/** The same strip, saying how many touchstones it took out — so a brief can
- *  record that the contract it carried was ABBREVIATED, and by how much
- *  (A69-2). The ratified contract is never edited; this is what the renderer
- *  did on the way into one pass, and the receipt says so. */
-export function stripSceneTouchstonesRead(style: string, target: { scene: string; file: string }): { text: string; stripped: number } {
-  const lines = style.split('\n')
-  const start = lines.findIndex(l => /^##\s+(?:\d+[.)]\s*)?touchstones\s*$/i.test(l))
-  if (start < 0) return { text: style, stripped: 0 }
-  let end = lines.length
-  for (let i = start + 1; i < lines.length; i++) if (/^##\s+/.test(lines[i])) { end = i; break }
-  const fileish = target.file.replace(/^prose\//, '').replace(/\.md$/, '')
-  // A label opens with ** and may wrap onto following lines before it closes.
-  const labelEnd = (i: number): number => {
-    if (!/^\*\*/.test(lines[i])) return -1
-    for (let k = i; k < end; k++) if (/\*\*\s*$/.test(lines[k]) && (k > i || lines[k].length > 2)) return k
-    return -1
-  }
-  const out: string[] = lines.slice(0, start + 1)
-  let stripped = 0
-  let i = start + 1
-  while (i < end) {
-    const le = labelEnd(i)
-    if (le < 0) { out.push(lines[i]); i++; continue }
-    const label = lines.slice(i, le + 1).join(' ')
-    let j = le + 1
-    let sawQuote = false
-    let anchorScene: string | null = null
-    while (j < end) {
-      const line = lines[j]
-      if (labelEnd(j) >= 0) break
-      const a = /arc:touchstone-anchor\s+(\{.*\})/.exec(line)
-      if (a) { try { anchorScene = (JSON.parse(a[1]) as { scene?: string }).scene ?? null } catch { /* absent */ } }
-      if (/^>\s?/.test(line)) sawQuote = true
-      else if (sawQuote && line.trim() === '') { j++; break }
-      j++
-    }
-    const m = /\bfrom\s+([\w./-]+)/.exec(label)
-    const mine = (m !== null && m[1].replace(/[,:]+$/, '') === fileish) || anchorScene === target.scene
-    if (mine) { stripped++; out.push(`**(a touchstone drawn from ${target.scene} is withheld from this pass — it is the current route)**`, '') }
-    else out.push(...lines.slice(i, j))
-    i = j
-  }
-  out.push(...lines.slice(end))
-  return { text: stripped ? out.join('\n') : style, stripped }
-}
-
-/** The coverage tail: the one machine-readable thing the pass returns. Parsed
- *  tolerantly; absent or unreadable means null — shown as "not reported",
- *  never guessed. */
-export function parseCoverageTail(briefing: string): { briefing: string; coverage: RouteCoverage[] | null; unparseable: number } {
-  const fence = /```(?:json)?\s*([\s\S]*?)```\s*$/
-  const m = briefing.match(fence)
-  let raw: string | null = null
-  let rest = briefing
-  if (m) { raw = m[1]; rest = briefing.slice(0, m.index).trimEnd() }
-  else {
-    const bare = briefing.match(/(\{[\s\S]*"coverage"[\s\S]*\})\s*$/)
-    if (bare) { raw = bare[1]; rest = briefing.slice(0, bare.index).trimEnd() }
-  }
-  if (raw === null) return { briefing: briefing.trim(), coverage: null, unparseable: 0 }
-  try {
-    const first = raw.indexOf('{'); const last = raw.lastIndexOf('}')
-    const parsed = JSON.parse(first >= 0 && last > first ? raw.slice(first, last + 1) : raw) as unknown
-    const rows = Array.isArray(parsed) ? parsed : (parsed as { coverage?: unknown })?.coverage
-    if (!Array.isArray(rows)) return { briefing: rest, coverage: null, unparseable: 0 }
-    const usable = rows
-      .filter((r): r is { item: unknown; paragraph: unknown } => !!r && typeof r === 'object')
-      .filter(r => typeof r.item === 'string' && r.item.trim())
-    const coverage = usable
-      .map(r => ({ item: String(r.item).trim(), paragraph: Number.isInteger(r.paragraph) && (r.paragraph as number) > 0 ? r.paragraph as number : null }))
-    // A row that is not a claim at all — no item, or not an object — is
-    // counted rather than silently dropped (§4: every drop is counted by
-    // reason).
-    return { briefing: rest, coverage, unparseable: rows.length - usable.length }
-  } catch {
-    return { briefing: rest, coverage: null, unparseable: 0 }
-  }
-}
-
-/** The share of a paragraph's words that survive, IN ORDER, in another —
- *  longest common subsequence over lowercased words. Touchstones measure
- *  survival with an edit-distance bound instead (touchstones.ts), which is
- *  right for finding a passage's own descendant and wrong here: for a short
- *  fresh sentence against a long current one the bound admits almost any
- *  pair that shares a few names — "Ines", "the stairs", "the sea" — as a
- *  descendant. A reuse gate needs the words actually reused. */
-export function wordSurvival(passage: string, other: string): number {
-  const tok = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}'\s]/gu, ' ').split(/\s+/).filter(Boolean)
-  const a = tok(passage); const b = tok(other)
-  if (!a.length) return 0
-  let prev = new Array<number>(b.length + 1).fill(0)
-  for (let i = 1; i <= a.length; i++) {
-    const cur = new Array<number>(b.length + 1).fill(0)
-    for (let j = 1; j <= b.length; j++) cur[j] = a[i - 1] === b[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], cur[j - 1])
-    prev = cur
-  }
-  return prev[b.length] / a.length
-}
-
-/** Under this survival a paragraph is not a reuse of any current paragraph —
- *  the same 60% bar touchstones use to call a passage a descendant. */
-export const SURVIVAL_BAR = 0.6
-
-/** EVIDENCE RESOLUTION, minimal (A67-8; §4, "Evidence resolution").
- *
- *  Every argued claim names its evidence by id from the slice it was given.
- *  A route's coverage claims name beats; each is resolved against the
- *  DESTINATION the pass was handed, and a claim naming a beat the
- *  destination did not hold is DROPPED and counted by reason — never shown
- *  beside the required ones as though it were evidence of anything.
- *
- *  Every required beat still gets a row whether or not the pass mentioned
- *  it (matched exactly, or by ≥60% of the item's words surviving in order,
- *  because the model paraphrases); a beat the tail never named shows as not
- *  reported.
- *
- *  `known` is what the record holds but did not bind — arc's own key
- *  points, which are context and never the destination. A claim that
- *  matches one of those is *outside the slice*; a claim that matches
- *  nothing is *unresolvable*. */
-export function resolveCoverage(
-  destination: string[],
-  rows: RouteCoverage[] | null,
-  known: string[] = [],
-): { coverage: RouteCoverage[] | null; dropped: DroppedClaim[]; returned: number } {
-  if (rows === null) return { coverage: null, dropped: [], returned: 0 }
-  const used = new Set<number>()
-  const matches = (item: string, other: string): number => {
-    const a = norm(item).toLowerCase(); const b = norm(other).toLowerCase()
-    return a === b ? 1 : Math.max(wordSurvival(item, other), wordSurvival(other, item))
-  }
-  const find = (item: string): RouteCoverage | undefined => {
-    let best = -1; let bestScore = 0
-    rows.forEach((r, i) => {
-      if (used.has(i)) return
-      const score = matches(item, r.item)
-      if (score > bestScore) { bestScore = score; best = i }
-    })
-    if (best < 0 || bestScore < SURVIVAL_BAR) return undefined
-    used.add(best)
-    return rows[best]
-  }
-  const coverage: RouteCoverage[] = destination.map(item => {
-    const hit = find(item)
-    return { item, paragraph: hit ? hit.paragraph : null }
-  })
-  const counts = new Map<DroppedClaim['reason'], number>()
-  let returned = used.size
-  rows.forEach((r, i) => {
-    if (used.has(i)) return
-    // A beat stated twice is a RESTATEMENT, not a drop: its evidence
-    // resolved, and the row it belongs to is already in the coverage above.
-    // Only a claim that resolves to nothing the pass was asked to reach is
-    // dropped, and then it is counted by reason.
-    if (destination.some(item => matches(item, r.item) >= SURVIVAL_BAR)) { returned++; return }
-    const reason: DroppedClaim['reason'] = known.some(k => matches(k, r.item) >= SURVIVAL_BAR)
-      ? 'outside the slice'
-      : 'unresolvable'
-    counts.set(reason, (counts.get(reason) ?? 0) + 1)
-  })
-  return { coverage, dropped: [...counts].map(([reason, count]) => ({ reason, count })), returned }
-}
-
-/** PROVEN: how much of the current wording the answer reused. Not a proof of
- *  a different route — a model could keep the structure and paraphrase every
- *  sentence — so the name says exactly what it measures. */
-export function lexicalOverlap(alternative: string, current: string, locked: string[]): { share: number | null; counted: number; overlapping: number } {
-  const lockedNorm = new Set(locked.map(norm))
-  const currentParas = paragraphsOf(current).filter(p => words(p) >= MIN_COUNTED_WORDS)
-  const altParas = paragraphsOf(alternative).filter(p => words(p) >= MIN_COUNTED_WORDS && !lockedNorm.has(norm(p)))
-  const counted = altParas.length
-  if (counted < MIN_COUNTED_PARAS) return { share: null, counted, overlapping: 0 }
-  const overlapping = altParas.filter(p => currentParas.some(c => wordSurvival(p, c) >= SURVIVAL_BAR)).length
-  return { share: overlapping / counted, counted, overlapping }
-}
-
-/** PROVEN: sentences that join more than `cap` "and"s. The count is the
- *  decidable half of §3's rule; whether a chain is one process deepening or
- *  a procedure stays the author's reading. Locked paragraphs are the
- *  author's settled text and are never counted against. The counter is
- *  countable.ts's, shared with /api/prose/checks (A77-1). */
-export function andChainViolations(body: string, cap: number, locked: string[] = []): { sentence: string; ands: number }[] {
-  const lockedNorm = new Set(locked.map(norm))
-  return sentencesOver(body, 'and-chain', cap, para => lockedNorm.has(norm(para)))
-    .map(o => ({ sentence: o.sentence, ands: o.count }))
-}
-
-/** PROVEN: sentences longer than `cap` words; locked paragraphs never counted. */
-export function longSentenceViolations(body: string, cap: number, locked: string[] = []): { sentence: string; words: number }[] {
-  const lockedNorm = new Set(locked.map(norm))
-  return sentencesOver(body, 'sentence-length', cap, para => lockedNorm.has(norm(para)))
-    .map(o => ({ sentence: o.sentence, words: o.count }))
-}
-
-/** PROVEN: locked paragraphs keep their relative order. A missing one is
- *  lockViolations' finding; this only asks about the ones that survived. */
-export function lockOrderViolation(rebuilt: string, lockedInOrder: string[]): boolean {
-  const paras = paragraphsOf(rebuilt).map(norm)
-  let last = -1
-  for (const text of lockedInOrder) {
-    const at = paras.indexOf(norm(text))
-    if (at < 0) continue
-    if (at < last) return true
-    last = at
-  }
-  return false
-}
 
 // ---- the alternatives store: beside the manuscript, never in it ----------
 
@@ -1006,25 +661,6 @@ export interface RerouteTarget {
 
 /** The run was stopped while this launch was in flight. */
 const wasStopped = (run: Run, kind?: EngineErrorKind): boolean => stateOf(run.id) === 'cancelled' || kind === 'cancelled'
-
-/** How a run that produced nothing ended.
- *
- *  A stop wins over everything: the author ended it. Then a GATE refusal,
- *  because that is what stopped the run — a repair that could not run
- *  afterwards is in the gate records and in the sentence, and does not
- *  relabel the refusal. Otherwise the kind the seam reported. */
-export function endingOf(refused: { kind?: EngineErrorKind; gateRefused?: boolean; unreadable?: boolean }[], stopped: boolean): RunEnding {
-  if (stopped || refused.some(r => r.kind === 'cancelled')) return 'cancelled'
-  const first = refused[0]
-  if (!first) return 'refused'
-  // An answer that parsed to nothing is unreadable, never an empty route.
-  if (first.unreadable) return 'unreadable'
-  if (first.gateRefused || !first.kind) return 'refused'
-  if (first.kind === 'timed out') return 'timed out'
-  // unreachable · rate-limited · died · envelope: the pass never wore its
-  // label, which is what `could not run` says.
-  return 'could not run'
-}
 
 /** The run and the receipt it is writing — one object, so every step of a
  *  pass adds to the same record. */
@@ -1443,39 +1079,6 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
 
 // ---- the rewrite: a route revised under the same fence (A57) --------------
 
-/** What this pass's gates measure against, in the shape the runner takes
- *  (gates.ts). The predicates travel with it, so the runner calls them by
- *  gate id and never reaches into this module. */
-export function gateCtx(a: {
-  sceneName: string
-  sceneBody: string
-  sceneLocks: ResolvedLock[]
-  lockedTexts: string[]
-  literals: string[]
-  andCap: number | null
-  wordCap: number | null
-  destination: string[]
-  /** what the record holds and the destination did not bind — arc's own
-   *  key points, which are context; a claim that names one of these is
-   *  *outside the slice* rather than unresolvable (A67-8) */
-  known?: string[]
-}): ProseGateCtx {
-  return {
-    ...a,
-    known: a.known ?? [],
-    maxOverlap: MAX_OVERLAP,
-    lexicalOverlap, andChainViolations, longSentenceViolations, withholdViolations,
-    lockOrderViolation, parseCoverageTail, resolveCoverage,
-  }
-}
-
-/** Every check an answer must clear before it lands beside the scene — one
- *  set, shared by the reroute and the rewrite, so the two passes cannot
- *  drift apart gate by gate. */
-// The gates themselves live in gates.ts, called by the runner from the
-// row's gate ids (A67-6). This module keeps the measurements — what counts
-// as overlap, what a chain is, where the coverage tail is — and hands them
-// over in `gateCtx()`.
 /** Which alternatives survive pruning: the newest `keep` chain heads and
  *  every version they descend from. A version whose parent is already gone
  *  reads as its own head. Pure, for the tests. */

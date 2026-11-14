@@ -196,7 +196,7 @@ test('an answer that could not be read is not "no conflicts" — the difference 
 
 test('the conflict reading refuses an answer it could not read, and never calls it quiet', async () => {
   const { runRowGates } = await import('../src/gates.ts')
-  const { gateCtx } = await import('../src/reroute.ts')
+  const { gateCtx } = await import('../src/gate-ctx.ts')
   const ctx = gateCtx({ sceneName: '', sceneBody: '', sceneLocks: [], lockedTexts: [], literals: [], andCap: null, wordCap: null, destination: [], known: [] })
   const row = { gates: [], answer: 'conflicts' } as never
   const quiet = runRowGates(row, ctx, '[]')
@@ -209,7 +209,7 @@ test('the conflict reading refuses an answer it could not read, and never calls 
 
 test('a ratified rule binds what arc writes, never the prose the author already has', async () => {
   const { runRowGates } = await import('../src/gates.ts')
-  const { gateCtx } = await import('../src/reroute.ts')
+  const { gateCtx } = await import('../src/gate-ctx.ts')
   // The author's own scene breaks the author's own cap — their book, their
   // call. A minimal revision is told to hand such a paragraph back word for
   // word, and was then refused for doing it (A69-9 review).
@@ -251,7 +251,7 @@ test('the row declares what "minimal" is checked against, locks before the blast
 
 test('a scene note licenses the scene, but never past a lock: locks refuses before the blast radius is measured', async () => {
   const { runRowGates } = await import('../src/gates.ts')
-  const { gateCtx } = await import('../src/reroute.ts')
+  const { gateCtx } = await import('../src/gate-ctx.ts')
   const { ROW_REVISE_SCENE_STAGED } = await import('../src/registry.ts')
   const write = ROW_REVISE_SCENE_STAGED.stages.find(s => s.id === 'write')!
   const row = { ...ROW_REVISE_SCENE_STAGED, stage: write.id, gates: write.gates, answer: write.answer } as never

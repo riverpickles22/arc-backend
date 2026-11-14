@@ -12,8 +12,9 @@ import { git, makeStory, writeScene } from './fixture.ts'
 const story = makeStory()
 process.env.ARC_STORY_PATH = story
 process.env.ARC_DRAFT_ENGINE = 'none'
-const { contractBlock, literalWithholds, withholdViolations, spliceRange, splitBriefing, redraftAssignment } =
-  await import('../src/redraft.ts')
+const { spliceRange, redraftAssignment } = await import('../src/redraft.ts')
+const { contractBlock } = await import('../src/reroute.ts')
+const { literalWithholds, withholdViolations, splitBriefing } = await import('../src/gate-ctx.ts')
 const { runRedraft } = await import('../src/redraft.ts')
 const { HttpError } = await import('../src/http.ts')
 const { REDRAFT_RULES } = await import('../src/registry.ts')

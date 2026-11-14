@@ -67,7 +67,7 @@ test('order is file order within the chapter, so an inserted scene with a letter
 
 test('the route pass reads the chapter\'s other scenes through the same ladder', async () => {
   const fs = await import('node:fs')
-  const { packAndSiblings } = await import('../src/reroute.ts')
+  const { packAndSiblings } = await import('../src/style-projection.ts')
   const { proseScenes } = await import('../src/story.ts')
   const file = path.join(STORY, 'prose', 'ch-01', 'scene-02.md')
   fs.writeFileSync(file, '---\nscene: sc.01-2\nchapter: ch.01-ninety-one-stairs\nstatus: proposed\npov: char.ines\nfacts: [char.ines]\ncontract:\n  purpose: The morning after. Nothing more.\n---\n\nThe morning came grey and she counted the stairs down.\n')

@@ -117,14 +117,14 @@ test('every run this pass opened is closed', () => {
 
 test('the countable style rules measure the prose, never the scene binding', async () => {
   const { runRowGates, withoutFrontmatter } = await import('../src/gates.ts')
-  const { gateCtx } = await import('../src/reroute.ts')
+  const { gateCtx } = await import('../src/gate-ctx.ts')
   const { loadFixtures } = await import('../src/fixtures.ts')
   const answer = loadFixtures().find(f => f.row === 'draft.scene.one-shot.write' && f.name === 'lands')!.answer
 
   // The frontmatter is one long unpunctuated run: measured as prose it is a
   // sentence of seventy-odd words, and any story whose contract states a cap
   // — the novel's says 55 — would refuse every draft on attempt one.
-  const { longSentenceViolations } = await import('../src/reroute.ts')
+  const { longSentenceViolations } = await import('../src/gate-ctx.ts')
   const whole = longSentenceViolations(answer, 55, [])
   assert.ok(whole.some(v => v.sentence.includes('scene: sc.01-2')),
     'read whole, the binding looks like one enormous sentence')
@@ -199,7 +199,7 @@ test('the receipt lists under leaned on every state fact given past the freshnes
 
 test('the leans-on tail is read before the coverage tail, and a briefing without one is refused', async () => {
   const { runRowGates, parseLeansOn } = await import('../src/gates.ts')
-  const { gateCtx } = await import('../src/reroute.ts')
+  const { gateCtx } = await import('../src/gate-ctx.ts')
   const p = parseLeansOn('one\n```leans-on\nchar.ines\n- `char.wren`\n```\ntwo')
   assert.deepEqual(p.leansOn, ['char.ines', 'char.wren'])
   assert.equal(p.briefing, 'one\ntwo', 'and it is cut out, so the coverage parser never sees the fence')
@@ -227,7 +227,7 @@ test('the leans-on tail is read before the coverage tail, and a briefing without
 
 test('the gate reads what the file binds, not only what the tail admits', async () => {
   const { runRowGates, boundIds } = await import('../src/gates.ts')
-  const { gateCtx } = await import('../src/reroute.ts')
+  const { gateCtx } = await import('../src/gate-ctx.ts')
   assert.deepEqual(boundIds('---\nscene: x\nfacts:\n  - char.ines\n  - obj.keepers-log\nevents: [event.the-wreck]\n---\nbody'),
     ['char.ines', 'obj.keepers-log', 'event.the-wreck'])
   // A BLOCK SEQUENCE IS VALID YAML FLUSH WITH ITS KEY, and the story's own
@@ -266,7 +266,7 @@ test('the author is told at the landing what the draft leans on, and nothing whe
 
   // And when there is something behind the scene, it is said where the
   // author is already reading — not left in a receipt they must open.
-  const { leansOnSentence } = await import('../src/draft.ts')
+  const { leansOnSentence } = await import('../src/landing.ts')
   assert.equal(leansOnSentence([]), '')
   assert.equal(leansOnSentence(undefined), '')
   assert.equal(leansOnSentence([{ id: 'char.ines', as_of: '1905 (year precision)' }]),

@@ -32,22 +32,23 @@
 // write a file and put it back if the story rejects it.
 import fs from 'node:fs'
 import path from 'node:path'
-import type { CraftPlanned, DraftSceneResponse, SceneContract } from 'arc-canon-graph'
+import type { CraftPlanned, DraftSceneResponse } from 'arc-canon-graph'
 import type { CanonDoc } from 'arc-canon-graph'
 import { STORY } from './config'
 import { openNotesOn } from './annotations'
 import { canonJson } from './canon'
-import { cellOf, leansOnSentence, planFirst, writeValidated } from './draft'
+import { planFirst } from './craft-plan'
 import { currentEngine, noEngineSentence, SDK_ENGINE_FIX } from './engine'
 import { runGates, type ProseGateCtx } from './gates'
 import { HttpError } from './http'
 import { recordGenerated } from './ledger'
 import { landingSentence } from './refusal'
-import { destinationAt, landOrKeep, movedSentence, restoreIfOurs, trialValidate } from './landing'
+import { destinationAt, landOrKeep, leansOnSentence, movedSentence, restoreIfOurs, trialValidate, writeValidated } from './landing'
 import { READ_MAP, readsFrom, rebaseToLanded } from './reads'
-import { fingerprintsAtWrite } from './reroute'
+import { fingerprintsAtWrite } from './style-projection'
 import { locksOn } from './locks'
-import { andCapFromContract, endingOf, gateCtx as gateCtxOf, wordCapFromContract } from './reroute'
+import { andCapFromContract, wordCapFromContract } from './countable'
+import { cellOf, endingOf, gateCtx as gateCtxOf, literalWithholds } from './gate-ctx'
 import { CRAFT_MOVES, jobFingerprint, rowKey, stageRuns, type StagedRow } from './registry'
 import { resolveRequest } from './request'
 import { outcomeSentence } from './run'
@@ -58,39 +59,6 @@ import { assembleWritingSlice, weightOf } from './slice'
 import { materialItems, parseScene, proseScenes } from './story'
 import { styleContract } from './style'
 
-/** The contract block as a brief shows it. reader_before / reader_after
- *  are deliberately absent — review-pass fields, not drafting fuel. */
-export function contractBlock(c: SceneContract | null): string {
-  if (!c) return '(this scene declares no contract)'
-  const lines: string[] = []
-  if (c.purpose) lines.push(`purpose: ${String(c.purpose).trim()}`)
-  if (Array.isArray(c.must_establish) && c.must_establish.length) lines.push(`must_establish:\n${c.must_establish.map(x => `  - ${x}`).join('\n')}`)
-  if (Array.isArray(c.must_withhold) && c.must_withhold.length) lines.push(`must_withhold:\n${c.must_withhold.map(x => `  - ${x}`).join('\n')}`)
-  if (Array.isArray(c.motifs) && c.motifs.length) lines.push(`motifs: ${c.motifs.join(', ')}`)
-  if (c.constraints) lines.push(`constraints: ${String(c.constraints).trim()}`)
-  return lines.length ? lines.join('\n') : '(this scene declares no contract)'
-}
-
-/** must_withhold items that are decidable: exact quoted literals.
- *
- *  "The settler's identity" names an idea and only a reading can judge a
- *  leak — that is argued. '"Havana"' names a string, and a string either
- *  appears or it does not — that is proven. The quoting convention is the
- *  author's way of opting a withhold into the hard gate. */
-export function literalWithholds(items: unknown): string[] {
-  if (!Array.isArray(items)) return []
-  return items
-    .map(String)
-    .map(x => x.trim())
-    .filter(x => /^["'“].*["'”]$/.test(x))
-    .map(x => x.replace(/^["'“]|["'”]$/g, ''))
-    .filter(Boolean)
-}
-
-/** The proven half of the withhold check: literals that appear verbatim. */
-export const withholdViolations = (literals: string[], body: string): string[] =>
-  literals.filter(w => body.includes(w))
-
 /** Replace paragraphs [from..to] with the redrafted passage, everything else
  *  byte-identical by construction — the passage redraft's whole safety story
  *  is that the model never gets to touch what it was not asked about. */
@@ -98,13 +66,6 @@ export function spliceRange(paragraphs: string[], from: number, to: number, repl
   const out = [...paragraphs]
   out.splice(from, to - from + 1, ...replacement.split(/\n{2,}/).map(x => x.trim()).filter(Boolean))
   return out
-}
-
-/** Split the model's two-part answer. A missing marker is an honest
- *  degenerate case: all prose, no briefing — never the other way round. */
-export function splitBriefing(text: string): { body: string; briefing: string } {
-  const m = text.split(/^\s*=== BRIEFING ===\s*$/m)
-  return { body: m[0].trim(), briefing: (m[1] ?? '').trim() }
 }
 
 export interface RedraftTarget {

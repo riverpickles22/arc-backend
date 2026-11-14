@@ -33,16 +33,16 @@ import { proposalOrigins, recordProposalOrigin, retractionOrigins } from './ledg
 import { inLane } from './lane'
 import { buildCandidate, entityKeys, evidenceId, EXISTING_RECORD_WHY, proposalKey, provenConflict, recordKeys, UNSAFE_APPEND_WHY, withEdge, type BuildContext, type Proposal } from './proposals'
 import { continuityConflict } from './continuity'
-import { endingOf, fingerprintsAtWrite, gateCtx as gateCtxOf } from './reroute'
-import { literalWithholds } from './redraft'
+import { endingOf, gateCtx as gateCtxOf, literalWithholds } from './gate-ctx'
+import { fingerprintsAtWrite } from './style-projection'
 import { jobFingerprint, ROUTE_WITHHELD, type SealedRow } from './registry'
 import { READ_MAP, readsFrom } from './reads'
 import { idsInFile, listFiles, sha16, takenIds } from './records'
 import { resolveRequest } from './request'
-import { closeReceipt, openRowRun } from './rowrun'
+import { closeReceipt, landedByKey, openRowRun, runKey } from './rowrun'
 import { endRun, stateOf } from './runs'
 import { assembleWritingSlice } from './slice'
-import { outcomeSentence, receiptsOf, writeReceipt, writeWorkingReceipt } from './run'
+import { outcomeSentence, writeReceipt, writeWorkingReceipt } from './run'
 import { paragraphsOf } from './blast-radius'
 import { commitRecords, parseScene, proseScenes } from './story'
 
@@ -72,19 +72,6 @@ export function acceptedRange(file: string, from?: string, to?: string): { from:
 }
 
 // ---- the run's key (A74-3, invariant 3) -----------------------------------------
-
-/** THE KEY OF A TRIGGERED RUN: the job, the scene, the commits it read and a
- *  fingerprint of the combined diff it was given. The same key is the same
- *  reading — a run that finds a landed receipt carrying it does nothing, and
- *  one that finds only failed or cancelled ones runs again. */
-export const runKey = (job: string, scene: string, range: { from: string; to: string }, diffText: string): string =>
-  sha16([job, scene, range.from, range.to, sha16(diffText)].join('\u0000'))
-
-/** The receipt of a LANDED run of `job` (U7 by default; U12 since A74-6) that carries this key, apart from `except`
- *  (the run asking). Read from the record (history/) and the open runs. */
-export function landedByKey(key: string, except?: string, job: 'update-record' | 'learn' = 'update-record'): string | null {
-  return receiptsOf(job).find(r => r.key === key && r.ending === 'landed' && r.run_id !== except)?.run_id ?? null
-}
 
 /** The scene's body as the book held it at a commit, or null if it was not
  *  there. */

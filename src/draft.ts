@@ -21,27 +21,28 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { CraftPlanned, DraftSceneResponse } from 'arc-canon-graph'
 import { STORY } from './config'
-import { canonJson, validateStory } from './canon'
+import { canonJson } from './canon'
 import { currentEngine, SDK_ENGINE_FIX } from './engine'
 import { styleContract } from './style'
 import { recordGenerated } from './ledger'
 import { landingSentence } from './refusal'
-import { destinationAt, landOrKeep, movedSentence, restoreIfOurs } from './landing'
+import { destinationAt, landOrKeep, leansOnSentence, movedSentence, restoreIfOurs, writeValidated } from './landing'
 import { READ_MAP, readsFrom, rebaseToLanded } from './reads'
-import { fingerprintsAtWrite } from './reroute'
+import { fingerprintsAtWrite } from './style-projection'
 import { materialItems, proseScenes } from './story'
 import { HttpError } from './http'
 import { resolveWithin } from './safe-path'
-import { resolveRequest, type ResolvedRequest } from './request'
-import { assembleWritingSlice, weightOf, type WritingSubject } from './slice'
-import { runGates, parseCraftPlan, planSentence, type ProseGateCtx } from './gates'
-import { CRAFT_MOVES, jobFingerprint, rowKey, stageRuns, type Stage, type StagedRow } from './registry'
+import { resolveRequest } from './request'
+import { assembleWritingSlice, weightOf } from './slice'
+import { runGates, type ProseGateCtx } from './gates'
+import { CRAFT_MOVES, jobFingerprint, rowKey, stageRuns, type StagedRow } from './registry'
 import { openRowRun, closeReceipt } from './rowrun'
 import { endRun, stateOf } from './runs'
-import { endingOf } from './reroute'
+import { planFirst } from './craft-plan'
 import { outcomeSentence } from './run'
 import { sha16 } from './records'
-import { andCapFromContract, gateCtx as gateCtxOf, wordCapFromContract } from './reroute'
+import { andCapFromContract, wordCapFromContract } from './countable'
+import { cellOf, endingOf, gateCtx as gateCtxOf } from './gate-ctx'
 import type { CanonDoc } from 'arc-canon-graph'
 
 /** Scene file slot for a chapter: directory from the chapter id's number
@@ -74,34 +75,8 @@ export function draftUserMessage(chapterId: string, sceneId: string, file: strin
   ].filter(Boolean).join('\n\n')
 }
 
-export function writeValidated(rel: string, content: string): { ok: boolean; output: string } {
-  const abs = resolveWithin(STORY, rel)
-  const existed = fs.existsSync(abs)
-  const prev = existed ? fs.readFileSync(abs, 'utf8') : null
-  fs.mkdirSync(path.dirname(abs), { recursive: true })
-  fs.writeFileSync(abs, content)
-  const check = validateStory()
-  if (!check.ok) {
-    if (prev !== null) fs.writeFileSync(abs, prev)
-    else fs.unlinkSync(abs)
-  }
-  return check
-}
-
 
 /** THE ASSIGNMENT — the brief's fifth slot, the ask. Pure, for tests. */
-
-/** WHAT THE AUTHOR IS TOLD AT THE LANDING about the age of what the pass
- *  was given — proven from the manifest, never argued (A69-6). A season-old
- *  snapshot belongs where they are already reading, not in a receipt they
- *  have to open. Nothing stale, nothing said: a sentence that fires on every
- *  draft teaches the author to skip it.
- *
- *  Pure, so both halves of the claim can be held by a test. */
-export function leansOnSentence(aged: { id: string; as_of: string }[] | undefined): string {
-  if (!aged?.length) return ''
-  return ` It leans on ${aged.map(l => `${l.id} as of ${l.as_of}`).join(', ')} — the record has not looked since.`
-}
 
 /** Run the drafting pass for a chapter, as a governed run.
  *
@@ -373,90 +348,6 @@ export async function runDraft(
     throw e
   }
 }
-
-/** THE FIRST HALF OF A WRITING JOB THE AUTHOR GAVE A LINE TO: the reading
- *  alone. Every writing row stages it in front of its write (§4), so the
- *  draft and the clean pass share this one (A69-8).
- *
- *  Its own run, because it is its own launch with its own brief, its own
- *  gates and its own receipt — and because the author may never come back,
- *  in which case what is on record is a reading that happened and a draft
- *  that did not. Nothing is written here and nothing can be: the stage has
- *  no validator, no file and no ledger. */
-export async function planFirst(
-  request: ResolvedRequest, row: StagedRow, planStage: Stage,
-  subject: WritingSubject, said: string,
-): Promise<DraftSceneResponse> {
-  const slice = assembleWritingSlice(
-    { ...row, slice: planStage.slice, budget: planStage.budget }, subject,
-    { stage: 'craft-plan', intent: { line: said } })
-
-  const about = subject.scene?.scene ?? subject.sceneId ?? subject.chapter
-  const ctx = openRowRun(request, row, {
-    ...slice.forReceipt(),
-    withheld: [],
-    dropped: slice.forReceipt().dropped_for_budget,
-    read: [{ id: `slice:${about}:craft-plan`, version: sha16(slice.render()) }],
-  })
-  const { run, receipt } = ctx
-  receipt.intent = { said, plan: null }
-
-  const brief = {
-    blocks: [
-      { id: 'rules', text: planStage.rules, cached: true },
-      { id: 'slice', text: slice.render(), cached: true },
-      { id: 'ask', text: `The author said: ${said}\n\nAnswer with the JSON block.`, cached: false },
-    ],
-  }
-
-  try {
-    const out = await runGates({
-      row: { ...planStage, ...cellOf(row, 'craft-plan'), withholding: row.withholding, withheld: row.withheld, envelope: row.envelope },
-      run, receipt, brief,
-      repair: (refusal, resumed) => ({
-        blocks: resumed
-          ? [{ id: 'repair', text: refusal, cached: false }]
-          : [...brief.blocks, { id: 'repair', text: refusal, cached: false }],
-      }),
-      attempt: n => `craft-plan-${n}`,
-      gateCtx: planGateCtx(),
-      render: b => b.blocks.map(x => x.text).join('\n\n'),
-    })
-
-    const stopped = stateOf(run.id) === 'cancelled'
-    if (!out.ok) {
-      const ending = endingOf([{ kind: out.kind, gateRefused: out.gateRefused, unreadable: out.unreadable }], stopped)
-      closeReceipt(ctx, ending)
-      endRun(run.id, ending, { refused: out.reason })
-      return { reply: outcomeSentence({ ending, gates: receipt.gates }) ?? out.reason, actions: [], file: null, run: run.id }
-    }
-    const plan = parseCraftPlan(out.checked.body)!
-    receipt.intent = { said, plan }
-    closeReceipt(ctx, 'landed')
-    endRun(run.id, 'landed', { plan: plan.moves.map(m => m.move) })
-    return {
-      reply: `Writing toward: ${planSentence(plan)}`,
-      actions: [],
-      file: null,
-      run: run.id,
-      plan,
-    }
-  } catch (e) {
-    const ending = stateOf(run.id) === 'cancelled' ? 'cancelled' : 'could not run'
-    closeReceipt(ctx, ending)
-    endRun(run.id, ending, { error: (e as Error).message })
-    throw e
-  }
-}
-
-/** The reading has no prose to measure and nothing to overlap: its one gate
- *  reads the answer's own shape. */
-export const planGateCtx = (): ProseGateCtx => gateCtxOf({
-  sceneName: '', sceneBody: '', sceneLocks: [], lockedTexts: [], literals: [],
-  andCap: null, wordCap: null, destination: [], known: [],
-})
-
-export const cellOf = (row: StagedRow, stage: string) => ({ job: row.job, scope: row.scope, mode: row.mode, depth: row.depth, stage })
 
 /** Every markdown file under `prose/`, parsed or not. */
 export function proseFiles(): string[] {
