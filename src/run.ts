@@ -21,6 +21,7 @@ import { dump as yamlDump, load as yamlLoad } from 'js-yaml'
 import type { RunEnding, StreamMessage } from 'arc-canon-graph'
 import { STORY } from './config'
 import type { Capability } from './capability'
+import type { CliAnswer } from './engine'
 import { fingerprints, sha16, storyRevision } from './records'
 
 export type Source = 'ui' | 'claude-code' | 'cli' | 'external'
@@ -83,6 +84,7 @@ type EventName =
   | 'task.completed'
   | 'task.stale'
   | 'judge.completed'
+  | 'launch.cost'
   | 'author.decision'
   | 'run.ended'
 
@@ -216,6 +218,26 @@ export class Run {
       // telemetry only
     }
     publishStream({ run: this.root.run_id, ...rec })
+  }
+
+  /** What one bare `runCliPrompt` launch cost, as one event (A76-2): the
+   *  passes not yet on a row leave no receipt to carry it. Named as the
+   *  receipt names them — tokens as the engine reported them, the wall
+   *  clock, the model — but per launch rather than summed. The input
+   *  estimate is the gate runner's (a quarter of the brief's length); the
+   *  output has none, because no row gives these passes a ceiling. `launch`
+   *  names it within the run — `lenses:character`, `judge` — so six
+   *  launches of one pass stay six events. Never launches.jsonl: that file
+   *  says arc holds a child's transcript, and doctor and the briefing read
+   *  its presence as a run that owes a receipt. */
+  recordLaunchCost(pass: string, launch: string, prompt: string, a: CliAnswer): void {
+    this.emit('launch.cost', undefined, {
+      pass,
+      launch,
+      tokens: { estimated: { input: Math.round(prompt.length / 4), output: null }, actual: a.tokens },
+      wall_clock_ms: a.wallClockMs,
+      model: a.model,
+    })
   }
 
   recordExpansion(node: string, granted: string): void {

@@ -122,7 +122,7 @@ export interface RunOutcome {
 export async function runIntent(rawAuthorInput: string, source: Source = 'cli'): Promise<RunOutcome> {
   const run = new Run(source, rawAuthorInput)
 
-  const envelope = await runIntake(rawAuthorInput, run.id)
+  const envelope = await runIntake(rawAuthorInput, run)
   run.emit('intent.resolved', undefined, envelope)
 
   const graph = planGraph(run.id, envelope)
@@ -174,7 +174,7 @@ export async function runIntent(rawAuthorInput: string, source: Source = 'cli'):
     checks,
     boundRules: [],   // the rules layer (§8) does not exist yet; saying so beats inventing rules
     workerReply: reply,
-  })
+  }, run)
   node.status = 'needs_author'
   node.result = { produced: produced.map(p => p.path), verdict: judgment.verdict }
 

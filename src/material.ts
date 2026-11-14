@@ -232,7 +232,9 @@ async function runMaterialWorkerCli(
     CLI_NOTE,
   ].join('\n\n')
 
-  const raw = stripFences((await runCliPrompt(prompt, { pass: 'material', runId: run.id })).text)
+  const answer = await runCliPrompt(prompt, { pass: 'material', runId: run.id })
+  run.recordLaunchCost('material', 'material', prompt, answer)
+  const raw = stripFences(answer.text)
   const start = raw.indexOf('{')
   const end = raw.lastIndexOf('}')
   if (start < 0 || end < start) throw new Error(`material worker did not return JSON: ${raw.slice(0, 200)}`)

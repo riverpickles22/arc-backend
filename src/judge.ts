@@ -17,6 +17,7 @@ import type { Register } from 'arc-canon-graph'
 import { MODEL } from './config'
 import { getClient } from './agent'
 import { currentEngine, runCliPrompt, stripFences } from './engine'
+import type { Run } from './run'
 import { HttpError } from './http'
 import type { IntentEnvelope } from './intent'
 import type { Capability } from './capability'
@@ -119,12 +120,18 @@ export function parseJudgment(text: string): Judgment {
   }
 }
 
-export async function runJudge(brief: JudgeBrief): Promise<Judgment> {
+/** `run` is the run the judged work belongs to; the launch's cost is
+ *  recorded on it (A76-2). It is not part of the brief. */
+export async function runJudge(brief: JudgeBrief, run?: Run): Promise<Judgment> {
   const engine = currentEngine()
   if (!engine) throw new HttpError(503, 'No generation engine available.')
   const prompt = buildJudgePrompt(brief)
 
-  if (engine === 'claude-cli') return parseJudgment((await runCliPrompt(prompt, { pass: 'judge' })).text)
+  if (engine === 'claude-cli') {
+    const a = await runCliPrompt(prompt, { pass: 'judge' })
+    run?.recordLaunchCost('judge', 'judge', prompt, a)
+    return parseJudgment(a.text)
+  }
 
   const message = await getClient().beta.messages.create({
     model: MODEL,

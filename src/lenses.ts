@@ -217,8 +217,14 @@ interface LensResult {
   error?: string
 }
 
-async function askModel(prompt: string): Promise<string> {
-  if (currentEngine() === 'claude-cli') return (await runCliPrompt(prompt, { pass: 'lenses' })).text
+/** `launch` names this call within the run — one per lens and one for the
+ *  synthesis — so each of the six leaves its own cost (A76-2). */
+async function askModel(prompt: string, run: Run, launch: string): Promise<string> {
+  if (currentEngine() === 'claude-cli') {
+    const a = await runCliPrompt(prompt, { pass: 'lenses' })
+    run.recordLaunchCost('lenses', launch, prompt, a)
+    return a.text
+  }
   const message = await getClient().beta.messages.create({
     model: MODEL,
     max_tokens: 4000,
@@ -244,7 +250,7 @@ async function runLens(spec: LensSpec, node: WorkNode, scene: ProseScene, run: R
     node.status = 'running'
     run.emit('task.started', node.id, { kind: node.kind, claim: node.claim, reads: node.reads })
 
-    const text = await askModel(buildLensPrompt(spec, scene, renderContext(node.context_manifest), styleContract()))
+    const text = await askModel(buildLensPrompt(spec, scene, renderContext(node.context_manifest), styleContract()), run, `lenses:${spec.name}`)
     const findings = parseFindings(spec.name, text)
 
     node.context_cited = citedIn(node.context_manifest, text)
@@ -322,7 +328,7 @@ export async function runLensFanOut(scene: ProseScene, run: Run): Promise<FanOut
       ? (await askModel([
         SYNTHESIS_RULES,
         `=== THE FINDINGS ===\n${JSON.stringify(findings, null, 2)}`,
-      ].join('\n\n'))).trim()
+      ].join('\n\n'), run, 'lenses:synthesis')).trim()
       : 'No lens found anything it could evidence.'
   } catch (e) {
     synthesis = `synthesis unavailable: ${e instanceof Error ? e.message : String(e)}`
