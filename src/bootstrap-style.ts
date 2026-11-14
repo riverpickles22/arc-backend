@@ -17,16 +17,14 @@
 // The annotations ride along as context — the author's stated reactions help
 // the model read the diffs — but rules still cite edit numbers only, so the
 // trust property holds: every quote in the queue comes from arc's own table.
-import type Anthropic from '@anthropic-ai/sdk'
-import { MODEL } from './config'
-import { getClient } from './agent'
-import { currentEngine, runCliPrompt } from './engine'
+import { HttpError } from './http'
+import { sha16 } from './records'
+import { currentEngine } from './engine'
 import { annotations } from './annotations'
-import { buildLearnPrompt, editPairs, materialize, parseProposals, significant } from './learn-style'
-import { styleContract } from './style'
+import { editPairs, launchLearn, learnAsk, QUEUE_SUPPRESS_AT, significant, type LearnResult } from './learn-style'
+import { ROW_LEARN_MANUSCRIPT_FROM_PROSE } from './registry'
 import { git, parseScene, proseScenes } from './story'
-import { appendToQueue, readQueue, type ProposedRule } from './style-queue'
-import { QUEUE_SUPPRESS_AT } from './learn-style'
+import { readQueue } from './style-queue'
 
 /** Bound the prompt however long the history runs: the LAST transitions per
  *  file are the author's most recent taste, which is the taste that counts. */
@@ -64,11 +62,12 @@ export function historyPairs(): Omit<Pair, 'n'>[] {
   return out
 }
 
-/** The author's own reactions, as context. Bodies only — the model is told
+/** The author's own reactions, as context — notes the AUTHOR wrote; an agent's
+ *  key points are never presented as theirs. Bodies only — the model is told
  *  they interpret the diffs and never substitute for them. */
 export function annotationContext(): string {
   const notes = annotations()
-    .filter(n => n.body.trim())
+    .filter(n => n.by !== 'agent' && n.body.trim())
     .map(n => `- (${n.status ?? 'keypoint'}) ${n.body.trim().replace(/\s+/g, ' ')}`)
   if (!notes.length) return ''
   return [
@@ -81,11 +80,12 @@ export function annotationContext(): string {
   ].join('\n')
 }
 
-interface BootstrapResult {
-  added: ProposedRule[]
-  skipped: 'queue-full' | 'no-history' | 'no-engine' | null
-  pairsConsidered: number
-}
+/** The bootstrap's answer: what a learning read answers, with the one reason
+ *  of its own for not reading — a book with no history. */
+export type BootstrapResult = Omit<LearnResult, 'skipped'> & { skipped: LearnResult['skipped'] | 'no-history' }
+
+/** The gesture, as a gesture: the author's own hand, never an invented sentence. */
+const GESTURE = 'learn from the history of your prose, by hand'
 
 export async function runBootstrapStyle(): Promise<BootstrapResult> {
   if (readQueue().length >= QUEUE_SUPPRESS_AT) return { added: [], skipped: 'queue-full', pairsConsidered: 0 }
@@ -95,33 +95,27 @@ export async function runBootstrapStyle(): Promise<BootstrapResult> {
   const considered = all.slice(-MAX_PAIRS).map((p, i) => ({ ...p, n: i + 1 }))
 
   const engine = currentEngine()
-  const sdk = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN
-  if (!engine && !sdk) return { added: [], skipped: 'no-engine', pairsConsidered: considered.length }
-
-  const prompt = [
-    buildLearnPrompt({ pairs: considered, style: styleContract(), pending: readQueue().map(r => r.rule) }),
-    annotationContext(),
-  ].filter(Boolean).join('\n\n')
-
-  let text: string
-  if (engine === 'claude-cli') {
-    text = (await runCliPrompt(prompt, { pass: 'bootstrap' })).text
-  } else {
-    const message = await getClient().beta.messages.create({
-      model: MODEL,
-      max_tokens: 2000,
-      messages: [{ role: 'user', content: prompt }],
-    })
-    text = message.content
-      .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text')
-      .map(b => b.text)
-      .join('\n')
+  if (!engine) return { added: [], skipped: 'no-engine', pairsConsidered: considered.length }
+  if (engine === 'sdk') {
+    throw new HttpError(400,
+      'arc can read the history of your prose only when it runs on your claude login — it cannot show what it was given on the engine it is set up to use. '
+      + 'Log in with  claude  and ask again, or remove ANTHROPIC_API_KEY from arc-backend/.env.')
   }
 
+  // The brief is the learner's own (the promoted contract and the declined
+  // list, never the pending queue — rule 3), with the author's notes riding
+  // beside the pairs as context that can never become evidence.
+  const notes = annotationContext()
+  // Rule 8: the notes come BEFORE the edits table, so the answer contract is last.
+  const ask = [notes, learnAsk(considered)].filter(Boolean).join('\n\n')
   // STORY layer regardless of the model's recommendation: one manuscript is
   // one observation, and the author layer is earned at the ratify click.
-  const fresh = materialize(parseProposals(text), considered, new Date().toISOString())
-    .map(r => ({ ...r, layer: 'story' as const }))
-  const { added } = appendToQueue(fresh)
-  return { added, skipped: null, pairsConsidered: considered.length }
+  return launchLearn({
+    row: ROW_LEARN_MANUSCRIPT_FROM_PROSE, considered, ask,
+    said: GESTURE, subject: 'the manuscript', range: null,
+    readExtra: [{ id: 'annotations', version: sha16(notes) }],
+    opened: { yes: false },
+    receiptNote: 'Record: the receipt for a style read of the prose history',
+    layer: 'story',
+  })
 }

@@ -17,8 +17,7 @@ export type Rung = 0 | 1 | 2 | 3 | 4
 
 export interface PassSpec {
   rung: Rung
-  /** The pass is DEFINED by not seeing something — capture must not read
-   *  beyond the accepted scenes it is handed; the lenses read the record
+  /** The pass is DEFINED by not seeing something — the lenses read the record
    *  cold. The builder forces `--tools ''` for these no matter what the
    *  caller says: withholding is mechanical, never a caller's memory. */
   withholding: boolean
@@ -37,14 +36,14 @@ export interface PassSpec {
  *  the engine that actually runs, not only on the SDK path and not only by
  *  asking the prompt nicely:
  *
- *    - the five lenses and the style bootstrap, because their worth is
+ *    - the five lenses, because their worth is
  *      reading the record COLD — a child that can open the working tree can
  *      answer from the book instead of from the slice arc handed it;
  *    - analyze, judge, suggest and intent, which read and return a judgement
  *      and have nothing to write.
  *
  *  The prose-writing passes (draft, redraft, revise) and the record workers
- *  (material, learn-style) are deliberately NOT pinned here: their envelope
+ *  (material) are deliberately NOT pinned here: their envelope
  *  is slice 2's and slice 4's business, and draft and revise are the
  *  iterative verbs a scene session would serve (`idea-scene-session`) — a
  *  session and a withheld set cannot coexist, by the rule below. */
@@ -52,14 +51,11 @@ export const PASS_REGISTRY = {
   judge: { rung: 1, withholding: true, sessionAllowed: false },
   intent: { rung: 1, withholding: true, sessionAllowed: false },
   material: { rung: 1, withholding: false, sessionAllowed: false },
-  'learn-style': { rung: 1, withholding: false, sessionAllowed: false },
   lenses: { rung: 1, withholding: true, sessionAllowed: false },
-  bootstrap: { rung: 1, withholding: true, sessionAllowed: false },
   // reroute and reroute-revise are gone from here (A67-1), draft with them
   // (A69-3), redraft (A69-8), revise (A69-9) and suggest (A69-10, which
   // gave rephrase and synonyms a row each): their one definition is the
   // row in registry.ts, and the launch takes the row.
-  capture: { rung: 1, withholding: true, sessionAllowed: false },
 } as const satisfies Record<string, PassSpec>
 
 export type PassName = keyof typeof PASS_REGISTRY

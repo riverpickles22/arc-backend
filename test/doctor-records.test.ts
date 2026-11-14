@@ -127,8 +127,8 @@ test('the counts name where they were read from, and never read prose to get the
   assert.equal(d.story, STORY)
   assert.equal(d.transcripts, path.join(HOME, '.claude', 'projects'))
   assert.deepEqual(d.counts.map(c => c.id),
-    ['runs-without-receipt', 'transcripts-no-receipt-names', 'proposals-out-of-date', 'rows-never-attended'],
-    'four counts, in the order the terminal says them')
+    ['runs-without-receipt', 'transcripts-no-receipt-names', 'proposals-out-of-date', 'rows-never-attended', 'proposals-unfinished'],
+    'five counts, in the order the terminal says them')
   for (const c of d.counts) {
     assert.equal(typeof c.count, 'number')
     assert.ok(c.some.length <= 5, 'a sample, so a terminal line stays a line')
@@ -253,4 +253,32 @@ test('the close writes BOTH records, because two readers ask the same question',
   assert.equal(countOf('runs-without-receipt').count, 0, 'and so does the doctor')
   assert.equal(readWorkingReceipt(id)?.ending, 'unfinished')
   fs.rmSync(runDir(id), { recursive: true, force: true })
+})
+
+test('a proposal arc began and did not finish is counted; filed-then-gone, taken back and decided are not', async () => {
+  const { recordProposalOrigin } = await import('../src/ledger.ts')
+  const { appendProposalDecision } = await import('../src/evidence.ts')
+  const o = (canon: string, run: string) => ({ origin: 'update-record' as const, file: `canon/entities/objects/${canon}.yaml`, canon: `obj.${canon}`, class: 'stated' as const, key: canon, run, scene: SCENE })
+  assert.equal(countOf('proposals-unfinished').count, 0)
+
+  // filed (the receipt lists it), then the file was deleted by hand: not unfinished
+  fs.mkdirSync(runDir('run.0801'), { recursive: true })
+  fs.writeFileSync(path.join(runDir('run.0801'), 'receipt.yaml'), 'run_id: run.0801\nending: landed\nresult:\n  records:\n    - obj.gone\n  commit: null\n')
+  recordProposalOrigin(o('gone', 'run.0801'))
+  assert.equal(countOf('proposals-unfinished').count, 0, 'filed, then deleted')
+
+  // a never removes the file: not unfinished
+  recordProposalOrigin(o('declined', 'run.0802'))
+  appendProposalDecision({ id: 'obj.declined', class: 'stated', key: 'declined', scene: SCENE, run: 'run.0802', verdict: 'never' })
+  assert.equal(countOf('proposals-unfinished').count, 0, 'decided')
+
+  // taken back on purpose: not unfinished
+  recordProposalOrigin(o('undone', 'run.0803')); recordProposalOrigin({ ...o('undone', 'run.0803'), reverted: true })
+  assert.equal(countOf('proposals-unfinished').count, 0, 'tombstoned')
+
+  // a crash: origin written, no file, not on the receipt
+  recordProposalOrigin(o('half', 'run.0804'))
+  const c = countOf('proposals-unfinished')
+  assert.equal(c.count, 1)
+  assert.deepEqual(c.some, ['obj.half'])
 })

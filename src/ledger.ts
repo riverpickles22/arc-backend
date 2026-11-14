@@ -112,6 +112,41 @@ export interface LedgerEntry {
    *  the two identities without a second store: the old entry stays exactly
    *  where it was, and nothing about it is recast as a decision. */
   supersedes?: { sha: string; run?: string }
+
+  // ---- what the record was told to learn (A74-1; origin 'update-record') ----
+  // A proposal for the record is a canon file with `status: proposed` and
+  // nothing else — the schema does not change. Where it CAME from lives here,
+  // in the store that already keeps what arc wrote: the canon id, what kind
+  // of fact, how sure the page made it, the key two proposals about the same
+  // thing share, the commits of the accepted change it was read from, and
+  // the paragraphs it rests on. `scene` and `run` are the fields above.
+  // A74-2 fixes the final shape and the reader that serves it.
+
+  /** the canon id the proposal files, or — for a retraction — names */
+  canon?: string
+  /** the canon type: character · place · faction · object · relationship · event */
+  type?: string
+  /** the existing record a relationship or event proposal is about (A74-12) */
+  about?: string
+  /** the existing relationship between the same two ends, of another kind,
+   *  that a new edge sits beside — kinds coexist; nothing is replaced */
+  beside?: string
+  /** stated · implied · retracted */
+  class?: 'stated' | 'implied' | 'retracted'
+  /** sha16 over what the proposal is about (`proposalKey`) */
+  key?: string
+  /** the accepted change it was read from, as commit shas */
+  range?: { from: string; to: string }
+  /** the paragraph ids it cites: `¶3`, `-¶3` */
+  evidence?: string[]
+  /** where code showed the proposal sits against the record — proven */
+  proven_conflict?: string
+  /** the model's own claim of a conflict with this record id — argued */
+  argued_conflict?: string
+  /** A TOMBSTONE: an earlier entry (same run, same canon id) whose filing was
+   *  taken back, so it must never come back to life if the author later
+   *  creates a file at that path. */
+  reverted?: boolean
 }
 
 /** Record what the drafting pass just wrote.
@@ -182,4 +217,75 @@ export function clearGenerated(files: string[]): void {
   } catch (e) {
     console.error('[warn] generation ledger clear failed:', e)
   }
+}
+
+/** WRITE THE ORIGIN OF ONE PROPOSAL, before the canon file it describes (§4's
+ *  landing order: the ledger entry and the receipt first, the file last). It
+ *  throws when it cannot write: a proposal with no origin would read as
+ *  "proposed before arc kept a record", which would be a lie about this one.
+ *  `file` is the canon file; the content-addressed blob the draft entries
+ *  keep is not needed, so `sha` is the proposal's own fingerprint. */
+export function recordProposalOrigin(entry: Omit<LedgerEntry, 'at' | 'sha'> & { origin: 'update-record' }): void {
+  fs.mkdirSync(path.dirname(INDEX()), { recursive: true })
+  const full: LedgerEntry = { at: new Date().toISOString(), sha: sha16(JSON.stringify(entry)), ...entry }
+  fs.appendFileSync(INDEX(), JSON.stringify(full) + '\n')
+}
+
+/** DOES THE PROPOSAL'S RECORD STAND? A record with a file of its own stands
+ *  while that file does. An edge has no file of its own — it is one item in
+ *  the file every edge lives in, which always exists — so it stands while its
+ *  id is IN that file: a hand-deleted edge is gone, and a crash between the
+ *  origin and the append left an origin that names nothing. */
+function stands(e: LedgerEntry): boolean {
+  const abs = path.join(STORY, e.file)
+  if (e.type !== 'relationship') return fs.existsSync(abs)
+  try {
+    const id = (e.canon ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return !!e.canon && new RegExp(`^[ \\t]*-[ \\t]+id:[ \\t]*${id}[ \\t]*$`, 'm').test(fs.readFileSync(abs, 'utf8'))
+  } catch { return false }
+}
+
+/** Origins whose filing was taken back, as `run|canon`. */
+const tombstones = (all: LedgerEntry[]): Set<string> =>
+  new Set(all.filter(e => e.origin === 'update-record' && e.reverted).map(e => `${e.run}|${e.canon}`))
+
+/** Every proposal an update-record run FILED and that still stands: not taken
+ *  back (a tombstone says so, whatever the path does later), not a
+ *  retraction (which names a record that already existed and is arc-filed in
+ *  no sense — see `retractionOrigins`), and its canon file still there (a
+ *  crash between the two writes leaves an origin with no file, which says
+ *  nothing). */
+export function proposalOrigins(): LedgerEntry[] {
+  const all = entries()
+  const dead = tombstones(all)
+  return all.filter(e => e.origin === 'update-record' && !e.reverted && e.class !== 'retracted'
+    && !dead.has(`${e.run}|${e.canon}`) && stands(e))
+}
+
+/** The retractions an update-record run named, for the inbox to read later.
+ *  Their `file` is the EXISTING record's, so they are never evidence that
+ *  arc filed anything. */
+export function retractionOrigins(): LedgerEntry[] {
+  const all = entries()
+  const dead = tombstones(all)
+  return all.filter(e => e.origin === 'update-record' && !e.reverted && e.class === 'retracted' && !dead.has(`${e.run}|${e.canon}`))
+}
+
+/** The card's name for `proposalOrigins`: the entries whose canon file still exists. */
+export const readProposalOrigins = proposalOrigins
+
+/** ORIGINS WITH NO FILE THAT ARE NOT EXPLAINED: the crash between the two
+ *  writes of the landing order (the ledger entry first, the canon file last).
+ *  Counted by `arc doctor` as "arc did not finish writing one proposal".
+ *  Unfinished means all of: the file is missing, no tombstone says the filing
+ *  was taken back, the run's receipt does not list the canon id as filed (a
+ *  crash leaves it off; a filed-then-deleted one is on it), and the author has
+ *  not decided on it (a never removes the file). `filed` and `decided` are
+ *  passed in so this file imports neither the run nor the evidence log. */
+export function unfinishedOrigins(filed: (run: string, canon: string) => boolean, decided: (canon: string) => boolean): LedgerEntry[] {
+  const all = entries()
+  const dead = tombstones(all)
+  return all.filter(e => e.origin === 'update-record' && !e.reverted && e.class !== 'retracted'
+    && !dead.has(`${e.run}|${e.canon}`) && !stands(e)
+    && !(e.run && e.canon && filed(e.run, e.canon)) && !(e.canon && decided(e.canon)))
 }

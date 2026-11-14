@@ -40,6 +40,12 @@ const ALL_ROWS = [
   // The first row that writes nothing at all: U9 reads the pending diff
   // and answers with findings that cite what they rest on (A72-10).
   'inspect.scene.one-shot',
+  // U7 (A74-1): the first triggered row — what the record learns from an accept.
+  'update-record.scene.triggered',
+  // U12 (A74-6): the style learner, the second triggered row.
+  'learn.manuscript.triggered',
+  // U12's other trigger (A74-7): the bootstrap, asked for once.
+  'learn.manuscript.one-shot',
 ]
 
 test('U4 and U5 are the first rows: sealed, withholding, keyed by their cell', () => {

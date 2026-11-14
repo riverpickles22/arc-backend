@@ -29,9 +29,9 @@ function canonStamp(dir = path.join(STORY, 'canon')): string {
 }
 
 /** Run one of arc-core's python tools against the configured story. */
-function runTool(script: string, args: string[] = []): { ok: boolean; output: string } {
+function runTool(script: string, args: string[] = [], story: string = STORY): { ok: boolean; output: string } {
   try {
-    const out = execFileSync(PYTHON, [path.join(CORE, 'tools', script), STORY, ...args], {
+    const out = execFileSync(PYTHON, [path.join(CORE, 'tools', script), story, ...args], {
       cwd: CORE, encoding: 'utf8', timeout: 30_000, maxBuffer: 32 * 1024 * 1024,
     })
     return { ok: true, output: out }
@@ -65,5 +65,12 @@ export function invalidateCanon(): void {
 
 export function validateStory(): { ok: boolean; output: string } {
   const res = runTool('validate.py')
+  return { ok: res.ok, output: res.output.trim() }
+}
+
+/** The story's own validator over some OTHER directory laid out as a story —
+ *  how a candidate record is judged without touching the working tree. */
+export function validateAt(dir: string): { ok: boolean; output: string } {
+  const res = runTool('validate.py', [], dir)
   return { ok: res.ok, output: res.output.trim() }
 }

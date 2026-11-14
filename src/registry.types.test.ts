@@ -81,3 +81,14 @@ export const stageWithEnvelope: Stage = { ...stageBase, envelope: { tools: 'none
 
 // @ts-expect-error `when` is closed: a stage runs always, or when the line names an effect
 export const stageWithUnknownWhen: Stage = { ...stageBase, when: 'sometimes' }
+
+// ---- the review episode's interval has one home (A74-3) ---------------------
+//
+// `episode` is optional, and when it is there it is { idleMs } and nothing
+// else: the trigger's number is declared once on the row, not tuned per call.
+
+export const rowWithEpisode: SealedRow = { ...ROW_EXPLORE_SCENE, episode: { idleMs: 600_000 } }
+// @ts-expect-error the episode's interval is a number of milliseconds
+export const episodeInWords: SealedRow = { ...ROW_EXPLORE_SCENE, episode: { idleMs: 'ten minutes' } }
+// @ts-expect-error the episode carries the interval and no other knob
+export const episodeWithKnob: SealedRow = { ...ROW_EXPLORE_SCENE, episode: { idleMs: 1, retries: 3 } }

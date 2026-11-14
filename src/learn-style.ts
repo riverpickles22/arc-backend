@@ -1,8 +1,11 @@
-// The style LEARNING pass: what did the author change about what arc wrote?
+// The style LEARNING pass (U12): what did the author change about what arc wrote?
 //
-// Runs at the accept gate, beside capture. Capture asks what the prose means
+// Runs on the review episode (A74-3), beside U7. U7 asks what the prose means
 // for canon; this asks what the author's edits mean for the contract. Both are
-// non-fatal — a failure here must never un-accept prose.
+// non-fatal — a failure here must never un-accept prose. Since A74-6 it has a
+// row (learn · manuscript · triggered, registry.ts ROW_LEARN_MANUSCRIPT): the
+// launch is the row's, the three bars are typed gates (gates.ts), and every
+// run leaves a receipt carrying the key the episode joins on.
 //
 // THE TRUST PROPERTY. The model never supplies a quote. It receives NUMBERED
 // edit pairs and answers with rule text plus the edit numbers it relies on;
@@ -13,10 +16,19 @@
 //
 // Everything produced here is ARGUED (conventions §11) and binds nothing: the
 // queue lives in docs/style.proposed.md, which no drafting pass ever reads.
-import type Anthropic from '@anthropic-ai/sdk'
-import { MODEL } from './config'
-import { getClient } from './agent'
-import { currentEngine, runCliPrompt, stripFences } from './engine'
+import { HttpError } from './http'
+import { currentEngine, stripFences } from './engine'
+import { runGates } from './gates'
+import { endingOf, gateCtx as gateCtxOf } from './reroute'
+import { jobFingerprint, LEARN_RULES, MIN_INDEPENDENT_EXAMPLES, ROW_LEARN_MANUSCRIPT, type SealedRow } from './registry'
+import { sha16 } from './records'
+import { resolveRequest } from './request'
+import { closeReceipt, openRowRun } from './rowrun'
+import { endRun, stateOf } from './runs'
+import { outcomeSentence, writeReceipt, writeWorkingReceipt } from './run'
+import { landedByKey, runKey } from './update-record'
+import { commitRecords } from './story'
+import { rulesFrom, type RawRule } from './rule-gates'
 import { generatedFor, clearGenerated } from './ledger'
 import { addMinedNotes, readJudgments, readMinedNotes, readWatermark, setWatermark } from './evidence'
 import type { ResolvedAnnotation } from 'arc-canon-graph'
@@ -24,17 +36,17 @@ import { alignParagraphs } from 'arc-canon-graph'
 import { git, parseScene, proseScenes } from './story'
 import { annotations } from './annotations'
 import { styleContract } from './style'
-import { appendToQueue, readQueue, ruleId, type ProposedRule, type RuleEvidence } from './style-queue'
+import { appendToQueue, readDismissed, readQueue, ruleId, type ProposedRule, type RuleEvidence } from './style-queue'
 
 /** Below this many word-level changes a paragraph edit is a typo fix or a
  *  continuity patch, not a voice signal. Filtering here is what keeps the
  *  model from generalizing a rule out of a corrected character name. */
 export const MIN_CHANGED_WORDS = 3
 
-/** Two different paragraphs, or it is not a rule. The author's instruction,
- *  and the reason it lives here rather than only in the prompt: their edits
- *  are evidence, not a licence to generalize from one example. */
-export const MIN_INDEPENDENT_EXAMPLES = 2
+/** Two different places, or it is not a rule — declared on the learn row
+ *  (registry.ts), where the gate reads it; re-exported for the callers that
+ *  have always imported it from here. */
+export { MIN_INDEPENDENT_EXAMPLES }
 
 /** And two different scenes before a rule may claim to be about the writer
  *  rather than about this book. */
@@ -75,6 +87,9 @@ interface EditPair {
   said?: string
   /** which annotation argued this pair, so it argues exactly once */
   noteId?: string
+  /** the craft plan the passage was drafted under, when the author's decision
+   *  on it recorded one (A74-6) — a plan they keep asking for is evidence */
+  plan?: { move: string; how: string }[]
 }
 
 const paragraphs = (body: string): string[] =>
@@ -154,8 +169,27 @@ export function refusalPairs(files: string[], since: string): Omit<EditPair, 'n'
       wrote: j.arcWrote,
       kept: j.authorKept,
       changed: changedWords(j.arcWrote, j.authorKept),
+      ...(j.plan?.length ? { plan: j.plan } : {}),
     }))
 }
+
+/** The plan the author's latest decision on a passage carried, or none.
+ *  A decision on the whole scene (no paragraph) speaks for every passage in
+ *  it; one on a paragraph speaks for that paragraph alone. Read from the
+ *  evidence log, where the plan was copied at the decision (A69-4) — the
+ *  receipt that held it is long gone. */
+export function planFor(file: string, paragraph: number): { move: string; how: string }[] | undefined {
+  const hits = readJudgments().filter(j => j.file === file && j.plan?.length && (j.paragraph === null || j.paragraph === paragraph))
+  return hits.at(-1)?.plan
+}
+
+/** Attach the plan beside each pair that has one. */
+const withPlans = (pairs: EditPair[]): EditPair[] =>
+  pairs.map(p => {
+    if (p.plan || (p.source !== 'draft' && p.source !== 'revision')) return p
+    const plan = planFor(p.scene, p.paragraph)
+    return plan ? { ...p, plan } : p
+  })
 
 /** Resolved notes as pairs — the author's stated requirement beside the
  *  prose it was stated about (A49-2).
@@ -205,73 +239,14 @@ export function notePairs(
 export const significant = (pairs: EditPair[]): EditPair[] =>
   pairs.filter(p => p.changed >= MIN_CHANGED_WORDS)
 
-const LEARN_RULES = `You are arc's STYLE LEARNING pass. The author accepted prose, editing on
-the way in. Below are numbered EDIT pairs of two kinds, labelled:
 
-- ARC WROTE / AUTHOR KEPT — arc drafted the paragraph; the author reworked
-  it. The edit says how arc should have written it.
-- AUTHOR HAD / REVISED TO — the author's own accepted prose, rewritten by
-  their own hand. Nobody corrected anybody: this is the author's preference
-  showing directly, the strongest voice signal in this table.
-- THE BOOK HAD / IT MOVED TO — two successive ACCEPTED states of the
-  manuscript. The author ratified the movement, but either side may have been
-  machine-drafted on their behalf, so this is the weakest evidence here:
-  weight it below a direct edit, and never below-the-line alone.
-- ARC WROTE / AUTHOR REFUSED, KEEPING — arc offered this and the author said
-  no; the right-hand side is what stands instead. A refusal is only evidence
-  about FORM when the two sides differ in how they are written. Many refusals
-  turn on fact, continuity, or what a character would do — those say nothing
-  about the author's sentences, and you must ignore them here rather than
-  reach for a style rule to explain them.
-- AUTHOR NOTED / AS NOTED / IT BECAME — the author wrote a note ON the
-  passage, in their own words, and later resolved it with the passage
-  changed. The only pair here where the requirement is STATED rather than
-  inferred — but the note may be about fact or continuity rather than form,
-  and the after-side may have been machine-drafted on their behalf before
-  they accepted it. Treat the note's words as the author's intent, judge
-  FORM only from what actually changed, and apply the same discipline as
-  everywhere else: ignore the pair entirely when the change is not about
-  how the sentences are written.
+/** The plan, as one line beside its pair. */
+const planLine = (p: EditPair): string[] =>
+  p.plan?.length ? [`THE PLAN IT WAS DRAFTED UNDER: ${p.plan.map(m => `${m.move} — ${m.how}`).join('; ')}`] : []
 
-An empty right-hand side means the paragraph was cut entirely.
-
-Your job is to name the FORM rules those edits imply — how this author's
-sentences behave. Diction, rhythm, sentence length, punctuation, register,
-what they refuse to spell out. NEVER a rule about fact, plot, character, or
-canon: those belong to the story record, not the style contract.
-
-DISCIPLINE:
-- Propose a rule only when the same pattern shows in TWO OR MORE INDEPENDENT
-  edits — different paragraphs, and better still different scenes. Two passes
-  at the same paragraph are one example, not two. One coincidence is never a
-  rule, however unmistakable it looks.
-- Never propose a rule the contract below already states, in any wording.
-- Never propose a rule already in the pending queue below.
-- Write each rule the way the contract is written: imperative, one or two
-  sentences, addressed to whoever drafts next.
-- Do NOT quote the prose. Cite edit NUMBERS only — arc attaches the quotes
-  itself, from its own diff.
-- If nothing generalizes, answer with an empty array. That is a good answer
-  and the common one.
-
-WHICH LAYER a rule belongs to, as your recommendation and nothing more — the
-author decides where it is written:
-- "story" — how THIS book's sentences behave. Almost everything. A rule drawn
-  from one book's prologue is a rule about that book.
-- "author" — a habit that would hold in any book this writer wrote. Only for
-  a pattern showing across two or more different scenes, and only when it is
-  about the writer rather than the material.
-
-Answer with a JSON array and nothing else:
-[{"rule": "...", "section": "Sentences" | null, "layer": "story" | "author", "edits": [1, 4]}]`
-
-/** Pure prompt builder — testable without an engine. */
-export function buildLearnPrompt(input: {
-  pairs: EditPair[]
-  style: string
-  pending: string[]
-}): string {
-  const table = input.pairs.map(p => [
+/** The numbered pairs, as the subject of the brief. Pure. */
+export function editsTable(pairs: EditPair[]): string {
+  return pairs.map(p => [
     `--- EDIT ${p.n} (${p.scene}) ---`,
     ...(p.source === 'note' ? [`AUTHOR NOTED: ${p.said ?? ''}`] : []),
     p.source === 'revision' ? `AUTHOR HAD: ${p.wrote}`
@@ -283,20 +258,37 @@ export function buildLearnPrompt(input: {
         : p.source === 'history' ? `IT MOVED TO: ${p.kept || '(cut entirely)'}`
           : p.source === 'note' ? `IT BECAME: ${p.kept || '(cut entirely)'}`
             : `AUTHOR KEPT: ${p.kept || '(cut entirely)'}`,
+    ...planLine(p),
   ].join('\n')).join('\n\n')
+}
 
+/** THE SLICE: the promoted contract and the rules the author declined. Built
+ *  by code from the record, never by the model. The pending queue is not here:
+ *  docs/style.proposed.md is read by no prompt (rule 3), and the gates check
+ *  a new rule against it in code. */
+export function learnSlice(input: { style: string; declined?: string[] }): string {
   return [
-    LEARN_RULES,
     `=== THE CONTRACT AS IT STANDS (do not re-propose any of this) ===\n${input.style}`,
-    input.pending.length
-      ? `=== ALREADY PENDING RATIFICATION (do not re-propose) ===\n${input.pending.map(r => `- ${r}`).join('\n')}`
+    input.declined?.length
+      ? `=== RULES THE AUTHOR DECLINED (do not propose these again, in any wording) ===\n${input.declined.map(r => `- ${r}`).join('\n')}`
       : '',
-    `=== THE EDITS ===\n${table}`,
-    'Answer with the JSON array.',
   ].filter(Boolean).join('\n\n')
 }
 
-interface RawProposal { rule: string; section: string | null; layer: 'story' | 'author' | null; edits: number[] }
+/** THE ASK: the numbered pairs, the subject. */
+export const learnAsk = (pairs: EditPair[]): string => `=== THE EDITS ===\n${editsTable(pairs)}\n\nAnswer with the JSON array.`
+
+/** The whole brief as one string. The rowed passes send the same three parts
+ *  as blocks; this is the one-string reading of them, for tests. */
+export function buildLearnPrompt(input: {
+  pairs: EditPair[]
+  style: string
+  declined?: string[]
+}): string {
+  return [LEARN_RULES, learnSlice(input), learnAsk(input.pairs)].join('\n\n')
+}
+
+type RawProposal = RawRule
 
 /** Tolerant parse, matching the other passes: fences stripped, junk dropped. */
 export function parseProposals(text: string): RawProposal[] {
@@ -306,13 +298,7 @@ export function parseProposals(text: string): RawProposal[] {
   if (start < 0 || end < start) throw new Error(`learning pass did not return a JSON array: ${raw.slice(0, 160)}`)
   const parsed: unknown = JSON.parse(raw.slice(start, end + 1))
   if (!Array.isArray(parsed)) throw new Error('learning pass returned JSON that is not an array')
-  return parsed.flatMap((x): RawProposal[] => {
-    const r = x as Partial<RawProposal>
-    if (typeof r.rule !== 'string' || !r.rule.trim()) return []
-    const edits = Array.isArray(r.edits) ? r.edits.filter((n): n is number => Number.isInteger(n)) : []
-    const layer = r.layer === 'author' ? 'author' as const : r.layer === 'story' ? 'story' as const : null
-    return [{ rule: r.rule.trim(), section: typeof r.section === 'string' && r.section.trim() ? r.section.trim() : null, layer, edits }]
-  })
+  return rulesFrom(parsed)
 }
 
 const clip = (s: string): string =>
@@ -327,7 +313,20 @@ const clip = (s: string): string =>
  *  over three times has shown one preference three ways, and counting that as
  *  three examples is how a passing mood becomes a binding rule. */
 export const independentExamples = (cited: EditPair[]): number =>
-  new Set(cited.map(p => `${p.scene}:${p.paragraph}`)).size
+  new Set(cited.map(placeKey)).size
+
+/** The scene a pair is about, as an id. Pairs name their scene three ways — a
+ *  prose FILE (a draft or a hand revision), a scene id (a refusal, a note) —
+ *  so the same paragraph reached by two routes must be recognised as one
+ *  place before it is counted. Resolved from the book's own scenes; a name it
+ *  cannot place stands as it is. */
+export function sceneIdOf(name: string): string {
+  return proseScenes().find(s => s.file === name || s.scene === name)?.scene ?? name
+}
+
+/** ONE KEY FOR EVERY PAIR: the scene and the paragraph. A refusal and a hand
+ *  edit of the same paragraph are one example, not two. */
+export const placeKey = (p: { scene: string; paragraph: number }): string => `${sceneIdOf(p.scene)}:${p.paragraph}`
 
 /** Attach evidence from OUR table, not the model's text, and hold every
  *  proposal to the bar in code rather than only in the prompt.
@@ -337,18 +336,26 @@ export const independentExamples = (cited: EditPair[]): number =>
  *  whole property this module rests on is that the machine supplies the proof,
  *  so the machine counts the proof too. */
 export function materialize(proposals: RawProposal[], pairs: EditPair[], at: string): ProposedRule[] {
+  return materializeCounted(proposals, pairs, at).rules
+}
+
+/** `materialize`, and what it left out by name — so the receipt can say that
+ *  every rule the answer made is either kept or dropped for a reason. */
+export function materializeCounted(proposals: RawProposal[], pairs: EditPair[], at: string): { rules: ProposedRule[]; dropped: { reason: string; count: number }[] } {
   const byN = new Map(pairs.map(p => [p.n, p]))
   const out: ProposedRule[] = []
-  for (const p of proposals) {
+  const dropped = new Map<string, number>()
+  const drop = (reason: string, n = 1): void => { dropped.set(reason, (dropped.get(reason) ?? 0) + n) }
+  for (const [i, p] of proposals.entries()) {
     // Cited BEFORE evidence is trimmed for display. Gating on the trimmed
     // list would fail a well-evidenced rule for being too well evidenced.
     const cited = p.edits.map(n => byN.get(n)).filter((x): x is EditPair => !!x)
-    if (independentExamples(cited) < MIN_INDEPENDENT_EXAMPLES) continue
+    if (independentExamples(cited) < MIN_INDEPENDENT_EXAMPLES) { drop('no-evidence'); continue }
 
     const evidence: RuleEvidence[] = cited
       .slice(0, 3)
       .map(x => ({ scene: x.scene, wrote: clip(x.wrote), kept: clip(x.kept) }))
-    if (!evidence.length) continue
+    if (!evidence.length) { drop('no-evidence'); continue }
 
     // Attribution is conservative: a rule is 'revision' only when every edit
     // it cites is one. One draft correction in the argument makes it a rule
@@ -366,9 +373,9 @@ export function materialize(proposals: RawProposal[], pairs: EditPair[], at: str
     const layer = p.layer === 'author' && scenes >= MIN_AUTHOR_SCENES ? 'author' as const : 'story' as const
 
     out.push({ id: ruleId(p.rule), rule: p.rule, section: p.section, at, evidence, source, layer })
-    if (out.length >= MAX_PROPOSALS_PER_RUN) break
+    if (out.length >= MAX_PROPOSALS_PER_RUN) { if (proposals.length - i - 1 > 0) drop('cap', proposals.length - i - 1); break }
   }
-  return out
+  return { rules: out, dropped: [...dropped].map(([reason, count]) => ({ reason, count })) }
 }
 
 /** The scene's body at the commit this file's pending work started from.
@@ -382,7 +389,15 @@ export function materialize(proposals: RawProposal[], pairs: EditPair[], at: str
  *  The boundary is pinned when the file's pending work is first judged
  *  (evidence.ts) and read back here. Null when nothing was pinned, which is
  *  the honest answer rather than a guess at one. */
-function baselineBody(file: string): string | null {
+function baselineBody(file: string, at?: string): string | null {
+  // A caller that knows where its reading starts — the review episode — names
+  // it, so two accepts read as one change and not as the last of them alone.
+  if (at) {
+    try {
+      const prefix = git('rev-parse', '--show-prefix').trim()
+      return parseScene(git('show', `${at}:${prefix}${file}`), file)?.body ?? null
+    } catch { return null }
+  }
   // From the RECORD, not the pin. The pin under .arc/ only lives while a
   // file's work is pending — proseAccept clears it on the way out — but every
   // judgment writes the sha it started from into the evidence log, which is
@@ -418,15 +433,74 @@ function headBody(file: string): string | null {
   }
 }
 
-interface LearnResult {
+export interface LearnResult {
   added: ProposedRule[]
   /** Why nothing was proposed, when nothing was — including the cases that
-   *  never reached the model at all. */
-  skipped: 'queue-full' | 'no-edits' | 'no-engine' | null
+   *  never reached the model at all. `already-read` is a keyed episode this
+   *  record already holds a landed read of; `not-read` a run that ended
+   *  without an answer (its sentence is `reply`). */
+  skipped: 'queue-full' | 'no-edits' | 'no-engine' | 'already-read' | 'not-read' | null
   pairsConsidered: number
+  /** the run that read, when a model was asked */
+  run?: string
+  /** one sentence for the author, when a run ended without an answer */
+  reply?: string
 }
 
-export async function runLearnStyle(files: string[]): Promise<LearnResult> {
+/** The episode a keyed read belongs to (A74-3): the scene, the commits it
+ *  covers and the combined diff the key fingerprints. Absent for the Style
+ *  page's "learn now", which reads whatever the author has judged and is
+ *  attended, by hand, and carries no key. */
+export interface LearnEpisode { scene: string; range: { from: string; to: string }; diff: string }
+
+/** The key of a learner read: job · scene · range, by the same rule as U7's. */
+export const learnKey = (e: LearnEpisode): string => runKey('learn', e.scene, e.range, e.diff)
+
+/** The gesture, as a gesture — never a sentence the author did not say. The
+ *  Style page's "learn now" is the author's hand; a read after their accepts
+ *  is arc's own trigger, named for the scene it follows. */
+const gestureOf = (episode?: LearnEpisode): string =>
+  episode ? `after your accepts to ${episode.scene}` : 'learn now, by hand'
+
+export async function runLearnStyle(
+  files: string[],
+  baselines: Record<string, string> = {},
+  opts: { episode?: LearnEpisode } = {},
+): Promise<LearnResult> {
+  const opened = { yes: false }
+  try {
+    return await learnRead(files, baselines, opts, opened)
+  } catch (e) {
+    // A KEYED READ THAT THROWS BEFORE ITS RUN OPENED (the table of pairs reads
+    // git and the evidence log) still leaves its receipt, ending could not
+    // run, so the failure is LISTED and not simply lost. A refusal in the
+    // author's words (HttpError) is an answer, not a failure.
+    if (!opened.yes && opts.episode && !(e instanceof HttpError)) {
+      try {
+        const request = resolveRequest({ said: gestureOf(opts.episode), job: 'learn', scope: 'manuscript', mode: 'triggered', subject: opts.episode.scene })
+        const ctx = openRowRun(request, ROW_LEARN_MANUSCRIPT, { included: [], withheld: [], dropped: [], read: [] })
+        ctx.receipt.key = learnKey(opts.episode)
+        ctx.receipt.result = { records: [], commit: null, range: opts.episode.range }
+        closeReceipt(ctx, 'could not run'); endRun(ctx.run.id, 'could not run', { failed: opts.episode.scene })
+      } catch (inner) { console.error('[error] could not record the failed style read:', inner) }
+    }
+    throw e
+  }
+}
+
+async function learnRead(
+  files: string[],
+  baselines: Record<string, string>,
+  opts: { episode?: LearnEpisode },
+  opened: { yes: boolean },
+): Promise<LearnResult> {
+  // A KEYED READ THAT LANDED IS DONE (invariant 3): the same accepts, the same
+  // words — nothing to spend. Checked before anything is read.
+  const key = opts.episode ? learnKey(opts.episode) : undefined
+  if (key && landedByKey(key, undefined, 'learn')) {
+    return { added: [], skipped: 'already-read', pairsConsidered: 0, reply: 'arc has already read everything you changed in this scene, so there is nothing new to learn from.' }
+  }
+
   // A full queue suppresses the pass before anything is read or spent. More
   // proposals do not help an author who has not looked at the last twelve.
   if (readQueue().length >= QUEUE_SUPPRESS_AT) return { added: [], skipped: 'queue-full', pairsConsidered: 0 }
@@ -448,11 +522,15 @@ export async function runLearnStyle(files: string[]): Promise<LearnResult> {
       // The before is what git accepted last time. A scene that is new at
       // HEAD^ yields nothing — added prose argues no rule (same reasoning as
       // added paragraphs inside editPairs).
-      const had = baselineBody(file)
+      const had = baselineBody(file, baselines[file])
       if (had === null || had === kept) continue
       pairs.push(...significant(editPairs(had, kept, file, 'revision')))
     }
   }
+  // the plan each decision carried, beside the pair it is about (A74-6)
+  const planned = withPlans(pairs)
+  pairs.length = 0
+  pairs.push(...planned)
 
   // What the author refused, which git never recorded and only the evidence
   // log holds. Added after the ledger diffs so the numbering stays stable.
@@ -477,33 +555,25 @@ export async function runLearnStyle(files: string[]): Promise<LearnResult> {
 
   const engine = currentEngine()
   if (!engine) return { added: [], skipped: 'no-engine', pairsConsidered: pairs.length }
+  if (engine === 'sdk') {
+    throw new HttpError(400,
+      'arc can learn from your edits only when it runs on your claude login — it cannot show what it was given on the engine it is set up to use. '
+      + 'Log in with  claude  and ask again, or remove ANTHROPIC_API_KEY from arc-backend/.env.')
+  }
 
   // Renumber after truncation so the numbers the model sees are the numbers
   // materialize() looks up.
   const considered = pairs.slice(0, MAX_PAIRS).map((p, i) => ({ ...p, n: i + 1 }))
-  const prompt = buildLearnPrompt({
-    pairs: considered,
-    style: styleContract(),
-    pending: readQueue().map(r => r.rule),
+  const subject = opts.episode?.scene ?? 'the manuscript'
+  const read = await launchLearn({
+    row: ROW_LEARN_MANUSCRIPT, considered, ask: learnAsk(considered),
+    said: gestureOf(opts.episode), subject, key,
+    range: opts.episode?.range ?? null,
+    readExtra: opts.episode ? [{ id: `range:${opts.episode.scene}`, version: `${opts.episode.range.from}..${opts.episode.range.to}` }] : [],
+    opened,
+    receiptNote: key ? `Record: the receipt for a style read of ${opts.episode!.range.to.slice(0, 7)}` : 'Record: the receipt for a style read by hand',
   })
-
-  let text: string
-  if (engine === 'claude-cli') {
-    text = (await runCliPrompt(prompt, { pass: 'learn-style' })).text
-  } else {
-    const message = await getClient().beta.messages.create({
-      model: MODEL,
-      max_tokens: 2000,
-      messages: [{ role: 'user', content: prompt }],
-    })
-    text = message.content
-      .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === 'text')
-      .map(b => b.text)
-      .join('\n')
-  }
-
-  const fresh = materialize(parseProposals(text), considered, new Date().toISOString())
-  const { added } = appendToQueue(fresh)
+  if (read.skipped !== null) return read
 
   // Consumed: the same edit must never be mined twice into the same queue.
   clearGenerated(mined)
@@ -515,5 +585,165 @@ export async function runLearnStyle(files: string[]): Promise<LearnResult> {
   if (newest) setWatermark(newest)
   // The notes have argued too — each exactly once.
   addMinedNotes(considered.filter(p => p.noteId).map(p => p.noteId!))
-  return { added, skipped: null, pairsConsidered: considered.length }
+  return read
+}
+
+/** THE LAUNCH OF A LEARNING READ, shared by the two rows that learn (the
+ *  review episode's, A74-6, and the bootstrap's, A74-7): resolve the gesture,
+ *  open the run, send the three blocks, run the three gates, file what
+ *  survives with the run id on it, and close the receipt. The slice carries
+ *  the promoted contract and the declined list and NEVER the pending queue
+ *  (rule 3): the queue is checked in code by the gates. What differs between
+ *  the rows is only what the caller hands in. */
+export async function launchLearn(input: {
+  row: SealedRow
+  considered: EditPair[]
+  /** the ask block: the numbered pairs, and any context the caller adds */
+  ask: string
+  said: string
+  subject: string
+  key?: string
+  range: { from: string; to: string } | null
+  readExtra?: { id: string; version: string }[]
+  opened: { yes: boolean }
+  receiptNote: string
+  /** a layer to force on every proposal, whatever the model recommends */
+  layer?: 'story'
+}): Promise<LearnResult> {
+  const { row, considered, ask, subject, key, range, opened } = input
+  const style = styleContract()
+  const pending = readQueue().map(r => r.rule)
+  const declined = readDismissed()
+
+  const request = resolveRequest({
+    said: input.said,
+    job: row.job, scope: row.scope, mode: row.mode,
+    subject,
+  })
+  // the queue is held in code, never shown to the model (rule 3)
+  const sliceText = learnSlice({ style, declined: declined.map(d => d.rule) })
+  const ctx = openRowRun(request, row, {
+    included: [...row.slice.layers], withheld: [], dropped: [],
+    read: [
+      { id: 'style-contract', version: sha16(style) },
+      { id: 'declined', version: sha16(declined.map(d => d.id).join(',')) },
+      { id: 'edits', version: sha16(ask) },
+      ...(input.readExtra ?? []),
+      { id: 'job', version: jobFingerprint(row) },
+    ],
+  })
+  opened.yes = true
+  const { run, receipt } = ctx
+  // The key and the commits it read are on the receipt from the start, so a
+  // run that fails is still the answer to "what did this try to read".
+  if (key) receipt.key = key
+  receipt.result = { records: [], commit: null, range }
+  writeWorkingReceipt(receipt)
+
+  const brief = {
+    blocks: [
+      { id: 'rules', text: row.rules, cached: true },
+      { id: 'slice', text: sliceText, cached: true },
+      { id: 'ask', text: ask, cached: false },
+    ],
+  }
+  const gateCtx = {
+    ...gateCtxOf({
+      sceneName: subject, sceneBody: '', sceneLocks: [], lockedTexts: [],
+      literals: [], andCap: null, wordCap: null, destination: [], known: [],
+    }),
+    rules: {
+      // one key per pair: the scene id and the paragraph, however the pair named its scene
+      table: considered.map(p => ({ n: p.n, scene: sceneIdOf(p.scene), paragraph: p.paragraph })),
+      minExamples: row.minIndependentExamples ?? MIN_INDEPENDENT_EXAMPLES,
+      contract: style,
+      pending,
+      declined,
+    },
+  }
+
+  try {
+    const out = await runGates({
+      row: { ...row },
+      run, receipt, brief,
+      repair: (refusal: string, resumed: boolean) => ({
+        blocks: resumed ? [{ id: 'repair', text: refusal, cached: false }]
+          : [...brief.blocks, { id: 'repair', text: refusal, cached: false }],
+      }),
+      attempt: (n: 1 | 2) => `read-${n}`,
+      gateCtx,
+      render: b => b.blocks.map(x => x.text).join('\n\n'),
+    })
+
+    const unread = (reply: string): LearnResult =>
+      ({ added: [], skipped: 'not-read', pairsConsidered: considered.length, run: run.id, reply })
+
+    if (stateOf(run.id) === 'cancelled') {
+      closeReceipt(ctx, 'cancelled'); endRun(run.id, 'cancelled', { stopped: subject })
+      return unread(outcomeSentence({ ending: 'cancelled', gates: receipt.gates }) ?? 'you stopped it before it had anything to say.')
+    }
+    if (!out.ok) {
+      const ending = endingOf([{ kind: out.kind, gateRefused: out.gateRefused, unreadable: out.unreadable }], false)
+      closeReceipt(ctx, ending); endRun(run.id, ending, { refused: out.reason })
+      return unread(outcomeSentence({ ending, gates: receipt.gates }) ?? out.reason)
+    }
+
+    const read = JSON.parse(out.checked.body) as {
+      rules: RawProposal[]
+      dropped: { gate: string; claim: string; why: string }[]
+      resembles: Record<string, { id: string; at: string }>
+    }
+    // The quotes come from OUR table; the run id and the resemblance ride on
+    // the rule so the Style page can say where it came from.
+    const made = materializeCounted(read.rules, considered, new Date().toISOString())
+    const fresh = made.rules.map(r => ({
+      ...r, run: run.id,
+      ...(input.layer ? { layer: input.layer } : {}),
+      ...(read.resembles[r.rule] ? { resembles: read.resembles[r.rule] } : {}),
+    }))
+
+    // THE KEY IS CHECKED AGAIN before anything is filed: two reads with one
+    // key never both file, however they overlapped while the model answered.
+    // Ended as U7 ends it — cancelled, saying it was already read.
+    if (key && landedByKey(key, run.id, 'learn')) {
+      closeReceipt(ctx, 'cancelled'); endRun(run.id, 'cancelled', { read: subject, already: true })
+      return { added: [], skipped: 'already-read', pairsConsidered: considered.length, run: run.id,
+        reply: 'arc has already read everything you changed in this scene, so there is nothing new to learn from.' }
+    }
+    const { added } = appendToQueue(fresh)
+
+    // EVERY RULE THE ANSWER MADE IS KEPT OR DROPPED FOR A NAMED REASON:
+    // returned = kept + dropped. The gates' drops, materialize's own (no
+    // evidence, the cap) and the queue's (already queued or declined by id).
+    const byGate = new Map<string, number>()
+    const count = (reason: string, n: number): void => { if (n > 0) byGate.set(reason, (byGate.get(reason) ?? 0) + n) }
+    for (const d of read.dropped) count(d.gate, 1)
+    for (const d of made.dropped) count(d.reason, d.count)
+    count('already-queued-or-declined', fresh.length - added.length)
+    receipt.evidence = {
+      returned: read.rules.length + read.dropped.length,
+      dropped: [...byGate].map(([reason, count]) => ({ reason, count })),
+    }
+    receipt.result = { records: added.map(r => r.id), commit: null, range }
+    writeWorkingReceipt(receipt)
+    closeReceipt(ctx, 'landed')
+    // A LANDED KEYED READ JOINS THE RECORD when it lands (epic D10): no
+    // author's decision gates it, and the episode reads what has been read
+    // from history/, not from the disposable .arc/.
+    // A read the author asked for by hand joins the record too when it proposes
+    // something, so every proposal's `run` resolves in history/.
+    if (key || added.length) {
+      try {
+        const file = writeReceipt(receipt)
+        commitRecords(input.receiptNote, [file])
+      } catch (e) { console.error('[error] could not write the receipt of a landed style read to history/:', e) }
+    }
+    endRun(run.id, 'landed', { read: subject, proposed: added.length, dropped: read.dropped.length })
+    return { added, skipped: null, pairsConsidered: considered.length, run: run.id }
+  } catch (e) {
+    // A RUN THAT THROWS AFTER ITS RECEIPT IS KEYED must still end: left open
+    // it would read as unfinished. The first ending wins.
+    closeReceipt(ctx, 'could not run'); endRun(run.id, 'could not run', { failed: subject })
+    throw e
+  }
 }

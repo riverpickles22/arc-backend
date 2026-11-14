@@ -28,6 +28,9 @@ import { validatorDetail, validatorSentence } from './refusal'
 import type { ResolvedAnnotation, ResolvedLock } from 'arc-canon-graph'
 import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
 import { readConflicts } from './revise'
+import { evidenceId, readProposals, type Proposal } from './proposals'
+import { ruleId } from './style-queue'
+import { contractLines, examplesCited, matchRule, rulesFrom, type RawRule, type RuleGateCtx } from './rule-gates'
 import { load as yamlLoad } from 'js-yaml'
 import type { DroppedClaim, RouteCoverage } from 'arc-canon-graph/api-types.ts'
 import { lockViolations } from 'arc-canon-graph/annotations.ts'
@@ -74,6 +77,13 @@ export interface ProseGateCtx {
    *  gate resolves against this and nothing wider — arc will not look a
    *  claim up somewhere the pass was never shown. */
   cites?: CiteScope
+  /** WHAT A PROPOSAL IS JUDGED AGAINST (U7, A74-1). The pass supplies each
+   *  measurement from the record it briefed the model with; a row naming a
+   *  proposal gate without them is refused, never quietly passed. */
+  proposals?: ProposalGateCtx
+  /** WHAT A RULE IS JUDGED AGAINST (U12, A74-6): arc's own table of edit
+   *  pairs, the promoted contract and the declined list. */
+  rules?: RuleGateCtx
   destination: string[]
   /** the overlap bar and where it came from */
   maxOverlap: number
@@ -112,6 +122,21 @@ export interface ProseGateCtx {
    *  the ones that measure the pass's own prose read the answer. Absent,
    *  the answer is the scene. */
   assembled?: (prose: string) => string
+}
+
+/** What U7's gates read (A74-1). */
+export interface ProposalGateCtx {
+  /** the paragraph ids the accepted change carried: `¶3`, `-¶3` */
+  evidence: Set<string>
+  /** the candidate record for this proposal, validated under arc-core's own
+   *  validator without touching the working tree */
+  validate: (p: Proposal) => { ok: boolean; output: string; sentence?: string }
+  /** keys of what the book already holds or is already weighing. A74-2
+   *  extends the set the pass builds with the author's nevers. */
+  refused: Set<string>
+  keyOf: (p: Proposal) => string
+  /** where code can show the proposal sits against the record */
+  conflict: (p: Proposal) => string | { message: string; by: string } | null
 }
 
 /** The answer, split by the row's answer shape, as the gates read it. */
@@ -195,6 +220,19 @@ export function parseOptions(text: string): string[] | null {
   } catch {
     return null
   }
+}
+
+/** The rules an answer carries, or null when there is no list to read. `[]`
+ *  is a real answer — nothing generalized — and is not null. */
+export function readRules(text: string): RawRule[] | null {
+  const raw = stripFences(text)
+  const start = raw.indexOf('[')
+  const end = raw.lastIndexOf(']')
+  if (start < 0 || end < start) return null
+  try {
+    const parsed: unknown = JSON.parse(raw.slice(start, end + 1))
+    return Array.isArray(parsed) ? rulesFrom(parsed) : null
+  } catch { return null }
 }
 
 /** What the countable style gates do not measure: the locked paragraphs
@@ -496,6 +534,123 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
   },
 }
 
+/** U7's gates, one proposal at a time (A74-1). `a.body` is the proposal as
+ *  JSON. Each refusal DROPS that proposal and never the answer. */
+const proposalOf = (a: ParsedAnswer): Proposal => JSON.parse(a.body) as Proposal
+/** A GATE THAT CANNOT RUN IS NOT A GATE THAT FOUND NOTHING: it ends the run,
+ *  where a refusal would drop the proposal and let the run land saying there
+ *  was nothing to add. */
+const NO_PROPOSAL_CTX = (): GateVerdict => ({
+  verdict: 'could not judge',
+  record: { stage: 'answer', bar_from: 'the row names a proposal gate and this pass supplied nothing to measure against' },
+})
+
+GATES.validator = ((base: GateFn): GateFn => (ctx, a) => {
+  if (!ctx.proposals) return ctx.validate ? base(ctx, a) : NO_PROPOSAL_CTX()
+  const p = proposalOf(a)
+  const bar = 'the record it would become validates'
+  const bar_from = "the story's own validator"
+  const check = ctx.proposals.validate(p)
+  return check.ok
+    ? held({ stage: 'answer', bar, bar_from, measured: 'it does' })
+    : refuse(check.sentence ?? validatorSentence(check.output), { stage: 'answer', bar, bar_from, measured: check.sentence ? check.output : validatorDetail(check.output) })
+})(GATES.validator!)
+
+GATES['evidence-resolves'] = (ctx, a) => {
+  if (!ctx.proposals) return NO_PROPOSAL_CTX()
+  const p = proposalOf(a)
+  const bar = 'every paragraph it cites is one of the accepted change'
+  const bar_from = 'the paragraph ids the brief carried'
+  const ids = p.evidence.map(e => ({ raw: e, id: evidenceId(e) }))
+  const bad = ids.filter(x => !x.id || !ctx.proposals!.evidence.has(x.id))
+  const record = { stage: 'answer' as const, bar, bar_from, measured: bad.length, measured_against: [...ctx.proposals.evidence] }
+  if (!ids.length) return refuse('it cites nothing', { ...record, measured: 'cites nothing' })
+  return bad.length
+    ? refuse(`it cites ${bad[0].raw}, which is not part of the change you accepted`, record)
+    : held(record)
+}
+
+GATES.duplicate = (ctx, a) => {
+  if (!ctx.proposals) return NO_PROPOSAL_CTX()
+  const p = proposalOf(a)
+  const bar = 'nothing the book already holds or is already weighing'
+  const bar_from = 'pending proposals and your canon'
+  const hit = ctx.proposals.refused.has(ctx.proposals.keyOf(p))
+  const record = { stage: 'answer' as const, bar, bar_from, measured: hit ? 1 : 0 }
+  const said = p.subject === 'new' ? p.value
+    : p.type === 'relationship' ? `${p.subject} as ${p.field} of ${p.value}`
+      : p.type === 'event' ? `the event ${p.value}`
+        : `${p.value} for ${p.subject}`
+  return hit ? refuse(`your record already has ${said}`, record) : held(record)
+}
+
+/** NEVER REFUSES. Where code can show a contradiction the proposal stands and
+ *  carries it; the model's own `conflicts_with` stays as argued. */
+export const CONFLICT_BY_NAMES = "the record's own names"
+export const CONFLICT_BY_CHECKS = "arc-core's continuity checks (CanonGraph.checks)"
+GATES.contradiction = (ctx, a) => {
+  if (!ctx.proposals) return NO_PROPOSAL_CTX()
+  const raw = ctx.proposals.conflict(proposalOf(a))
+  const found = typeof raw === 'string' ? { message: raw, by: CONFLICT_BY_NAMES } : raw
+  return held({
+    stage: 'answer', bar: 'no contradiction arc can show',
+    bar_from: found?.by ?? `${CONFLICT_BY_NAMES} and ${CONFLICT_BY_CHECKS}`,
+    measured: found ? 1 : 0, ...(found ? { measured_against: [found.message] } : {}),
+  })
+}
+
+/** U12's gates, one rule at a time (A74-6). `a.body` is the rule as JSON.
+ *  Each refusal DROPS that rule and never the answer. */
+const ruleOf = (a: ParsedAnswer): RawRule => JSON.parse(a.body) as RawRule
+
+GATES['two-examples'] = (ctx, a) => {
+  if (!ctx.rules) return NO_PROPOSAL_CTX()
+  const r = ruleOf(a)
+  const bar = ctx.rules.minExamples
+  const bar_from = 'minIndependentExamples on the learn · manuscript · triggered row: different places in the manuscript, counted from arc\'s own table of edits'
+  const measured = examplesCited(r.edits, ctx.rules.table)
+  const record = { stage: 'answer' as const, bar, bar_from, measured }
+  return measured >= bar
+    ? held(record)
+    : refuse(`it rests on ${measured === 1 ? 'one place' : measured ? `${measured} places` : 'nothing arc can place'} in your manuscript, and a rule needs ${bar}`, record)
+}
+
+/** A RULE THAT REPEATS ONE ALREADY STATED. By id or by countable predicate it
+ *  is the same rule — proven, dropped. By wording alone it may only SAY the
+ *  same, which is a reading: kept, and marked argued. Each gate names the
+ *  lists it measures against, in the order a hit is reported. */
+const restates = (lists: (ctx: RuleGateCtx) => { lines: string[]; said: string }[], bar_from: string): GateFn => (ctx, a) => {
+  if (!ctx.rules) return NO_PROPOSAL_CTX()
+  const r = ruleOf(a)
+  let soft: { line: string } | null = null
+  for (const { lines, said } of lists(ctx.rules)) {
+    const hit = matchRule(r.rule, lines)
+    if (hit && hit.by !== 'wording') {
+      return refuse(`it ${said} (${hit.by === 'id' ? 'the same rule' : `the same countable rule, ${hit.predicate.replace(':', ' at ')}`})`,
+        { stage: 'answer', bar: 0, bar_from, measured: 1, measured_against: [hit.line] })
+    }
+    if (hit && !soft) soft = hit
+  }
+  const record = { stage: 'answer' as const, bar: 0, bar_from, measured: 0 }
+  return soft ? held({ ...record, argued: 1, measured_against: [soft.line] }) : held(record)
+}
+GATES['not-in-contract'] = restates(c => [
+  { lines: contractLines(c.contract), said: 'is already in your style contract' },
+  { lines: c.pending, said: 'is already waiting for you to decide' },
+], 'the promoted contract and the queue waiting on you: a rule\'s id or countable predicate is proven; wording alone is argued')
+const notDeclinedByWording = restates(c => [{ lines: c.declined.map(d => d.rule), said: 'is one you declined' }],
+  'the rules you declined: a rule\'s id or countable predicate is proven; wording alone is argued')
+GATES['not-declined'] = (ctx, a) => {
+  // A wording the author declined as the same idea as a listed one (A74-8)
+  // is declined by id, whatever else it resembles: proven.
+  const hit = ctx.rules?.declined.find(d => (d.also ?? []).includes(ruleId(ruleOf(a).rule)))
+  if (hit) {
+    return refuse('it is one you declined (the same rule)',
+      { stage: 'answer', bar: 0, bar_from: 'the rules you declined: a rule\'s id or countable predicate is proven; wording alone is argued', measured: 1, measured_against: [hit.rule] })
+  }
+  return notDeclinedByWording(ctx, a)
+}
+
 export type GateChecked =
   | { ok: true; body: string; briefing: string; coverage: RouteCoverage[] | null; dropped: DroppedClaim[]; returned: number; overlap: number | null; gates: GateRecord[] }
   | { ok: false; reason: string; gates: GateRecord[]; kind?: EngineErrorKind; unreadable?: boolean }
@@ -578,6 +733,147 @@ export function runRowGates(row: LaunchSpec, ctx: ProseGateCtx, text: string, at
       kept = survivors
     }
     return { ok: true, body: JSON.stringify({ findings: kept, dropped: droppedClaims }), briefing: '', coverage: null, dropped: [], returned: kept.length, overlap: null, gates }
+  }
+  // A READING FOR THE RECORD (U7, A74-1). The answer is proposals, and each
+  // gate runs once per proposal: a failure costs THAT proposal, counted by
+  // the gate that took it, and never the answer. An answer arc cannot read
+  // ends the run unreadable, because a reading that did not look must never
+  // stand as one that found nothing.
+  if (row.answer === 'proposals') {
+    const read = readProposals(text)
+    if (read === null) {
+      gates.push({ gate: 'shape', verdict: 'refused', attempt, ...(launch ? { launch } : {}), stage: 'answer', measured: 0, bar: 'a json array of proposals, empty when there are none', bar_from: "the row's answer shape" })
+      return { ok: false, reason: 'arc could not read what that pass proposed, so it has nothing to show you. Ask again.', gates, unreadable: true }
+    }
+    gates.push({ gate: 'shape', verdict: 'held', attempt, ...(launch ? { launch } : {}), stage: 'answer' })
+    let kept: Proposal[] = read.proposals
+    const dropped: { gate: string; claim: string; why: string }[] =
+      Array.from({ length: read.malformed }, () => ({ gate: 'shape', claim: 'a proposal', why: 'it was missing what makes it a proposal' }))
+    const shaped: ParsedAnswer = { body: '', prose: '', briefing: '', coverage: null, dropped: [], returned: 0, overlap: null, leansOn: null }
+    for (const id of row.gates) {
+      const fn = GATES[id]
+      if (!fn) {
+        gates.push({ gate: id, verdict: 'could not judge', attempt, ...(launch ? { launch } : {}), stage: 'answer', bar_from: 'this arc has no implementation for that gate' })
+        return { ok: false, reason: `arc could not check ${id} on that reading, so it has nothing to show you. Ask again.`, gates }
+      }
+      const claimed = new Set<string>()
+      const shownBy = new Set<string>()
+      const next: Proposal[] = []
+      let record: GateVerdict['record'] | undefined
+      let judged: GateVerdict['verdict'] = 'not applicable'
+      let measured = 0
+      for (const p of kept) {
+        // a second proposal for the same thing in ONE answer is a duplicate too
+        const c = id === 'duplicate' && ctx.proposals
+          ? { ...ctx, proposals: { ...ctx.proposals, refused: new Set([...ctx.proposals.refused, ...claimed]) } }
+          : ctx
+        // withhold-literals reads prose: here, everything the proposal says
+        const body = JSON.stringify(p)
+        const prose = [p.value, p.note ?? '', p.subject].join('\n')
+        const v = fn(c, { ...shaped, body, prose })
+        record ??= v.record
+        if (v.verdict === 'could not judge') {
+          gates.push({ gate: id, verdict: 'could not judge', attempt, ...(launch ? { launch } : {}), ...v.record })
+          return { ok: false, reason: 'arc could not check what that reading proposed, so it has nothing to show you. Ask again.', gates }
+        }
+        judged = v.verdict === 'refused' ? 'held' : v.verdict
+        if (v.verdict === 'refused') {
+          measured++
+          dropped.push({ gate: id, claim: `${p.type} ${p.value}`, why: v.reason })
+          continue
+        }
+        let out = p
+        if (id === 'contradiction' && v.record.measured === 1 && v.record.measured_against?.[0]) {
+          out = { ...p, proven_conflict: v.record.measured_against[0] }
+          if (v.record.bar_from) shownBy.add(v.record.bar_from)
+        }
+        if (id === 'duplicate' && ctx.proposals) claimed.add(ctx.proposals.keyOf(p))
+        next.push(out)
+      }
+      // THE CONTRADICTION GATE NEVER REFUSES, so its record says what it
+      // SHOWED: how many proposals were filed with a conflict named, and
+      // what each conflict is. `measured: 0` there would read as "looked
+      // and found none" about a gate that found some.
+      const shown = id === 'contradiction' ? next.filter(x => x.proven_conflict).map(x => x.proven_conflict!) : []
+      gates.push({
+        gate: id,
+        // A DROP IS NOT A REFUSAL: the gate did its work and the answer stands.
+        verdict: judged,
+        attempt, ...(launch ? { launch } : {}),
+        stage: 'answer',
+        measured: id === 'contradiction' ? shown.length : measured,
+        bar: id === 'contradiction' ? 'no contradiction arc can show' : 0,
+        bar_from: shownBy.size ? [...shownBy].join(' · ') : (record?.bar_from ?? 'proposals that failed this check'),
+        ...(id === 'contradiction'
+          ? (shown.length ? { measured_against: shown } : {})
+          : measured ? { measured_against: dropped.filter(d => d.gate === id).map(d => d.why) } : {}),
+      })
+      kept = next
+    }
+    return { ok: true, body: JSON.stringify({ proposals: kept, dropped }), briefing: '', coverage: null, dropped: [], returned: kept.length, overlap: null, gates }
+  }
+  // A READING FOR THE CONTRACT (U12, A74-6). The answer is rules citing edit
+  // numbers; each gate runs once per rule, and a failure costs THAT rule.
+  // Unreadable ends the run — "no rules" is a real answer, a failed read is not.
+  if (row.answer === 'rules') {
+    const raw = readRules(text)
+    if (raw === null) {
+      gates.push({ gate: 'shape', verdict: 'refused', attempt, ...(launch ? { launch } : {}), stage: 'answer', measured: 0, bar: 'a json array of rules, empty when nothing generalizes', bar_from: "the row's answer shape" })
+      return { ok: false, reason: 'arc could not read what that pass found in your edits, so it has nothing to show you. Ask again.', gates, unreadable: true }
+    }
+    gates.push({ gate: 'shape', verdict: 'held', attempt, ...(launch ? { launch } : {}), stage: 'answer' })
+    let kept: RawRule[] = raw
+    const dropped: { gate: string; claim: string; why: string }[] = []
+    const argued: { gate: string; rule: string }[] = []
+    const shaped: ParsedAnswer = { body: '', prose: '', briefing: '', coverage: null, dropped: [], returned: 0, overlap: null, leansOn: null }
+    for (const id of row.gates) {
+      const fn = GATES[id]
+      if (!fn) {
+        gates.push({ gate: id, verdict: 'could not judge', attempt, ...(launch ? { launch } : {}), stage: 'answer', bar_from: 'this arc has no implementation for that gate' })
+        return { ok: false, reason: `arc could not check ${id} on what that pass found, so it has nothing to show you. Ask again.`, gates }
+      }
+      const next: RawRule[] = []
+      let record: GateVerdict['record'] | undefined
+      let judged: GateVerdict['verdict'] = 'not applicable'
+      let measured = 0
+      let wording = 0
+      for (const r of kept) {
+        const v = fn(ctx, { ...shaped, body: JSON.stringify(r), prose: r.rule })
+        record ??= v.record
+        if (v.verdict === 'could not judge') {
+          gates.push({ gate: id, verdict: 'could not judge', attempt, ...(launch ? { launch } : {}), ...v.record })
+          return { ok: false, reason: 'arc could not check what that pass found in your edits, so it has nothing to show you. Ask again.', gates }
+        }
+        judged = v.verdict === 'refused' ? 'held' : v.verdict
+        if (v.verdict === 'refused') { measured++; dropped.push({ gate: id, claim: r.rule, why: v.reason }); continue }
+        if (v.record.argued) { wording++; argued.push({ gate: id, rule: r.rule }) }
+        next.push(r)
+      }
+      gates.push({
+        gate: id,
+        // A DROP IS NOT A REFUSAL: the gate did its work and the answer stands.
+        verdict: judged, attempt, ...(launch ? { launch } : {}), stage: 'answer',
+        // the aggregate carries the bar the row declares for the gate that has
+        // one (two-examples), and counts the rules that fell short of it
+        measured, bar: id === 'two-examples' && ctx.rules ? ctx.rules.minExamples : 0,
+        bar_from: record?.bar_from ?? 'rules that failed this check',
+        ...(measured ? { measured_against: dropped.filter(d => d.gate === id).map(d => d.why) } : {}),
+        ...(wording ? { argued: wording } : {}),
+      })
+      kept = next
+    }
+    // what a kept rule RESEMBLES among the declined: id and predicate matches
+    // were dropped above, so what is left here is wording alone — argued
+    const resembles: Record<string, { id: string; at: string }> = {}
+    if (ctx.rules) {
+      const lines = ctx.rules.declined
+      for (const r of kept) {
+        const hit = matchRule(r.rule, lines.map(d => d.rule))
+        const d = hit ? lines.find(x => x.rule === hit.line) : undefined
+        if (d) resembles[r.rule] = { id: d.id, at: d.at }
+      }
+    }
+    return { ok: true, body: JSON.stringify({ rules: kept, dropped, argued, resembles }), briefing: '', coverage: null, dropped: [], returned: kept.length, overlap: null, gates }
   }
   // A MENU IS NOT A DRAFT, so a rule it breaks costs it an OPTION and never
   // the answer (A69-10). The shape gate runs on the list; every other gate

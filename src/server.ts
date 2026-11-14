@@ -8,10 +8,13 @@
 // (arc-canon-graph/api-types.ts) with `satisfies`.
 import http from 'node:http'
 import os from 'node:os'
+import fs from 'node:fs'
 import path from 'node:path'
 import type { DecisionHistoryResponse, PutBackPreview, PutBackResult, ProseDraft,
   AgentsResponse,
   InspectDraftResponse,
+  UpdateRecordResponse,
+  DecideProposalsResponse,
   AnnotationsResponse,
   AskAgainDraftPlanResponse,
   CandidateResponse,
@@ -49,7 +52,8 @@ import type { DecisionHistoryResponse, PutBackPreview, PutBackResult, ProseDraft
   WorkResponse,
 } from 'arc-canon-graph'
 import { STORY } from './config'
-import { inLane } from './lane'
+import { git, inLane, laneCommits } from './lane'
+import { readSceneByHand, startDueEpisodes } from './episodes'
 import { baseOf } from './base'
 import { admitReplay, claimReplay, planReplay, releaseReplay } from './replay'
 import { ROUTE_REPLAY_ROW } from './reroute'
@@ -68,7 +72,7 @@ import { annotations, answeredNow, closeAnsweredNotes, createAnnotation, deleteA
 const notesClosedAfter = (file: string): string[] => closeAnsweredNotes([file])
 import { attention } from './attention'
 import { briefing } from './briefing'
-import { runCapture } from './capture'
+import { decideProposals, sceneLabel } from './decide-proposals'
 import { runInspect } from './inspect'
 import { runSuggest } from './suggest'
 import { runDraft } from './draft'
@@ -100,7 +104,8 @@ function parsePlan(raw: unknown): CraftPlanned {
 }
 import { currentEngine } from './engine'
 import { authorStylePath, commitAuthorStyle, loadStyleLayers } from './style'
-import { DISMISSED_REL, QUEUE_REL, ratifyRule, ratifyTouchstone, readQueue, readTouchstones } from './style-queue'
+import { DISMISSED_REL, QUEUE_REL, ratifyRule, ratifyTouchstone, readDismissed, readQueue, readTouchstones } from './style-queue'
+import { joinStyleReceipt, stampStyleDecision } from './style-receipt'
 import { runLearnStyle } from './learn-style'
 import { readJudgments } from './evidence'
 import { landedThenFailed } from './refusal'
@@ -532,6 +537,8 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         // Every ratified touchstone's standing against the prose as it is
         // now — staleness computed, not remembered.
         touchstones: touchstoneStates(),
+        // What the author declined, so the page can show it (A74-8).
+        dismissed: readDismissed(),
       } satisfies StyleResponse)
     },
   },
@@ -553,9 +560,6 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // it outright. Same pass, same queue, same non-binding result.
   '/api/style/learn': {
     POST: async (_req, res) => {
-      if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
-        throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
-      }
       // Every scene the author has judged since the last pass, plus anything
       // arc has written and nobody has looked at yet.
       const files = [...new Set([
@@ -563,7 +567,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         ...proseScenes().map(sc => sc.file),
       ])].filter(f => f.startsWith('prose/'))
       const r = await runLearnStyle(files)
-      json(res, 200, { proposed: r.added.length, considered: r.pairsConsidered, skipped: r.skipped })
+      json(res, 200, { proposed: r.added.length, considered: r.pairsConsidered, skipped: r.skipped, ...(r.run ? { run: r.run } : {}), ...(r.reply ? { reply: r.reply } : {}) })
     },
   },
 
@@ -573,11 +577,8 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // the same cap and the same evidence bar as the live pass.
   '/api/style/bootstrap': {
     POST: async (_req, res) => {
-      if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
-        throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
-      }
       const r = await runBootstrapStyle()
-      json(res, 200, { proposed: r.added.length, considered: r.pairsConsidered, skipped: r.skipped })
+      json(res, 200, { proposed: r.added.length, considered: r.pairsConsidered, skipped: r.skipped, ...(r.run ? { run: r.run } : {}), ...(r.reply ? { reply: r.reply } : {}) })
     },
   },
 
@@ -598,16 +599,48 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       // the half-done state the lane exists to prevent: the files the rule
       // lands in are kept first, so a refusal puts them back.
       const storyContract = path.join(STORY, 'docs', 'style.md')
+      let proposedBy: string | undefined
+      let receiptRel: string | null = null
       const { target, remaining, committed } = inLane('ratifying a style rule', tx => {
-        tx.keep(storyContract, authorStylePath(process.env, os.homedir()),
-          path.join(STORY, QUEUE_REL), path.join(STORY, DISMISSED_REL))
-        // A touchstone is a passage of THIS manuscript; it only ever lands in
-        // the story contract, whatever tab the click came from.
-        const out = body.kind === 'touchstone'
-          ? ratifyTouchstone(body.id as string, body.action as 'ratify' | 'dismiss', storyContract)
-          : ratifyRule(body.id as string, body.action as 'ratify' | 'dismiss', layer, l =>
-            l === 'author' ? authorStylePath(process.env, os.homedir()) : storyContract)
+        const queueAbs = path.join(STORY, QUEUE_REL)
+        const dismissedAbs = path.join(STORY, DISMISSED_REL)
+        tx.keep(storyContract, authorStylePath(process.env, os.homedir()), queueAbs, dismissedAbs)
 
+        // ONLY THIS DECISION'S DELTA LANDS (A74-8). The change is made twice:
+        // to HEAD's text of the contract and the declined list (that is what
+        // is committed) and then to the author's working files, which keep
+        // whatever they have written since. The queue is arc's own file and
+        // lands as it stands. Both passes use one moment, so the two copies
+        // agree.
+        const at = new Date().toISOString()
+        const prefix = git('rev-parse', '--show-prefix').trim()
+        const read = (abs: string): string | null => { try { return fs.readFileSync(abs, 'utf8') } catch { return null } }
+        const atHead = (abs: string): string | null => {
+          try { return git('show', `HEAD:${prefix}${path.relative(STORY, abs)}`) } catch { return null }
+        }
+        const working = new Map([storyContract, dismissedAbs, queueAbs].map(a => [a, read(a)] as const))
+        const put = (abs: string, text: string | null): void => {
+          if (text === null) fs.rmSync(abs, { force: true })
+          else fs.writeFileSync(abs, text)
+        }
+        // A touchstone is a passage of THIS manuscript; it only ever lands in
+        // the story contract, whatever tab the click came from. The author's
+        // own file is not the story's to commit: its first pass goes to a
+        // scratch path, its real pass is the second.
+        const scratchAuthor = path.join(STORY, '.arc', 'style-decision-scratch.md')
+        const decide = (authorPath: string) => body.kind === 'touchstone'
+          ? ratifyTouchstone(body.id as string, body.action as 'ratify' | 'dismiss', storyContract, at, sceneLabel)
+          : ratifyRule(body.id as string, body.action as 'ratify' | 'dismiss', layer, l =>
+            l === 'author' ? authorPath : storyContract, at)
+        for (const abs of [storyContract, dismissedAbs]) put(abs, atHead(abs) ?? working.get(abs) ?? null)
+        let first: ReturnType<typeof decide>
+        try { first = decide(scratchAuthor) } finally { fs.rmSync(scratchAuthor, { force: true }) }
+        // The decision goes on the receipt of the run that proposed the rule,
+        // in this same commit (D10); a proposal with no run skips it.
+        if ('rule' in first) {
+          proposedBy = first.rule.run
+          receiptRel = stampStyleDecision(proposedBy, body.action as 'ratify' | 'dismiss', body.id as string, abs => tx.keep(abs))
+        }
         // Only the story layer lives in the story repo; the author layer is
         // in the user's home and is not arc's to commit.
         let landed = false
@@ -615,7 +648,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
           // The dismissal list rides along: saying no is a decision, and a
           // decision that lives only in a working tree is one a fresh clone
           // asks the author again.
-          const tracked = ['docs/style.md', QUEUE_REL, DISMISSED_REL]
+          const tracked = ['docs/style.md', QUEUE_REL, DISMISSED_REL, ...(receiptRel ? [receiptRel] : [])]
             .filter(rel => { try { tx.stage([rel]); return true } catch { return false } })
           if (tracked.length) {
             tx.commit(`style: ${body.action} proposed ${body.kind === 'touchstone' ? 'touchstone' : 'rule'} ${body.id}`, tracked)
@@ -630,8 +663,18 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
           if (e instanceof HttpError) throw e
           landed = false
         }
+        // The author's working files go back, with the same change made to
+        // them — their own words kept, the decision applied.
+        for (const [abs, text] of working) put(abs, text)
+        const out = decide(authorStylePath(process.env, os.homedir()))
         return { target: out.path, remaining: out.remaining, committed: landed }
       })
+
+      // The receipt's commit hash, and the receipt into the record, behind the
+      // decision (the accept's own order).
+      if (committed) {
+        try { joinStyleReceipt(proposedBy, receiptRel, git('rev-parse', '--short', 'HEAD').trim()) } catch { /* the decision stands */ }
+      }
 
       // The author layer has its own repo and its own history; a ratification
       // into it is committed there, so `committed` finally means the same
@@ -704,12 +747,12 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   },
 
   // Accept ratifies the draft into main (a git commit scoped to prose/).
-  // With capture: true and credentials present, the capture pass then
-  // extracts what the accepted scenes changed and files proposals — its
-  // failure is logged, never fatal: capture must never un-accept prose.
+  // What the accept teaches the record and the style contract is the review
+  // episode's (A74-3): nothing here reads it, and nothing after the commit
+  // is awaited.
   '/api/prose/accept': {
     POST: async (req, res) => {
-      const body = (await parsedBody(req)) as { message?: unknown; capture?: unknown; files?: unknown; bases?: unknown }
+      const body = (await parsedBody(req)) as { message?: unknown; files?: unknown; bases?: unknown }
       // The scene-scoped accept (A64-3): the author read ONE scene's diff and
       // ratified that. `files` is required (A72-1) — the rules about which
       // paths an accept may name live in one place, `acceptScope` in story.ts,
@@ -770,30 +813,8 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
         console.error('[error] the notes this accept answered could not be closed (the accept itself landed):', e)
         afterwards = landedThenFailed('the notes it answered are still open — close them by hand, or ask again')
       }
-      let capture
-      if (body.capture === true && (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN)) {
-        try {
-          capture = await runCapture(result.files)
-        } catch (e) {
-          console.error('[error] capture pass failed (the accept itself succeeded):', e)
-        }
-      }
+      json(res, 200, { ...result, notesResolved, ...(afterwards ? { afterwards } : {}) } satisfies ProseAcceptResponse)
 
-      // The learning pass: what did the author change about what arc wrote?
-      // Non-fatal on the same contract as capture — losing a style proposal is
-      // a smaller harm than failing an accept that already committed. It runs
-      // on every accept, not behind the capture flag: it costs nothing when
-      // the scene was written by hand or kept unedited, because it never
-      // reaches the model in those cases.
-      let learned
-      try {
-        const r = await runLearnStyle(result.files)
-        if (r.added.length) learned = { proposed: r.added.length }
-      } catch (e) {
-        console.error('[error] style learning pass failed (the accept itself succeeded):', e)
-      }
-
-      json(res, 200, { ...result, ...(capture ? { capture } : {}), ...(learned ?? {}), notesResolved, ...(afterwards ? { afterwards } : {}) } satisfies ProseAcceptResponse)
     },
   },
 
@@ -1256,6 +1277,30 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       json(res, 200, await runInspect(b.scene, b.base) satisfies InspectDraftResponse)
     },
   },
+
+  // U7 · WHAT SHOULD THE RECORD LEARN FROM WHAT WAS ACCEPTED (A74-1). One
+  // scene's accepted change, read against the record, rowed and receipted;
+  // each proposal that survives its gates is filed as a canon record with
+  // status: proposed in the working tree. Nothing is committed.
+  '/api/record/update': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { scene?: unknown; from?: unknown; to?: unknown }
+      if (typeof b?.scene !== 'string' || !b.scene) throw new HttpError(400, 'scene required')
+      for (const k of ['from', 'to'] as const) {
+        if (b[k] !== undefined && (typeof b[k] !== 'string' || !b[k])) throw new HttpError(400, `${k} must be a commit`)
+      }
+      json(res, 200, await readSceneByHand(b.scene, b.from as string | undefined, b.to as string | undefined) satisfies UpdateRecordResponse)
+    },
+  },
+
+  // THE AUTHOR'S WORD ON PROPOSED RECORDS (A74-4): approve, or never. The
+  // whole batch is decided or refused; later is the viewer's and has no route.
+  '/api/record/proposals': {
+    POST: async (req, res) => {
+      const b = (await parsedBody(req)) as { ids?: unknown; action?: unknown }
+      json(res, 200, decideProposals(b?.ids, b?.action) satisfies DecideProposalsResponse)
+    },
+  },
 }
 
 // Story-owned rendering assets (the basemap coastline, and whatever else a
@@ -1288,6 +1333,16 @@ export function createArcServer(): http.Server {
       res.end()
       return
     }
+
+    // A DECISION MADE, THE RESPONSE SENT, THEN LOOK (A74-3, epic D2): when the
+    // lane's commit count moved while this POST was in flight, the due
+    // episodes start once the response has gone. Never awaited by the request, never from a GET.
+    const commitsBefore = laneCommits()
+    res.on('finish', () => {
+      if (req.method === 'POST' && laneCommits() !== commitsBefore) {
+        void startDueEpisodes().catch(e => console.error('[error] starting the due reads failed:', e))
+      }
+    })
 
     try {
       if (url.pathname.startsWith('/api/assets/')) {

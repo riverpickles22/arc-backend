@@ -124,7 +124,10 @@ test('oversize body → 413', async () => {
   assert.equal(res.status, 413)
 })
 
-test('accept with capture requested but no credentials skips capture gracefully', async () => {
+test('an accept with no engine still accepts, asks for no credential and reads nothing', async () => {
+  // The key check that used to gate the capture pass is gone (A74-1): the
+  // reader runs on whatever engine the author has. With none configured the
+  // read fails alone — logged, never fatal — and the accept stands.
   const savedKey = process.env.ANTHROPIC_API_KEY
   const savedToken = process.env.ANTHROPIC_AUTH_TOKEN
   delete process.env.ANTHROPIC_API_KEY
@@ -132,12 +135,18 @@ test('accept with capture requested but no credentials skips capture gracefully'
   try {
     writeScene(story, 'prose/ch-01/scene-01.md', 'sc.01-1', 'Capture-skip revision.')
     const res = await post('/api/prose/accept',
-      { message: 'prose: capture skip', capture: true, files: ['prose/ch-01/scene-01.md'],
+      { message: 'prose: capture skip', files: ['prose/ch-01/scene-01.md'],
         bases: await servedBases(['prose/ch-01/scene-01.md']) })
     assert.equal(res.status, 200)
     const body = await res.json()
     assert.match(body.hash, /^[0-9a-f]{7,}$/)
     assert.equal(body.capture, undefined)
+    assert.equal(body.proposed, undefined, 'the accept no longer runs the learner')
+    // and the route itself says why it cannot run, in a sentence
+    const asked = await post('/api/record/update', { scene: 'sc.01-1' })
+    assert.equal(asked.status, 400)
+    assert.match((await asked.json()).error, /no engine configured/)
+    assert.equal((await post('/api/record/update', {})).status, 400)
   } finally {
     if (savedKey !== undefined) process.env.ANTHROPIC_API_KEY = savedKey
     if (savedToken !== undefined) process.env.ANTHROPIC_AUTH_TOKEN = savedToken

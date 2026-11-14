@@ -34,6 +34,10 @@ const { runRedraft } = await import('../src/redraft.ts')
 const { runWorkNotes } = await import('../src/work-notes.ts')
 const { runSuggest } = await import('../src/suggest.ts')
 const { runInspect } = await import('../src/inspect.ts')
+const { runUpdateRecord } = await import('../src/update-record.ts')
+const { runLearnStyle } = await import('../src/learn-style.ts')
+const { runBootstrapStyle } = await import('../src/bootstrap-style.ts')
+const { rememberDismissal, ruleId } = await import('../src/style-queue.ts')
 const { baseOf } = await import('../src/base.ts')
 const { createAnnotation } = await import('../src/annotations.ts')
 const { ROWS, rowKey } = await import('../src/registry.ts')
@@ -90,8 +94,13 @@ function opposedNotes(): void {
   createAnnotation({ scene: SCENE, paragraph: 0, quote: 'Ninety-one stairs.', body: 'less of the dog here; he is doing too much work this early', by: 'author' })
 }
 
+/** The example's one commit. A U7 scenario commits an accepted edit on top
+ *  of it; every scenario starts from it again. */
+const INITIAL = git(STORY, 'rev-parse', 'HEAD').trim()
+
 /** The example exactly as committed: every edit and every route gone. */
 export function reset(): void {
+  git(STORY, 'reset', '-q', '--hard', INITIAL)
   git(STORY, 'checkout', 'HEAD', '--', '.')
   git(STORY, 'clean', '-fdxq')
 }
@@ -134,6 +143,63 @@ const pendingEdit = (from: string, to: string): string => {
   return baseOf(SCENE_FILE)
 }
 let inspectBase: string | null = null
+
+/** U7 reads an ACCEPTED change, so its scenarios make one: the example's
+ *  only commit is where each starts, and the author's edit is committed on
+ *  top of it. Reset to that commit every time — `reset()` cleans the working
+ *  tree, never the history. */
+const acceptedEdit = (from: string, to: string): void => {
+  const abs = path.join(STORY, SCENE_FILE)
+  fs.writeFileSync(abs, fs.readFileSync(abs, 'utf8').replace(from, to))
+  git(STORY, 'add', '-A')
+  git(STORY, 'commit', '-qm', 'prose: accept sc.01-1')
+}
+
+/** THE AUTHOR REWORKED TWO PARAGRAPHS BY HAND after accepting the scene (U12,
+ *  A74-6): the drive-weight paragraph loses its because-clause and the wind
+ *  paragraph trades a chain of "and" for commas. Two different places in the
+ *  manuscript, so two independent examples. The decision that accepted the
+ *  scene carried a craft plan, which the evidence log keeps. */
+export const LEARN_EDITS: [string, string][] = [
+  ['counted the turns aloud, sixty, because a weight wound short ran out in the small hours and a light that stopped turning was a light that lied.',
+    'counted the turns aloud, sixty. A weight wound short ran out in the small hours.'],
+  ['Tonight she trimmed and wound and logged and did not sing.', 'Tonight she trimmed, wound, logged, did not sing.'],
+]
+const handRevised = (): void => {
+  const abs = path.join(STORY, SCENE_FILE)
+  let text = fs.readFileSync(abs, 'utf8')
+  for (const [from, to] of LEARN_EDITS) {
+    if (!text.includes(from)) throw new Error(`the example scene no longer holds: ${from.slice(0, 40)}`)
+    text = text.replace(from, to)
+  }
+  fs.writeFileSync(abs, text)
+  git(STORY, 'add', '-A')
+  git(STORY, 'commit', '-qm', 'prose: accept sc.01-1')
+  fs.mkdirSync(path.join(STORY, 'docs'), { recursive: true })
+  fs.appendFileSync(path.join(STORY, 'docs', 'style.evidence.jsonl'), JSON.stringify({
+    at: '2026-10-01T10:00:00.000Z', file: SCENE_FILE, scene: SCENE, granularity: 'scene', paragraph: null,
+    verdict: 'accepted', arcWrote: '', authorKept: '', origin: 'hand',
+    plan: [{ move: 'inventory', how: 'cut what reveals nobody' }], baseline: INITIAL,
+  }) + '\n')
+}
+
+/** THE SAME TWO REWORKS, AS HISTORY (A74-7): the bootstrap reads successive
+ *  committed states of the prose, so the scene is committed as the author
+ *  reworked it, with no evidence log — the loop was not listening. The
+ *  example has one scene, so the two independent examples are two paragraphs
+ *  of it. */
+const reworkedInHistory = (): void => acceptedEditAll(LEARN_EDITS)
+const acceptedEditAll = (edits: [string, string][]): void => {
+  const abs = path.join(STORY, SCENE_FILE)
+  let text = fs.readFileSync(abs, 'utf8')
+  for (const [from, to] of edits) {
+    if (!text.includes(from)) throw new Error(`the example scene no longer holds: ${from.slice(0, 40)}`)
+    text = text.replace(from, to)
+  }
+  fs.writeFileSync(abs, text)
+  git(STORY, 'add', '-A')
+  git(STORY, 'commit', '-qm', 'prose: the scene as reworked')
+}
 
 export const SCENARIOS: Scenario[] = [
   {
@@ -305,6 +371,69 @@ export const SCENARIOS: Scenario[] = [
       inspectBase = pendingEdit('Then the log.', 'Then the log, which she had started keeping for her sister.')
     },
     run: () => runInspect(SCENE, inspectBase!),
+  },
+
+  // ---- U7 · Update record · scene · triggered (A74-1) ----------------------
+  {
+    row: 'update-record.scene.triggered', name: 'lands', expect: 'lands',
+    scenario: 'the example scene read as a first accept, every paragraph new; the reading proposes two stated things and one implied thing, each citing a paragraph, and all three are filed as proposed records',
+    run: () => runUpdateRecord(SCENE),
+  },
+  {
+    row: 'update-record.scene.triggered', name: 'drops', expect: 'lands',
+    scenario: 'an accept that rewrote only the wind paragraph; the reading proposes one thing that rests on it and one that cites a paragraph the accept did not touch — that one is dropped and counted',
+    prepare: async () => acceptedEdit('The wind did what it did.', 'The wind did what it did, and rattled the storm lantern on its hook.'),
+    run: () => runUpdateRecord(SCENE),
+  },
+  {
+    row: 'update-record.scene.triggered', name: 'duplicate', expect: 'lands',
+    scenario: 'an accept that rewrote only the log paragraph; the reading proposes a new instrument, and also Wren as a new person — whom the record already holds, so that one is refused as a duplicate',
+    prepare: async () => acceptedEdit('Then the log.', 'Then the log, and the barometer beside it.'),
+    run: () => runUpdateRecord(SCENE),
+  },
+
+  // ---- U7 over what the record already holds (A74-12) ----------------------
+  {
+    row: 'update-record.scene.triggered', name: 'shift', expect: 'lands',
+    scenario: 'an accept that makes Ines and Wren partners in the watch; the reading proposes a new ally edge between two people the record holds, beside the companion-animal edge it shifts — the existing edge file is untouched',
+    prepare: async () => acceptedEdit('and that had been the shape of most of what passed between them since.', 'and that had been the shape of most of what passed between them since, two keepers sharing one watch.'),
+    run: () => runUpdateRecord(SCENE),
+  },
+  {
+    row: 'update-record.scene.triggered', name: 'hands', expect: 'lands',
+    scenario: 'an accept in which Wren carries the log down to the landing; the reading files an event that hands the log to Wren without saying who gave it up, and the record shows Ines holding it then — the proposal stands with that contradiction named',
+    prepare: async () => acceptedEdit('Nothing.\n\nShe went down', 'Nothing. Wren carried the log down to the landing in his mouth, as he did when she went to eat, and it was his until she came back.\n\nShe went down'),
+    run: () => runUpdateRecord(SCENE),
+  },
+  {
+    row: 'update-record.scene.triggered', name: 'scalar', expect: 'lands',
+    scenario: 'an accept that gives Ines a sore shoulder; the reading proposes a condition and a location for a person the record holds — a field of her own record has no record of its own, so both are dropped as changes to an existing record and counted',
+    prepare: async () => acceptedEdit('to spend it.', 'to spend it. Her shoulder ached from the crank.'),
+    run: () => runUpdateRecord(SCENE),
+  },
+  // ---- U12 · Learn · manuscript · triggered (A74-6) ------------------------
+  {
+    row: 'learn.manuscript.triggered', name: 'proposes', expect: 'lands',
+    scenario: 'the author reworked two different paragraphs of the accepted scene by hand — the because-clause cut from one, a chain of "and" turned to commas in the other — and the accept that kept the first carried a craft plan; the learner is shown both pairs, the plan beside them, and proposes one rule citing both',
+    prepare: async () => handRevised(),
+    run: () => runLearnStyle([SCENE_FILE]),
+  },
+  {
+    row: 'learn.manuscript.triggered', name: 'declined', expect: 'lands',
+    scenario: 'the same two edits, and the author had already declined "A chain stops at three." — the learner proposes a rule that states the same countable predicate in other words, and the not-declined gate drops it and counts it; nothing is queued',
+    prepare: async () => {
+      handRevised()
+      const rule = 'A chain stops at three.'
+      rememberDismissal({ id: ruleId(rule), rule }, '2026-09-20T12:00:00.000Z')
+    },
+    run: () => runLearnStyle([SCENE_FILE]),
+  },
+  // ---- U12 · Learn · manuscript · one-shot (A74-7) --------------------------
+  {
+    row: 'learn.manuscript.one-shot', name: 'bootstraps', expect: 'lands',
+    scenario: 'a book whose loop arrived late: the example scene committed twice, the second state reworking two paragraphs (the because-clause cut from one, a chain of "and" turned to commas in the other) with nothing in the evidence log; the author asks arc to read the history of their prose and it proposes one rule citing both, filed at the story layer',
+    prepare: async () => reworkedInHistory(),
+    run: () => runBootstrapStyle(),
   },
 ]
 

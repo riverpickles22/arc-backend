@@ -208,3 +208,21 @@ test('a broken evidence log costs a proposal, never a decision', () => {
   fs.rmSync(p, { recursive: true, force: true })
   reset(); wipe()
 })
+
+// ---- the author's word on a canon proposal (A74-2) -------------------------------
+test('a decision on a proposal is its own kind: read back, never a judgment, never a filing', async () => {
+  const { appendProposalDecision, readProposalDecisions, neverKeys, readJudgments: judgments } = await import('../src/evidence.ts')
+  const log = path.join(story, EVIDENCE_REL)
+  const sizeBefore = fs.existsSync(log) ? fs.statSync(log).size : 0
+  const judgedBefore = judgments().length
+  assert.equal(neverKeys().size, 0)
+  const d = { id: 'char.x', class: 'stated' as const, key: 'k1', scene: 'sc.02-1', run: 'run.0003' }
+  appendProposalDecision({ ...d, verdict: 'never' })
+  appendProposalDecision({ ...d, id: 'obj.y', key: 'k2', verdict: 'approved' })
+  const got = readProposalDecisions()
+  assert.deepEqual(got.map(g => [g.kind, g.id, g.verdict, g.origin]), [['proposal', 'char.x', 'never', 'author'], ['proposal', 'obj.y', 'approved', 'author']])
+  assert.ok(got.every(g => g.at && g.key && g.scene && g.run && g.class))
+  assert.deepEqual([...neverKeys()], ['k1'], 'only a never refuses')
+  assert.equal(judgments().length, judgedBefore, 'readJudgments excludes kinded records')
+  assert.ok(fs.statSync(log).size > sizeBefore)
+})

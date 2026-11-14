@@ -273,6 +273,59 @@ export function readPutBacks(): PutBack[] {
   }
 }
 
+// ---- a decision on a canon proposal (A74-2) ----------------------------------
+//
+// The author's word on something arc proposed for the record: approved, or
+// never. Its own kind, for the reason a put-back is: a judgment is about
+// prose and `Verdict` does not gain `never`. The ORIGIN of the proposal
+// (class, run, evidence) lives in the generation ledger; this file keeps only
+// what the author decided. Nothing is written here when a proposal is filed.
+
+export interface ProposalDecision {
+  at: string
+  kind: 'proposal'
+  /** the canon id the proposal filed (or named) */
+  id: string
+  /** null for a record proposed before arc kept a record (A74-4): it has no
+   *  origin to say how sure the page made it, and none is guessed */
+  class: 'stated' | 'implied' | 'retracted' | null
+  /** `proposalKey`: what the proposal is about, so a never matches a fresh id
+   *  (for a record with no origin, computed from the record itself) */
+  key: string
+  scene: string | null
+  run: string | null
+  verdict: 'approved' | 'never'
+  origin: 'author'
+  /** the lock check, said plainly: a decision on a canon record is not checked
+   *  against locks, which anchor prose (A74-4) */
+  locks?: string
+}
+
+/** Append one decision on a proposal. THROWS, like a put-back: a never that
+ *  is not on record is a proposal that comes back, so a failure to record is
+ *  a failure to decide. */
+export function appendProposalDecision(d: Omit<ProposalDecision, 'at' | 'kind' | 'origin'>): ProposalDecision {
+  const entry: ProposalDecision = { at: new Date().toISOString(), kind: 'proposal', ...d, origin: 'author' }
+  fs.mkdirSync(path.dirname(evidencePath()), { recursive: true })
+  fs.appendFileSync(evidencePath(), JSON.stringify(entry) + '\n')
+  return entry
+}
+
+export function readProposalDecisions(): ProposalDecision[] {
+  try {
+    return fs.readFileSync(evidencePath(), 'utf8').split('\n').filter(Boolean)
+      .map(l => JSON.parse(l) as ProposalDecision)
+      .filter(e => e.kind === 'proposal')
+  } catch {
+    return []
+  }
+}
+
+/** The keys the author said never to. */
+export function neverKeys(): Set<string> {
+  return new Set(readProposalDecisions().filter(d => d.verdict === 'never').map(d => d.key))
+}
+
 // `standingJudgments` — every judgment less the accepts that were put back —
 // lives in put-back.ts, because a reversal counts only once its commit
 // exists, and that is a question for git, which this file never asks.

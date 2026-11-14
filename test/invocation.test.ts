@@ -44,8 +44,6 @@ test('a withholding pass gets --tools "" even when the caller says otherwise', (
   const i = args.indexOf('--tools')
   assert.notEqual(i, -1, 'judge must always run tools-off')
   assert.equal(args[i + 1], '')
-  // capture is registered withholding ahead of its CLI path existing
-  assert.ok(buildCliArgs({ pass: 'capture' }).includes('--tools'))
 })
 
 test('a non-withholding pass keeps tools unless the caller turns them off', () => {
@@ -58,7 +56,6 @@ test('an unregistered pass throws instead of launching with an undeclared postur
 })
 
 test('sessions are refused for withholding passes, in code', () => {
-  assert.throws(() => assertSessionAllowed('capture'), /cannot unsee/)
   assert.throws(() => assertSessionAllowed('judge'), /cannot unsee/)
   // material is the non-withholding row whose own answer is still no
   assert.throws(() => assertSessionAllowed('material'), /does not allow/)
@@ -116,7 +113,7 @@ test('every reading pass runs tools-off on the CLI engine (A55-4)', () => {
   // path, only because the prompt asked. `suggest` left this list with
   // A69-10: rephrase and synonyms carry their envelope on their own rows,
   // where the type refuses a toolbelt rather than a pin forbidding one.
-  for (const pass of ['judge', 'intent', 'lenses', 'bootstrap'] as const) {
+  for (const pass of ['judge', 'intent', 'lenses'] as const) {
     assert.equal(PASS_REGISTRY[pass].withholding, true, `${pass} must be withholding`)
     const args = buildCliArgs({ pass })
     const i = args.indexOf('--tools')
@@ -128,8 +125,8 @@ test('every reading pass runs tools-off on the CLI engine (A55-4)', () => {
 test('the prose-writing passes and the record workers are deliberately not pinned', () => {
   // Their envelope is slice 4's business. The prose-writing passes that used
   // to be here — draft, redraft, revise — have taken their rows, so what is
-  // left unpinned is the record workers alone.
-  for (const pass of ['material', 'learn-style'] as const) {
+  // left unpinned is the record workers alone (learn-style took its row in A74-6).
+  for (const pass of ['material'] as const) {
     assert.equal(PASS_REGISTRY[pass].withholding, false, `${pass} must not be pinned here`)
   }
 })

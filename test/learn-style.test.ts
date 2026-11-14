@@ -87,23 +87,23 @@ test('the minimum-changed-word bar filters typo fixes out before the model', () 
 
 test('the prompt numbers the pairs, carries the contract, and forbids quoting', () => {
   const pairs = editPairs('He was very tired indeed today.', 'His arms had quit.', 'sc.01-1')
-  const p = buildLearnPrompt({ pairs, style: 'THE NO-COMMENT LAW: never explain a feeling.', pending: ['Never open on weather.'] })
+  const p = buildLearnPrompt({ pairs, style: 'THE NO-COMMENT LAW: never explain a feeling.', declined: ['Never open on weather.'] })
   assert.match(p, /--- EDIT 1 \(sc\.01-1\) ---/)
   assert.match(p, /ARC WROTE: He was very tired indeed today\./)
   assert.match(p, /AUTHOR KEPT: His arms had quit\./)
   assert.match(p, /NO-COMMENT LAW/, "the existing contract is present so rules aren't re-proposed")
-  assert.match(p, /Never open on weather\./, 'the pending queue is present for the same reason')
+  assert.match(p, /Never open on weather\./, 'the declined list is present so a declined rule is not asked for again')
   assert.match(p, /Cite edit NUMBERS only/)
   assert.match(p, /Do NOT quote the prose/)
 })
 
-test('an empty pending queue leaves that block out entirely', () => {
-  const p = buildLearnPrompt({ pairs: editPairs('a b c d e', 'f g h i j', 'sc.01-1'), style: 's', pending: [] })
+test('the brief has no pending-queue block at all: docs/style.proposed.md is read by no prompt (rule 3)', () => {
+  const p = buildLearnPrompt({ pairs: editPairs('a b c d e', 'f g h i j', 'sc.01-1'), style: 's' })
   assert.doesNotMatch(p, /ALREADY PENDING/)
 })
 
 test('a cut paragraph is labelled, not shown as an empty line', () => {
-  const p = buildLearnPrompt({ pairs: editPairs('Arc wrote this and it died here.', '', 'sc.01-1'), style: 's', pending: [] })
+  const p = buildLearnPrompt({ pairs: editPairs('Arc wrote this and it died here.', '', 'sc.01-1'), style: 's' })
   assert.match(p, /AUTHOR KEPT: \(cut entirely\)/)
 })
 
@@ -331,7 +331,7 @@ test('the prompt frames revisions as the author against themself', () => {
     ...editPairs('Arc wrote something quite bad here.', 'The author kept something better instead.', 'sc.01-1'),
     ...editPairs('The author had written this sentence once.', 'The author then rewrote the whole thing differently.', 'sc.02-1', 'revision'),
   ].map((p, i) => ({ ...p, n: i + 1 }))
-  const prompt = buildLearnPrompt({ pairs, style: '(none)', pending: [] })
+  const prompt = buildLearnPrompt({ pairs, style: '(none)' })
   assert.match(prompt, /ARC WROTE: Arc wrote something quite bad here\./)
   assert.match(prompt, /AUTHOR HAD: The author had written this sentence once\./)
   assert.match(prompt, /REVISED TO: The author then rewrote/)
@@ -489,7 +489,7 @@ test('the prompt shows a refusal as a refusal', () => {
     n: 1, scene: 'sc.01-1', paragraph: 0, source: 'refusal' as const,
     wrote: 'The wind had turned in the night.', kept: 'The lamp had been lit for an hour.', changed: 8,
   }]
-  const prompt = buildLearnPrompt({ pairs, style: '(contract)', pending: [] })
+  const prompt = buildLearnPrompt({ pairs, style: '(contract)' })
   assert.match(prompt, /ARC WROTE: The wind had turned/)
   assert.match(prompt, /AUTHOR REFUSED, KEEPING: The lamp had been lit/)
   assert.match(prompt, /TWO OR MORE INDEPENDENT/, 'and the bar is stated, not implied')
@@ -616,7 +616,6 @@ test('the prompt shows a note pair as AUTHOR NOTED / AS NOTED / IT BECAME', () =
   const prompt = buildLearnPrompt({
     pairs: pairs.map((p, i) => ({ n: i + 1, ...p })),
     style: '## Openings\nSmell before sight.',
-    pending: [],
   })
   assert.match(prompt, /AUTHOR NOTED: make this smell-first/)
   assert.match(prompt, /AS NOTED: He saw the harbor first\./)

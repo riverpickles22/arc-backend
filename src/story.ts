@@ -426,7 +426,7 @@ function acceptScenes(tx: Tx, message: string | undefined, files: string[], base
   // The unlocks the author made, ratified with the edits they were made for.
   const released = draft.changes.flatMap(c => withReleasedLocks(tx, c.file))
   const msg = message?.trim() || `prose: accept ${draft.changes.map(c => c.main?.scene ?? c.file).join(', ')}`
-  tx.commit(msg, [...paths, ...evidence, ...released])
+  tx.commit(msg, [...paths, ...evidence, ...released], 'accept')
   // The draft is fully judged; the next one starts from wherever the book now
   // stands rather than from a boundary that has moved out from under it.
   for (const c of draft.changes) clearBaseline(c.file)
@@ -814,7 +814,7 @@ function acceptParagraph(tx: Tx, file: string, t: ParagraphTarget, base: unknown
 
   tx.stage([file])
   const paths = [...withEvidence(tx, file), ...withReleasedLocks(tx, file)]
-  tx.commit(message?.trim() || `prose: accept one change in ${path.basename(file)}`, paths)
+  tx.commit(message?.trim() || `prose: accept one change in ${path.basename(file)}`, paths, 'accept')
   restoreWorking(abs, working, committed)   // the author's unaccepted words
   return { hash: git('rev-parse', '--short', 'HEAD').trim(), file }
 }
@@ -1079,7 +1079,7 @@ function acceptSentence(tx: Tx, file: string, t: SentenceTarget, base: unknown, 
     { base, after: tokenFor(file, committed, restoredBytes(working, committed)) })
   tx.stage([file])
   const paths = [...withEvidence(tx, file), ...withReleasedLocks(tx, file)]
-  tx.commit(message?.trim() || `prose: accept one sentence in ${path.basename(file)}`, paths)
+  tx.commit(message?.trim() || `prose: accept one sentence in ${path.basename(file)}`, paths, 'accept')
   restoreWorking(abs, working, committed)   // the author's unaccepted words
   return { hash: git('rev-parse', '--short', 'HEAD').trim(), file }
 }

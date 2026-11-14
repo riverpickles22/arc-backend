@@ -13,6 +13,7 @@ import type { BriefingResponse, CanonDoc, MaterialItem, ProseScene } from 'arc-c
 import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
 import { annotations } from './annotations'
 import { canonJson } from './canon'
+import { unreadEpisodes } from './episodes'
 import { routeCounts } from './reroute'
 import { unfinishedRuns } from './run'
 import { liveIds } from './runs'
@@ -168,5 +169,7 @@ export function briefing(): BriefingResponse {
     due,
     lastSession: draft.git ? lastSessionOf(proseLog()) : [],
     unfinished: unfinishedRuns(liveIds()),
+    // what arc has not read of the accepts: listed, never started (rung 0)
+    unread: draft.git ? unreadEpisodes() : [],
   }
 }

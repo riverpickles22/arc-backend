@@ -19,12 +19,15 @@ import { launchesOf } from './run'
 import { registryStatus } from './registry'
 import { fingerprintsNow, listAlternatives, withStaleness } from './reroute'
 import { liveIds } from './runs'
+import { unfinishedOrigins } from './ledger'
+import { readProposalDecisions } from './evidence'
+import { readWorkingReceipt } from './run'
 
 /** One count, with the files behind it. `some` is a sample, not the whole
  *  list: the terminal prints a sentence, and an author who wants the rest can
  *  look where the sentence says. */
 export interface RecordCount {
-  id: 'runs-without-receipt' | 'transcripts-no-receipt-names' | 'proposals-out-of-date' | 'rows-never-attended'
+  id: 'runs-without-receipt' | 'transcripts-no-receipt-names' | 'proposals-out-of-date' | 'rows-never-attended' | 'proposals-unfinished'
   count: number
   some: string[]
 }
@@ -157,6 +160,25 @@ function rowsNeverAttended(): RecordCount {
   return { id: 'rows-never-attended', count: some.length, some: some.slice(0, 5) }
 }
 
+/** A proposal arc began to write and did not finish (A74-2): its origin is in
+ *  the ledger and its canon file is not on disk, with no tombstone to say the
+ *  filing was taken back on purpose. */
+function proposalsUnfinished(story: string): RecordCount {
+  const decided = new Set(readProposalDecisions().map(d => d.id))
+  // Filed means the run's receipt says so: the working one, or the record
+  // receipt in history/ once the run's receipt has moved there.
+  const filed = (run: string, canon: string): boolean => {
+    const w = readWorkingReceipt(run)?.result?.records
+    if (w?.includes(canon)) return true
+    try {
+      const h = yamlLoad(fs.readFileSync(path.join(story, 'history', `${run}.yaml`), 'utf8')) as { result?: { records?: string[] } } | null
+      return !!h?.result?.records?.includes(canon)
+    } catch { return false }
+  }
+  const some = unfinishedOrigins(filed, id => decided.has(id)).map(o => o.canon ?? o.file)
+  return { id: 'proposals-unfinished', count: some.length, some: some.slice(0, 5) }
+}
+
 export function doctorRecords(story: string = STORY, home: string = os.homedir(), live: ReadonlySet<string> = liveIds()): DoctorRecords {
   return {
     counts: [
@@ -164,6 +186,7 @@ export function doctorRecords(story: string = STORY, home: string = os.homedir()
       transcriptsNoReceiptNames(story, home),
       proposalsOutOfDate(story),
       rowsNeverAttended(),
+      proposalsUnfinished(story),
     ],
     story,
     transcripts: path.join(home, '.claude', 'projects'),

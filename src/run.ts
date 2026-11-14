@@ -391,6 +391,9 @@ export interface GateRecord {
   /** what was measured, and against what */
   measured?: number | string | null
   measured_against?: string[]
+  /** how many of the claims this gate let through it let through on a
+   *  reading of WORDING — kept, and marked argued (U12, A74-6) */
+  argued?: number
   /** 1 for the first answer, 2 for the one repair */
   attempt: number
   /** which launch of the run it was — `late-entry-1`, `rewrite-2` — so two
@@ -541,7 +544,14 @@ interface Receipt {
   checks: unknown
   judgment: unknown
   author_decision?: { decision: 'accepted' | 'rejected' | 'abandoned'; note?: string }
-  result: { records: string[]; commit: string | null }
+  /** A TRIGGERED RUN'S KEY (A74-3, invariant 3): sha16 of job · scene ·
+   *  range.from · range.to · the fingerprint of the combined diff. Two runs
+   *  with one key never both file, and a key whose receipt ended `landed` is
+   *  not run again. Absent on a run no trigger started. */
+  key?: string
+  /** `range` is the commits a triggered read covered, beside the `commit`
+   *  an author's decision made: null (or absent) on a run that read none. */
+  result: { records: string[]; commit: string | null; range?: { from: string; to: string } | null }
 }
 
 /** What each gate is, in the author's words. A gate id is arc's vocabulary;
@@ -563,6 +573,14 @@ const GATE_WORDS: Record<string, string> = {
   'options-shape': 'the wordings did not come back as a list arc could read',
   'blast-radius': 'the revision changed prose no note asked about',
   'plan-vocabulary': 'the craft it came back with is not something arc can ask a writing pass for',
+  // U7's proposals (A74-1): these drop a proposal and never the whole answer.
+  'evidence-resolves': 'a proposal cited something that is not part of the change you accepted',
+  duplicate: 'a proposal was for something your record already has',
+  contradiction: 'a proposal sits against your record',
+  // U12's rules (A74-6): these drop a rule and never the whole answer.
+  'two-examples': 'a rule rested on fewer than two different places in your manuscript',
+  'not-in-contract': 'a rule was one your style contract already states',
+  'not-declined': 'a rule was one you had declined',
 }
 
 /** WHAT A GATE CHECKS, as a name rather than as a failure. `GATE_WORDS` above
@@ -593,6 +611,14 @@ const GATE_NAMES: Record<string, string> = {
   // U9's reading (A72-10): what the author reads when a claim rested on
   // nothing arc was shown — the claim goes, the reading stands.
   citations: 'everything it said rested on something you were shown',
+  // U7's proposals (A74-1): what the author reads when some were left out.
+  'evidence-resolves': 'every proposal rests on words you accepted',
+  duplicate: 'nothing your record already has',
+  contradiction: 'nothing that sits against your record',
+  // U12's rules (A74-6)
+  'two-examples': 'every rule rests on two different places in your manuscript',
+  'not-in-contract': 'nothing your style contract already states',
+  'not-declined': 'nothing you had declined',
 }
 export const gateName = (gate: string): string => GATE_NAMES[gate] ?? `the ${gate} check`
 
@@ -745,6 +771,51 @@ export function stampReceiptCommit(runId: string, commit: string): boolean {
   } catch {
     return false
   }
+}
+
+/** EVERY RECEIPT A TRIGGERED JOB LEFT, newest key winning: the record
+ *  receipts in history/ (committed or not) and the working ones under
+ *  .arc/runs/ that are still open or ended without an author's decision. A
+ *  run in both places is read once, from history/. Only files that mention
+ *  `job` are parsed, because this is read on every poll of the attention
+ *  list and the history grows. */
+export function receiptsOf(job: string): Receipt[] {
+  const out = new Map<string, Receipt>()
+  const read = (file: string): void => {
+    try {
+      const text = fs.readFileSync(file, 'utf8')
+      if (!text.includes(`job: ${job}`)) return
+      const r = yamlLoad(text) as Receipt | null
+      if (r && r.cell?.job === job && r.run_id && !out.has(r.run_id)) out.set(r.run_id, r)
+    } catch { /* unreadable: not a receipt */ }
+  }
+  const walk = (dir: string, name: (e: string) => string): void => {
+    let entries: string[] = []
+    try { entries = fs.readdirSync(dir) } catch { return }
+    for (const e of entries) read(path.join(dir, name(e)))
+  }
+  walk(historyDir(), e => e)
+  walk(path.join(STORY, '.arc', 'runs'), e => path.join(e, 'receipt.yaml'))
+  return [...out.values()]
+}
+
+/** The record receipt already in history/ for a run, or null. */
+export function readRecordReceipt(runId: string): Receipt | null {
+  try { return yamlLoad(fs.readFileSync(path.join(historyDir(), `${runId}.yaml`), 'utf8')) as Receipt } catch { return null }
+}
+
+/** Put the commit of the author's LATEST decision on a record receipt (A74-4).
+ *  Unlike `stampReceiptCommit` it overwrites: a run's proposals are decided
+ *  in as many requests as the author makes, and each is its own commit. The
+ *  receipt cannot hold the hash of the commit that contains it, so this is
+ *  written right after that commit and rides in the next records commit. */
+export function setReceiptCommit(runId: string, commit: string): boolean {
+  const r = readRecordReceipt(runId)
+  if (!r) return false
+  try {
+    fs.writeFileSync(path.join(historyDir(), `${runId}.yaml`), yaml({ ...r, result: { ...r.result, commit } }))
+    return true
+  } catch { return false }
 }
 
 /** Write the RECORD receipt. Called at the author's decision on any ending —

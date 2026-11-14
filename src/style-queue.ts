@@ -47,7 +47,13 @@ before it reaches your queue. Delete an entry to let arc make its case again.
 
 const DISMISSED_RECORD = /<!--\s*arc:dismissed\s+(\{[\s\S]*?\})\s*-->/g
 
-interface DismissedRule { id: string; rule: string; at: string }
+/** `also` holds the ids of other wordings the author declined as the same
+ *  idea (A74-8): one visible line, but every wording they turned down stays
+ *  proven-declined by id. */
+export interface DismissedRule { id: string; rule: string; at: string; also?: string[] }
+
+/** Every id a declined entry answers to. */
+export const declinedIds = (d: DismissedRule): string[] => [d.id, ...(d.also ?? [])]
 
 export function readDismissed(): DismissedRule[] {
   try {
@@ -57,7 +63,8 @@ export function readDismissed(): DismissedRule[] {
       try {
         const r = JSON.parse(m[1]) as Partial<DismissedRule>
         if (typeof r.id === 'string' && typeof r.rule === 'string') {
-          out.push({ id: r.id, rule: r.rule, at: typeof r.at === 'string' ? r.at : '' })
+          const also = Array.isArray(r.also) ? r.also.filter((x): x is string => typeof x === 'string' && !!x) : []
+          out.push({ id: r.id, rule: r.rule, at: typeof r.at === 'string' ? r.at : '', ...(also.length ? { also } : {}) })
         }
       } catch { continue }
     }
@@ -69,11 +76,17 @@ export function readDismissed(): DismissedRule[] {
 
 /** Remember a refusal. Never throws: failing to remember costs a repeated
  *  proposal, and failing the dismissal itself would cost the author's click. */
-export function rememberDismissal(rule: { id: string; rule: string }, at: string): void {
+export function rememberDismissal(rule: { id: string; rule: string }, at: string, alsoId?: string): void {
   try {
     const known = readDismissed()
-    if (known.some(d => d.id === rule.id)) return
-    const next = [...known, { id: rule.id, rule: rule.rule, at }]
+    // Declined again is declined once, with the newer date (A74-8): the entry
+    // keeps the words the author first turned down and only its `at` moves.
+    const next = known.some(d => d.id === rule.id)
+      ? known.map(d => d.id !== rule.id ? d : {
+        ...d, at,
+        ...(alsoId && alsoId !== d.id ? { also: [...new Set([...(d.also ?? []), alsoId])] } : {}),
+      })
+      : [...known, { id: rule.id, rule: rule.rule, at }]
     const body = next.map(d =>
       `<!-- arc:dismissed ${JSON.stringify(d)} -->\n\n- ${d.rule.trim()}\n`).join('\n')
     fs.mkdirSync(path.dirname(dismissedPath()), { recursive: true })
@@ -127,6 +140,10 @@ export function parseQueue(text: string): ProposedRule[] {
         // is there, so a queue written without one round-trips unchanged.
         ...(r.layer === 'author' ? { layer: 'author' as const } : {}),
         ...(r.layer === 'story' ? { layer: 'story' as const } : {}),
+        // A74-6: the run that proposed it, and the declined rule it resembles
+        ...(typeof r.run === 'string' && r.run ? { run: r.run } : {}),
+        ...(r.resembles && typeof r.resembles.id === 'string' && typeof r.resembles.at === 'string'
+          ? { resembles: { id: r.resembles.id, at: r.resembles.at } } : {}),
       })
     } catch {
       continue
@@ -155,6 +172,8 @@ const renderOne = (r: ProposedRule): string => {
     lines.push(`  ${after}: ${JSON.stringify(e.kept)}`)
   }
   if (r.evidence.length) lines.push('')
+  // a courtesy for the plain editor; the marker above is the record (A74-6)
+  if (r.resembles) lines.push(`_This reads like a rule you declined${r.resembles.at ? ` on ${r.resembles.at.slice(0, 10)}` : ''}._`, '')
   return lines.join('\n')
 }
 
@@ -183,7 +202,7 @@ export function appendToQueue(fresh: ProposedRule[]): { added: ProposedRule[]; q
   const queue = readQueue()
   // Already queued, or already declined. The second half is what stops the
   // author being asked the same question every run.
-  const known = new Set([...queue.map(r => r.id), ...readDismissed().map(d => d.id)])
+  const known = new Set([...queue.map(r => r.id), ...readDismissed().flatMap(declinedIds)])
   const added = fresh.filter(r => !known.has(r.id))
   if (added.length) writeQueue([...queue, ...added])
   return { added, queue: [...queue, ...added] }
@@ -256,13 +275,20 @@ export function ratifyRule(
   action: 'ratify' | 'dismiss',
   layer: 'author' | 'story',
   layerPathFor: (l: 'author' | 'story') => string,
+  at: string = new Date().toISOString(),
 ): { path: string | null; remaining: ProposedRule[]; rule: ProposedRule } {
   const queue = readQueue()
   const rule = queue.find(r => r.id === id)
   if (!rule) throw new HttpError(404, `no proposed rule ${id}`)
 
   let target: string | null = null
-  if (action === 'dismiss') rememberDismissal(rule, new Date().toISOString())
+  if (action === 'dismiss') {
+    // A proposal that resembles a rule already declined lands on THAT entry
+    // (A74-8), so the list holds one line for the idea, not one per wording.
+    // If the author has since deleted the entry, the new wording stands alone.
+    const prior = rule.resembles ? readDismissed().find(d => d.id === rule.resembles!.id) : undefined
+    rememberDismissal(prior ?? rule, at, prior ? rule.id : undefined)
+  }
   if (action === 'ratify') {
     target = layerPathFor(layer)
     fs.mkdirSync(path.dirname(target), { recursive: true })
@@ -357,7 +383,7 @@ export function writeTouchstones(touchstones: ProposedTouchstone[]): void {
  *  same two courtesies rules get. Returns what was genuinely new. */
 export function appendTouchstones(fresh: ProposedTouchstone[]): { added: ProposedTouchstone[] } {
   const queue = readTouchstones()
-  const known = new Set([...queue.map(t => t.id), ...readDismissed().map(d => d.id)])
+  const known = new Set([...queue.map(t => t.id), ...readDismissed().flatMap(declinedIds)])
   const added = fresh.filter(t => !known.has(t.id)).slice(0, MAX_TOUCHSTONES_PER_RUN)
   if (added.length) writeQueueFile(readQueue(), [...queue, ...added])
   return { added }
@@ -402,13 +428,15 @@ export function ratifyTouchstone(
   id: string,
   action: 'ratify' | 'dismiss',
   contractPath: string,
+  at: string = new Date().toISOString(),
+  sceneName: (scene: string) => string = s => s,
 ): { path: string | null; remaining: ProposedTouchstone[]; touchstone: ProposedTouchstone } {
   const queue = readTouchstones()
   const t = queue.find(x => x.id === id)
   if (!t) throw new HttpError(404, `no proposed touchstone ${id}`)
 
   let target: string | null = null
-  if (action === 'dismiss') rememberDismissal({ id: t.id, rule: `touchstone: ${t.quality} (${t.scene} ¶${t.paragraph + 1})` }, new Date().toISOString())
+  if (action === 'dismiss') rememberDismissal({ id: t.id, rule: `touchstone: ${t.quality} (${sceneName(t.scene)}, paragraph ${t.paragraph + 1})` }, at)
   if (action === 'ratify') {
     target = contractPath
     fs.mkdirSync(path.dirname(target), { recursive: true })

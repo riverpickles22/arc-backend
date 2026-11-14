@@ -10,6 +10,7 @@
 // registry.ts and its fixtures fail here, naming the fingerprint that moved.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import path from 'node:path'
 // Sets the story and the engine before anything under src/ loads.
 import type { RerouteResponse } from 'arc-canon-graph/api-types.ts'
@@ -25,7 +26,8 @@ const { ROW_EXPLORE_SCENE } = await import('../src/registry.ts')
 const ROW_RULES_HEAD = ROW_EXPLORE_SCENE.rules.slice(0, 40)
 const { annotations } = await import('../src/annotations.ts')
 const { proseScenes } = await import('../src/story.ts')
-const { generatedFor } = await import('../src/ledger.ts')
+const { generatedFor, proposalOrigins } = await import('../src/ledger.ts')
+const { git } = await import('./fixture.ts')
 const { listRuns } = await import('../src/runs.ts')
 const { readWorkingReceipt } = await import('../src/run.ts')
 
@@ -260,6 +262,83 @@ for (const s of SCENARIOS) {
       } else {
         assert.ok(out.dropped.length >= 2, 'the claims that rested on nothing were dropped')
         assert.ok(out.findings.length >= 1, 'and the one that rested on something stands')
+      }
+      return
+    }
+    // U7 · the READING FOR THE RECORD (A74-1): proposals filed beside the
+    // book. What the fixture proves is the brief, what each gate did, and
+    // that what was filed is a status: proposed record.
+    if (s.row.startsWith('update-record.')) {
+      const out = result as unknown as { proposed: number; dropped: number; refused: number; filed: { id: string; class: string }[]; run: string }
+      assert.ok(out.run, 'the response names the run that made it')
+      const want = { lands: [3, 0, 0], drops: [1, 1, 0], duplicate: [1, 0, 1], shift: [1, 0, 0], hands: [1, 0, 0], scalar: [0, 2, 0] }[s.name]!
+      assert.deepEqual([out.proposed, out.dropped, out.refused], want, `${s.name}: proposed, dropped, refused`)
+      assert.equal(out.filed.length, out.proposed)
+      assert.match(rendered.brief, /NARRATIVE NOTES/, 'the deliberate silences are in the brief')
+      assert.match(rendered.brief, /char\.wren: Wren must not be given interiority/, 'a narrative_notes line reaches the rendered brief')
+      const canonFiles = fs.readdirSync(path.join(STORY, 'canon'), { recursive: true }).map(String).filter(x => x.endsWith('.yaml'))
+      for (const f of out.filed) {
+        const text = canonFiles.map(x => fs.readFileSync(path.join(STORY, 'canon', x), 'utf8')).find(t => t.includes(`id: ${f.id}`))
+        assert.ok(text, `${f.id} is in the working tree`)
+        assert.match(text!, /status: proposed/)
+        assert.doesNotMatch(text!, /capture/i)
+      }
+      // A74-12: what the record already held is untouched; a change to it is a new record beside it
+      if (s.name === 'shift' || s.name === 'hands' || s.name === 'scalar') {
+        const receipt = readWorkingReceipt(out.run)!
+        const changed = git(STORY, 'status', '--porcelain', 'canon').split('\n').filter(Boolean)
+        if (s.name === 'shift') {
+          assert.deepEqual(out.filed.map(f => f.id), ['rel.ines-wren-ally'])
+          assert.deepEqual(changed.map(l => l.slice(3)), ['canon/relationships.yaml'])
+          const now = fs.readFileSync(path.join(STORY, 'canon/relationships.yaml'), 'utf8')
+          const was = git(STORY, 'show', 'HEAD:canon/relationships.yaml')
+          assert.ok(now.startsWith(was), 'every byte that was there still is')
+          const o = proposalOrigins().find(x => x.run === out.run)!
+          assert.deepEqual([o.about, o.beside, o.type], ['char.ines', 'rel.ines-wren', 'relationship'])
+        }
+        if (s.name === 'hands') {
+          assert.equal(changed.length, 1, 'only a new event file')
+          assert.match(changed[0], /^\?\? canon\/events\/story\/the-log-goes-down-to-the-landing-with-wren\.yaml$/)
+          assert.deepEqual(out.filed.map(f => f.id), ['event.the-log-goes-down-to-the-landing-with-wren'])
+          const f = out.filed[0] as { proven_conflict?: string }
+          assert.match(f.proven_conflict ?? '', /obj\.keepers-log.*char\.ines.*char\.wren/, 'the record shows two hands')
+          assert.equal(receipt.gates!.find(g => g.gate === 'contradiction')!.measured, 1)
+        }
+        if (s.name === 'scalar') {
+          assert.equal(changed.length, 0, 'nothing in canon moved')
+          assert.equal(receipt.evidence!.dropped.find(d => d.reason === 'existing-record')?.count, 2)
+        }
+      }
+      return
+    }
+    // U12 · the READING FOR THE CONTRACT (A74-6): rules citing edit numbers,
+    // the quotes attached by arc, the three gates typed on the receipt.
+    if (s.row.startsWith('learn.')) {
+      const out = result as unknown as { added: { id: string; run?: string; evidence: { scene: string }[] }[]; run: string; skipped: string | null }
+      assert.ok(out.run, 'a model was asked, so there is a run')
+      const receipt = readWorkingReceipt(out.run)!
+      assert.deepEqual(receipt.gates!.filter(g => g.gate !== 'shape').map(g => g.gate), ['two-examples', 'not-in-contract', 'not-declined'])
+      // U12 · the BOOTSTRAP's pairs are history (A74-7): a ratified movement, no plan, no queue
+      if (s.row === 'learn.manuscript.one-shot') {
+        assert.match(rendered.brief, /IT MOVED TO:/, 'the pairs are labelled as movement')
+        assert.doesNotMatch(rendered.brief, /THE PLAN IT WAS DRAFTED UNDER|ALREADY PENDING/)
+        assert.equal(out.added.length, 1, 'one rule proposed')
+        assert.equal(out.added[0].run, out.run, 'and it names the run')
+        assert.equal((out.added[0] as unknown as { layer: string }).layer, 'story', 'the fixture\'s author-layer recommendation is forced to story')
+        assert.equal(out.added[0].evidence.length, 2, 'with the two quotes arc attached from its own table')
+        return
+      }
+      assert.match(rendered.brief, /THE PLAN IT WAS DRAFTED UNDER: inventory — cut what reveals nobody/, 'the plan sits beside the pair')
+      const dropped = receipt.gates!.find(g => g.gate === 'not-declined')!.measured
+      if (s.name === 'proposes') {
+        assert.equal(out.added.length, 1, 'one rule proposed')
+        assert.equal(out.added[0].run, out.run, 'and it names the run that proposed it')
+        assert.equal(out.added[0].evidence.length, 2, 'with the two quotes arc attached from its own table')
+        assert.equal(dropped, 0)
+      } else {
+        assert.equal(out.added.length, 0, 'nothing is queued')
+        assert.equal(dropped, 1, 'the declined rule was dropped and counted')
+        assert.deepEqual(receipt.evidence!.dropped, [{ reason: 'not-declined', count: 1 }])
       }
       return
     }

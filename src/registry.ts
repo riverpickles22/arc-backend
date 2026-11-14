@@ -117,6 +117,31 @@ export type GateId =
    *  a reading that over-reaches loses that reading, not the whole answer
    *  (U9, A72-10; §11's citation gate) */
   | 'citations'
+  /** U7 (A74-1): each evidence id a proposal names is a paragraph of the
+   *  accepted change the brief carried — otherwise that proposal is dropped
+   *  and counted. Proven. */
+  | 'evidence-resolves'
+  /** U7 (A74-1): a proposal whose key matches a record the book already
+   *  holds, as canon or as a pending proposal, is refused as a duplicate.
+   *  Proven. */
+  | 'duplicate'
+  /** U7 (A74-1): where code can show a proposal sits against the record it
+   *  is filed WITH the contradiction named; the model's own claim of a
+   *  conflict stays argued. Never refuses. No threshold, so no fixture of
+   *  its own. */
+  | 'contradiction'
+  /** U12 (A74-6): a rule cites at least MIN_INDEPENDENT_EXAMPLES different
+   *  places in the manuscript, counted from arc's own table of pairs — two
+   *  passes at one paragraph are one example. Proven. */
+  | 'two-examples'
+  /** U12 (A74-6): a rule whose id or countable predicate the promoted
+   *  contract already states is dropped (proven); one that only resembles a
+   *  line of it by wording is kept and marked argued. */
+  | 'not-in-contract'
+  /** U12 (A74-6): a rule the author declined — same id or same countable
+   *  predicate — is dropped (proven); one that only resembles a declined
+   *  rule by wording is kept, with `resembles` recorded on it (argued). */
+  | 'not-declined'
 
 /** How the answer is shaped, so a gate can read it without a model. */
 /** THE CRAFT MOVES (A69-4; §4, "The craft plan"). Q11, decided by the author
@@ -175,6 +200,15 @@ export type AnswerShape =
    *  prose to gate and no briefing to argue: what the gates do here is drop
    *  an option, never refuse the answer (A69-10) */
   | 'options'
+  /** one fenced JSON array of proposals for the record, each with the
+   *  paragraph ids it rests on — code mints the id, renders the evidence
+   *  and files the record; a gate failure drops that proposal and never the
+   *  answer (U7, A74-1) */
+  | 'proposals'
+  /** one fenced JSON array of style rules, each citing the NUMBERS of the
+   *  edit pairs it rests on — arc attaches the quotes itself; a gate failure
+   *  drops that rule and never the answer (U12, A74-6) */
+  | 'rules'
 
 /** What a withholding row withholds, declared on the ROW rather than known
  *  by the pass (§4, envelope rule 4; A67-7). The leak gate reads this to
@@ -219,6 +253,16 @@ export interface RowBase extends Cell {
   /** the recorded briefs under fixtures/<key>/, by name; two per
    *  thresholded gate and one that lands (§7, "Adding a job") */
   fixtures: readonly string[]
+  /** A TRIGGERED JOB'S REVIEW EPISODE (A74-3, epic D1): how long a scene may
+   *  go with no decision before what was accepted of it is due to be read
+   *  even though more is still pending. Declared once, on the row that owns
+   *  the trigger; the jobs that share the episode read it from there. A
+   *  ceiling the author owns, not a tuning knob. */
+  episode?: { idleMs: number }
+  /** U12's bar (A74-6): how many DIFFERENT places in the manuscript a rule
+   *  must rest on. Declared on the row that owns the gate, so the number has
+   *  one address and the gate's record names it. */
+  minIndependentExamples?: number
 }
 
 export interface SealedRow extends RowBase { pattern: 'sealed'; envelope: SealedEnvelope }
@@ -1086,6 +1130,257 @@ export const ROW_INSPECT_SCENE: SealedRow = {
   fixtures: ['lands', 'drops'],
 }
 
+// ---- U7 · Update record · scene · triggered (A74-1) -------------------------
+
+/** U7's rules: what the record should learn from prose the author has
+ *  accepted. It replaces CAPTURE_RULES, which filed records itself through a
+ *  write tool; this pass has no tools and files nothing — it answers with
+ *  proposals as data and code does the rest. */
+export const UPDATE_RECORD_RULES = `You are arc's RECORD READER. The author has ACCEPTED a change to ONE scene of
+their novel into the book. You read what the accepted change establishes and
+say what the record should learn from it. Nothing you say binds: the author
+decides, later, on each thing you propose.
+
+YOU HAVE NO TOOLS. You write no file, mint no id, and invent nothing the
+text does not state or strongly imply. Everything you may know is in this
+brief.
+
+THE RECORD you are given is the scene's canon bindings and a name index of
+every person, place, faction and object the record already holds, each with
+its id and names. A thing in that index is KNOWN: never propose it as new.
+
+WHAT TO PROPOSE, only from the accepted change (the paragraphs marked
+changed, new or removed — the unchanged ones are context, never evidence):
+- a NEW person, place, faction or object the change introduces by name;
+- a RETRACTION: a fact in the record whose only support the change removed.
+  A retraction names the record id and what would go. It removes nothing.
+- a CHANGE to what the record holds, as a new record beside it: a
+  relationship that begins or shifts between two things the record holds, or
+  an event the change adds among things it holds (an object changing hands is
+  one). The record you are given stays exactly as it is, and the author
+  decides on the new one later. A fact that would only alter a field of a
+  held record (a want, a location, a condition) has no record of its own:
+  leave it out.
+
+SUPPRESSION (the binding rule): the scene contract's must_withhold and the
+narrative notes of its events are deliberate silences. Never propose a name,
+place or fact they withhold, and never a thing the prose leaves deliberately
+unnamed. When unsure whether something deserves a record, leave it out: a
+wrong proposal costs the author's trust, an omission costs nothing.
+
+CLASS each proposal:
+- "stated"    the page says it outright;
+- "implied"   the page strongly implies it without saying it;
+- "retracted" the change removed the only support for a fact in the record.
+
+EVERY PROPOSAL CITES. Cite the paragraphs of the accepted change it rests
+on, exactly as the brief marks them: \`¶3\` for a paragraph the book now
+holds, \`-¶3\` for one the change removed. A proposal citing nothing arc can
+place is dropped. Never quote the prose: arc renders the sentence itself.
+
+If a proposal sits against something the record says, name the record id in
+"conflicts_with". It is your judgement, offered for the author to weigh.
+
+ANSWER WITH ONE FENCED JSON ARRAY AND NOTHING ELSE. Each element:
+{"class": "stated", "subject": "new", "type": "place", "field": "name",
+ "value": "the name as the prose gives it", "evidence": ["¶3"],
+ "kind": "landmark", "note": "one sentence: who or what it is", "conflicts_with": "place.x"}
+- subject: an id the record holds, or "new". A new subject has field "name".
+- type: character, place, faction or object for a new subject. (A retraction
+  uses the type of the record it names, field "name" and the name as value.)
+  For a change to what the record holds: "relationship" or "event".
+- a relationship: subject and value are two ids the record holds, field is
+  the kind (family, owner-pet, companion-animal, guardian, mentor, friend,
+  member-of, controls, employs, ally, enemy, rival or successor-of). It may
+  also carry "when", only when the page states it.
+  {"class": "stated", "subject": "char.ines", "type": "relationship",
+   "field": "ally", "value": "char.wren", "evidence": ["¶4"]}
+- an event: subject is an id that takes part, field is "event", value is a
+  short title. Optional: "with" (other ids that take part), "where" (a place
+  id), "when" (a date such as 1910-11-02, only when the page states it, and
+  only inside the scene's own dates; arc dates the event by the scene
+  otherwise). For an object that
+  changes hands, subject is the object and "transfer" names who receives it
+  and, only when the page says so, who gave it up.
+  {"class": "stated", "subject": "obj.x", "type": "event", "field": "event",
+   "value": "The photograph passes to Elena", "evidence": ["¶2"],
+   "transfer": {"to": "char.elena", "from": "char.carlos"}}
+- kind: required for a NEW place (country, region, city, district, street,
+  building, landmark or waterfront), a NEW faction (faction, organization,
+  government, movement, pack or family) and a NEW character (their species).
+- note: one sentence saying who or what it is, from the text alone.
+An empty array is a real answer and a good one: the change taught the record
+nothing.`
+
+/** U7's slice: the scene's bindings and what lies around them, the contract
+ *  and its withholds (the suppression rule reads them), and the lock notice.
+ *  The accepted diff is the subject and comes with the ask. THE WITHHOLDS
+ *  ARE FLOOR beside the canon: a pass that is not told what the scene keeps
+ *  silent is the pass most likely to break the silence. */
+export const RECORD_SLICE: SliceSpec = {
+  id: 'record',
+  layers: ['contract', 'canon', 'withholds', 'locks'],
+  dropOrder: ['locks', 'contract'],
+  // The narrative notes of what the scene binds are appended to the slice by
+  // the pass (update-record.ts `narrativeNotes`) beside the name index: they
+  // are never dropped, and they are not an assembler layer.
+  floor: ['canon', 'withholds'],
+}
+
+/** U7 · Update record · scene · triggered (A74-1). Not withholding: its
+ *  subject IS the accepted prose. Four gates carry the card — validator,
+ *  evidence-resolves, duplicate, contradiction — and `withhold-literals`
+ *  runs FIRST, so a contract's quoted silence is proven kept before anything
+ *  is judged, let alone written under .arc/validate/. `contradiction` has no threshold, so it has no fixture of its
+ *  own: the rest ('lands', 'drops', 'duplicate') are one that lands and one
+ *  per gate that drops or refuses. */
+export const ROW_UPDATE_RECORD_SCENE: SealedRow = {
+  job: 'update-record', scope: 'scene', mode: 'triggered', depth: 'standard', stage: null,
+  pattern: 'sealed',
+  withholding: false,
+  slice: RECORD_SLICE,
+  envelope: ROUTE_ENVELOPE,
+  gates: ['withhold-literals', 'validator', 'evidence-resolves', 'duplicate', 'contradiction'],
+  answer: 'proposals',
+  budget: { outputTokens: 12_000, wallClockMs: 20 * 60 * 1000, inputTokens: 40_000 },
+  rules: UPDATE_RECORD_RULES,
+  fixtures: ['lands', 'drops', 'duplicate', 'shift', 'hands', 'scalar'],
+  // the number epic D1 asks the author to confirm: ten minutes with no decision
+  episode: { idleMs: 10 * 60 * 1000 },
+}
+
+export const LEARN_RULES = `You are arc's STYLE LEARNING pass. The author accepted prose, editing on
+the way in. Below are numbered EDIT pairs of two kinds, labelled:
+
+- ARC WROTE / AUTHOR KEPT — arc drafted the paragraph; the author reworked
+  it. The edit says how arc should have written it.
+- AUTHOR HAD / REVISED TO — the author's own accepted prose, rewritten by
+  their own hand. Nobody corrected anybody: this is the author's preference
+  showing directly, the strongest voice signal in this table.
+- THE BOOK HAD / IT MOVED TO — two successive ACCEPTED states of the
+  manuscript. The author ratified the movement, but either side may have been
+  machine-drafted on their behalf, so this is the weakest evidence here:
+  weight it below a direct edit, and never below-the-line alone.
+- ARC WROTE / AUTHOR REFUSED, KEEPING — arc offered this and the author said
+  no; the right-hand side is what stands instead. A refusal is only evidence
+  about FORM when the two sides differ in how they are written. Many refusals
+  turn on fact, continuity, or what a character would do — those say nothing
+  about the author's sentences, and you must ignore them here rather than
+  reach for a style rule to explain them.
+- AUTHOR NOTED / AS NOTED / IT BECAME — the author wrote a note ON the
+  passage, in their own words, and later resolved it with the passage
+  changed. The only pair here where the requirement is STATED rather than
+  inferred — but the note may be about fact or continuity rather than form,
+  and the after-side may have been machine-drafted on their behalf before
+  they accepted it. Treat the note's words as the author's intent, judge
+  FORM only from what actually changed, and apply the same discipline as
+  everywhere else: ignore the pair entirely when the change is not about
+  how the sentences are written.
+
+An empty right-hand side means the paragraph was cut entirely.
+
+A pair may carry a PLAN line: the craft the author asked for when the passage
+was drafted. A plan the author keeps asking for is evidence of how they want
+the prose to behave — weigh it with the edits, and never cite a plan alone.
+
+Your job is to name the FORM rules those edits imply — how this author's
+sentences behave. Diction, rhythm, sentence length, punctuation, register,
+what they refuse to spell out. NEVER a rule about fact, plot, character, or
+canon: those belong to the story record, not the style contract.
+
+DISCIPLINE:
+- Propose a rule only when the same pattern shows in TWO OR MORE INDEPENDENT
+  edits — different paragraphs, and better still different scenes. Two passes
+  at the same paragraph are one example, not two. One coincidence is never a
+  rule, however unmistakable it looks.
+- Never propose a rule the contract below already states, in any wording.
+- Never propose a rule the author declined (the list below, when there is one),
+  in any wording.
+- Write each rule the way the contract is written: imperative, one or two
+  sentences, addressed to whoever drafts next.
+- Do NOT quote the prose. Cite edit NUMBERS only — arc attaches the quotes
+  itself, from its own diff.
+- If nothing generalizes, answer with an empty array. That is a good answer
+  and the common one.
+
+WHICH LAYER a rule belongs to, as your recommendation and nothing more — the
+author decides where it is written:
+- "story" — how THIS book's sentences behave. Almost everything. A rule drawn
+  from one book's prologue is a rule about that book.
+- "author" — a habit that would hold in any book this writer wrote. Only for
+  a pattern showing across two or more different scenes, and only when it is
+  about the writer rather than the material.
+
+Answer with a JSON array and nothing else:
+[{"rule": "...", "section": "Sentences" | null, "layer": "story" | "author", "edits": [1, 4]}]`
+
+/** Two different places in the manuscript, or it is not a rule. The author's
+ *  instruction, and the reason it is a number here rather than only a line in
+ *  the prompt: their edits are evidence, not a licence to generalize from one
+ *  example. */
+export const MIN_INDEPENDENT_EXAMPLES = 2
+
+/** U12's slice: the record a rule is judged against — the promoted contract
+ *  and the rules the author declined. The pending queue is NOT a layer:
+ *  docs/style.proposed.md is read by no prompt (rule 3), so the `not-in-contract`
+ *  gate holds the queue in code instead. The numbered
+ *  edit pairs are the subject and come with the ask, built by code. The
+ *  contract is FLOOR: a learner not shown it re-proposes the law. */
+export const LEARN_SLICE: SliceSpec = {
+  id: 'learn',
+  layers: ['promoted-contract', 'declined'],
+  dropOrder: ['declined'],
+  floor: ['promoted-contract'],
+}
+
+/** U12 · Learn · manuscript · triggered (A74-6). What the author's edits say
+ *  about the style contract. Not withholding: its subject IS the accepted
+ *  prose. Three gates, each a typed record, each dropping a RULE and never
+ *  the answer. It shares the review episode with U7 (A74-3), so the interval
+ *  is read from U7's row, where it is declared once. */
+export const ROW_LEARN_MANUSCRIPT: SealedRow = {
+  job: 'learn', scope: 'manuscript', mode: 'triggered', depth: 'standard', stage: null,
+  pattern: 'sealed',
+  withholding: false,
+  slice: LEARN_SLICE,
+  envelope: ROUTE_ENVELOPE,
+  gates: ['two-examples', 'not-in-contract', 'not-declined'],
+  answer: 'rules',
+  // the pairs are bounded in code (MAX_PAIRS) and the layers are not
+  // assembler-built, so — as ROW_EXPLORE_SCENE does — no input ceiling it
+  // could not honour is declared
+  budget: { outputTokens: 12_000, wallClockMs: 20 * 60 * 1000 },
+  rules: LEARN_RULES,
+  fixtures: ['proposes', 'declined'],
+  episode: ROW_UPDATE_RECORD_SCENE.episode,
+  minIndependentExamples: MIN_INDEPENDENT_EXAMPLES,
+}
+
+/** U12's other trigger · Learn · manuscript · one-shot (A74-7): the style
+ *  bootstrap — what the prose's own git history says about the contract, for
+ *  a book whose loop arrived late. The same slice, rules and gates as the
+ *  triggered row; it differs in having no episode (the author asks for it
+ *  once, by hand) and in its subject (successive accepted states of the prose).
+ *
+ *  `withholding: false` is deliberate. PASS_REGISTRY.bootstrap said
+ *  `withholding: true`; that older flag meant "tools off", which
+ *  ROUTE_ENVELOPE already guarantees. A row's `withholding` means "the slice
+ *  holds none of the current prose" — and the bootstrap's subject IS prose
+ *  history, so it is false here, as it is on the triggered row. */
+export const ROW_LEARN_MANUSCRIPT_FROM_PROSE: SealedRow = {
+  job: 'learn', scope: 'manuscript', mode: 'one-shot', depth: 'standard', stage: null,
+  pattern: 'sealed',
+  withholding: false,
+  slice: LEARN_SLICE,
+  envelope: ROUTE_ENVELOPE,
+  gates: ['two-examples', 'not-in-contract', 'not-declined'],
+  answer: 'rules',
+  budget: { outputTokens: 12_000, wallClockMs: 20 * 60 * 1000 },
+  rules: LEARN_RULES,
+  fixtures: ['bootstraps'],
+  minIndependentExamples: MIN_INDEPENDENT_EXAMPLES,
+}
+
 export const ROW_REPHRASE: SealedRow = {
   job: 'revise', scope: 'selection', mode: 'one-shot', depth: 'quick', stage: null,
   pattern: 'sealed',
@@ -1123,6 +1418,12 @@ export const ROWS: readonly Row[] = [
   // The first row that writes nothing at all: a reading of the pending diff
   // (U9, A72-10).
   ROW_INSPECT_SCENE,
+  // The first triggered row: what the record should learn from an accept (U7, A74-1).
+  ROW_UPDATE_RECORD_SCENE,
+  // The second triggered row: what the edits say about the style contract (U12, A74-6).
+  ROW_LEARN_MANUSCRIPT,
+  // The same job asked for once, by hand, over the prose's history (A74-7).
+  ROW_LEARN_MANUSCRIPT_FROM_PROSE,
 ]
 
 /** The row for a cell, or nothing: a job × scope × mode the rows do not

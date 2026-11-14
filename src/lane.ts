@@ -100,11 +100,32 @@ export interface Tx {
    *
    *  The file must have been `keep`-ed first. False when there was nothing. */
   stageAppended(rel: string): boolean
-  /** The commit. The ONE place arc runs `git commit` in the story. */
-  commit(message: string, paths: string[]): void
+  /** The commit. The ONE place arc runs `git commit` in the story. `kind`
+   *  marks it in the record with an `Arc-Lane:` trailer — 'accept' for a
+   *  decision that took the author's words into the book — so the review
+   *  episode can tell the lane's accepts from imports, hand commits and
+   *  anything made before the trailer existed (A74-3). */
+  commit(message: string, paths: string[], kind?: 'accept'): void
 }
 
-interface TxInternal extends Tx { rollback(): void }
+interface TxInternal extends Tx { rollback(): void; readonly committedPaths: string[] | null; readonly committedHashes: string[] }
+
+/** THE LANE'S COMMITS, announced once the lane has been released (A74-3).
+ *  Whatever should happen "after a decision lands" — the review episode's
+ *  clock, the check for an episode now due — listens here instead of being
+ *  called from each of the routes that reach a commit. A listener runs
+ *  synchronously, after `held` is cleared, and must be quick and must not
+ *  throw into the decision that already succeeded. */
+type CommitListener = (paths: string[], hashes: string[]) => void
+const listeners = new Set<CommitListener>()
+export function onLaneCommit(fn: CommitListener): () => void {
+  listeners.add(fn)
+  return () => { listeners.delete(fn) }
+}
+let commitCount = 0
+/** How many commits the lane has made in this process — a request that sees
+ *  this change across its handler knows it made one. */
+export const laneCommits = (): number => commitCount
 
 function newTx(): TxInternal {
   const kept = new Map<string, Buffer | null>()
@@ -113,6 +134,8 @@ function newTx(): TxInternal {
   const indexBefore = new Map<string, string | null>()   // path → `ls-files --stage` line, or null
   const restoreAfterCommit = new Map<string, Buffer>()   // abs → the author's full file
   let committed = false
+  let committedPaths: string[] | null = null
+  const committedHashes: string[] = []
 
   const remember = (paths: string[]): void => {
     const unseen = paths.filter(p => !indexBefore.has(p))
@@ -124,6 +147,8 @@ function newTx(): TxInternal {
   }
 
   return {
+    get committedPaths() { return committedPaths },
+    get committedHashes() { return committedHashes },
     keep(...absPaths: string[]): void {
       for (const abs of absPaths) {
         if (kept.has(abs)) continue
@@ -179,14 +204,16 @@ function newTx(): TxInternal {
       return true
     },
 
-    commit(message: string, paths: string[]): void {
+    commit(message: string, paths: string[], kind?: 'accept'): void {
       // `git commit -m msg --` with no pathspec commits the whole index —
       // which is every unrelated thing the author happened to have staged.
       // The lane commits what a decision NAMES, or it does not commit.
       if (!paths.length) throw new Error('the commit lane commits named paths, and this transaction named none')
       try {
-        git('commit', '-m', message, '--', ...paths)
+        git('commit', '-m', kind ? `${message}\n\nArc-Lane: ${kind}` : message, '--', ...paths)
         committed = true
+        committedPaths = [...(committedPaths ?? []), ...paths]
+        try { committedHashes.push(git('rev-parse', 'HEAD').trim()) } catch { /* the commit stands without its name */ }
         // The pending lines this decision did not ratify, back where they
         // were — the same shape as a scene accept putting the author's
         // unaccepted words back once its own change is in the book.
@@ -256,19 +283,31 @@ export function inLane<T>(what: string, fn: (tx: Tx) => T): T {
   const tx = newTx()
   held = what
   let ok = false
+  let result!: T
   try {
     const out = fn(tx)
     if (out && typeof (out as { then?: unknown }).then === 'function') {
       throw new Error(`"${what}" returned a promise to the commit lane — a transaction must not yield while it holds it`)
     }
     ok = true
-    return out
+    result = out
   } catch (e) {
     throw asAuthorError(e)
   } finally {
     if (!ok) tx.rollback()
     held = null
+    // THE LANE IS FREE NOW. A commit that stands is announced, even when
+    // the transaction failed after making it; a listener's failure is
+    // logged, never the decision's.
+    const paths = tx.committedPaths
+    if (paths) {
+      commitCount++
+      for (const fn of listeners) {
+        try { fn(paths, tx.committedHashes) } catch (e) { console.error('[lane] a commit listener failed:', e) }
+      }
+    }
   }
+  return result
 }
 
 /** Whether the lane is held, for a test that needs to prove it is released. */
