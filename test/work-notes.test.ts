@@ -34,11 +34,13 @@ process.env.PATH = `${installStubCli({
   // reading's JSON array, the craft-plan reading's fenced plan (A69-4 — the
   // clean pass stages one in front of its write when a line is said), and
   // prose for the writing passes. The clean pass owes a briefing with its
-  // leans-on block (A69-8); revise answers prose alone.
+  // leans-on block (A69-8); revise answers prose alone. Each body is long
+  // enough to be the whole of sc.02-1's twenty-eight words by the
+  // answer-whole floor (A75-2), which a two-line stub must still clear.
   answer: "prompt.includes('Answer with the JSON array') ? '[]'"
     + " : prompt.includes('CRAFT PLAN pass') ? '```json\\n{\"moves\":[{\"move\":\"structure\",\"how\":\"cut every beat that repeats one already made\"}]}\\n```'"
-    + " : prompt.includes('CLEAN PASS') ? 'A rebuilt first paragraph.\\n\\nA rebuilt second paragraph.\\n\\n=== BRIEFING ===\\nchecklist held\\n\\n```leans-on\\nchar.ines\\n```'"
-    + " : 'A revised first paragraph.\\n\\nA revised second paragraph.'",
+    + " : prompt.includes('CLEAN PASS') ? 'A rebuilt first paragraph.\\n\\nA rebuilt second paragraph, with the stairs counted down.\\n\\n=== BRIEFING ===\\nchecklist held\\n\\n```leans-on\\nchar.ines\\n```'"
+    + " : 'A revised first paragraph.\\n\\nA revised second paragraph, with the stairs counted down.'",
 })}${path.delimiter}${process.env.PATH}`
 
 const { runWorkNotes, describeOutcome, nothingToWork } = await import('../src/work-notes.ts')

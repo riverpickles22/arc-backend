@@ -276,9 +276,29 @@ export interface RowBase extends Cell {
    *  scene, and measuring a rewrite against its parent would let a
    *  fragment's rewrite pass as whole. Declared on the row, so the number has one
    *  address and the gate's record names it. Absent: the gate does not
-   *  measure length, and its record says so. */
+   *  measure length, and its record says so.
+   *
+   *  A STAGED ROW'S FLOOR IS THE ROW'S (A75-2): the write stage lists the
+   *  gate, and the launch carries this number from the row, as it carries
+   *  the envelope. At selection scope the subject is the PASSAGE the pass
+   *  rebuilds, which the pass hands the gate (`ProseGateCtx.subjectPassage`);
+   *  the whole scene would refuse every honest passage. */
   minShareOfSubject?: number
+  /** WHY THIS ROW DOES NOT LIST `answer-whole` (A75-2): one line, on every
+   *  row whose answer is prose (`WRITES_PROSE`) and whose gates do not name
+   *  the gate. A row either measures its answer against a subject or says
+   *  why it has none to measure against — never neither, and never both
+   *  (test/answer-whole-rows.test.ts). Left out of the job fingerprint, as
+   *  the fixture list is: saying why a gate is absent changes no job. */
+  noAnswerWhole?: string
 }
+
+/** THE ANSWER SHAPES THAT ARE PROSE (A75-2): a route, a scene file, a
+ *  rebuilt or revised body, and the menu's drop-in wordings. Every row that
+ *  answers in one of these either lists `answer-whole` with a floor or
+ *  carries `noAnswerWhole`. A reading, a plan, proposals and rules write no
+ *  prose and are not asked. */
+export const WRITES_PROSE: readonly AnswerShape[] = ['coverage-tail', 'scene-file', 'body-and-briefing', 'body-only', 'options']
 
 export interface SealedRow extends RowBase { pattern: 'sealed'; envelope: SealedEnvelope }
 /** ONE LAUNCH INSIDE A STAGED JOB (A69-3). A stage is a sealed pass in its
@@ -720,6 +740,7 @@ export const ROW_DRAFT_SCENE: StagedRow = {
   answer: 'scene-file',
   budget: { outputTokens: ROUTE_OUTPUT_TOKENS, wallClockMs: ROUTE_WALL_CLOCK_MS, inputTokens: WRITING_INPUT_TOKENS },
   rules: DRAFT_RULES,
+  noAnswerWhole: 'a new scene has no prose before it to measure a share of, and its answer carries no coverage claims to check against its paragraphs',
   // A STAGED ROW'S FIXTURES ARE ITS STAGES'. Each stage is a launch with its
   // own brief and its own recorded answers, and `fixturesRecorded` reads them
   // there — a second list here would be a copy nobody consults and everybody
@@ -814,6 +835,11 @@ to judge, never verdicts):
  *  no coverage tail, because there is no route. */
 export const CLEAN_PASS_GATES: readonly GateId[] = [
   'locks', 'lock-order', 'validator', 'withhold-literals', 'leaned-on', 'and-chain', 'sentence-length',
+  // A75-2: a rebuild is the whole of what it rebuilds. Its subject is the
+  // scene, or at selection scope the passage, as the pass was handed it.
+  // Only the floor measures here: the answer carries no coverage claims, so
+  // the paragraph proof has nothing to read and holds.
+  'answer-whole',
 ]
 
 /** U3's two rows (A69-8): the clean pass over a scene, and over a selection
@@ -831,6 +857,8 @@ const cleanPassRow = (scope: 'scene' | 'selection'): StagedRow => ({
   answer: 'body-and-briefing',
   budget: { outputTokens: ROUTE_OUTPUT_TOKENS, wallClockMs: ROUTE_WALL_CLOCK_MS, inputTokens: WRITING_INPUT_TOKENS },
   rules: REDRAFT_RULES,
+  // The author's bar (2026-11-14): the route's, wherever a row has a subject.
+  minShareOfSubject: ROUTE_MIN_SHARE_OF_SUBJECT,
   fixtures: [],
   stages: [
     {
@@ -854,7 +882,8 @@ const cleanPassRow = (scope: 'scene' | 'selection'): StagedRow => ({
       // The selection row's lock-touched case is refused at intake — a lock
       // inside the range the author asked to rebuild — so it sends no brief
       // and records no answer, as the leak scenario does (A69-8).
-      fixtures: scope === 'scene' ? ['lands', 'lock-touched'] : ['lands'],
+      // `truncated` (A75-2): a rebuild that came back a fifth of the scene.
+      fixtures: scope === 'scene' ? ['lands', 'lock-touched', 'truncated'] : ['lands'],
     },
   ],
 })
@@ -922,6 +951,12 @@ fences, no briefing.`
  *  now the receipt records the licensed scope and the measured changes. */
 export const MINIMAL_REVISION_GATES: readonly GateId[] = [
   'locks', 'lock-order', 'validator', 'withhold-literals', 'blast-radius', 'and-chain', 'sentence-length',
+  // A75-2: the CHANGE is minimal, the answer is not — the pass returns the
+  // whole scene body, every paragraph no note points at word for word, so a
+  // body that came back as only the paragraphs it changed is a fragment.
+  // blast-radius would read the missing paragraphs as deletions outside the
+  // notes; this says what actually happened, by count.
+  'answer-whole',
 ]
 
 /** U2's row (A69-9): work the author's open notes into one scene, as little
@@ -950,6 +985,8 @@ export const ROW_REVISE_SCENE_STAGED: StagedRow = {
   answer: 'body-only',
   budget: { outputTokens: ROUTE_OUTPUT_TOKENS, wallClockMs: ROUTE_WALL_CLOCK_MS, inputTokens: WRITING_INPUT_TOKENS },
   rules: REVISE_RULES,
+  // Against the scene as the pass was handed it (pending edits included).
+  minShareOfSubject: ROUTE_MIN_SHARE_OF_SUBJECT,
   fixtures: [],
   stages: [
     {
@@ -1416,6 +1453,7 @@ export const ROW_REPHRASE: SealedRow = {
   answer: 'options',
   budget: MENU_BUDGET,
   rules: REPHRASE_RULES,
+  noAnswerWhole: 'it offers drop-in wordings of one selection and writes none of them, and a wording shorter than the selection is a tightening, not a fragment',
   fixtures: ['lands'],
 }
 
@@ -1429,6 +1467,7 @@ export const ROW_SYNONYMS: SealedRow = {
   answer: 'options',
   budget: MENU_BUDGET,
   rules: SYNONYM_RULES,
+  noAnswerWhole: 'it offers single words for one selection and writes none of them, so there is no whole to come back',
   fixtures: ['lands'],
 }
 
@@ -1477,7 +1516,7 @@ export function rowByKey(key: string): Row | undefined {
 }
 
 export function jobFingerprint(row: Row): string {
-  const withoutFixtures = JSON.stringify(row, (key, value) => (key === 'fixtures' ? undefined : value))
+  const withoutFixtures = JSON.stringify(row, (key, value) => (key === 'fixtures' || key === 'noAnswerWhole' ? undefined : value))
   return sha16(withoutFixtures)
 }
 

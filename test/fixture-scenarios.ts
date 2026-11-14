@@ -287,6 +287,13 @@ export const SCENARIOS: Scenario[] = [
     }),
   },
   {
+    row: 'revise.scene.one-shot.write', name: 'truncated', expect: 'truncated',
+    scenario: 'a clean pass the author asked for with the line "tighter, only what she does", whose plan they settled as it stood — and the answer is three paragraphs and about a fifth of the words of sc.01-1, the settled paragraph kept word for word. Every other gate holds; the answer-whole floor refuses it, and the one repair has no recorded answer (A75-2)',
+    run: () => runRedraft({ scene: SCENE, guidance: 'tighter, only what she does' }, {
+      moves: [{ move: 'inventory', how: 'cut what reveals nobody, and keep what she does' }],
+    }),
+  },
+  {
     row: 'revise.selection.one-shot.craft-plan', name: 'plan-dread', expect: 'lands',
     scenario: 'the same line — "more dread" — said over a paragraph range of sc.01-1, so the request is selection scope and the reading is the selection row\'s own',
     run: () => runRedraft({ scene: SCENE, paragraphs: [2, 3], guidance: 'more dread' }),

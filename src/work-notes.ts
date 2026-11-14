@@ -226,7 +226,7 @@ async function runMinimalRevision(
   receipt.intent = { said: said || null, plan: null, ...(said ? {} : { note: 'nothing to translate' }) }
 
   const launch = (stage: Stage, name: string) => ({
-    row: { ...stage, ...cellOf(row, stage.id), withholding: row.withholding, withheld: row.withheld, envelope: row.envelope },
+    row: { ...stage, ...cellOf(row, stage.id), withholding: row.withholding, withheld: row.withheld, envelope: row.envelope, minShareOfSubject: row.minShareOfSubject },
     run, receipt,
     attempt: (n: 1 | 2) => `${name}-${n}`,
     render: (b: { blocks: { text: string }[] }) => b.blocks.map(x => x.text).join('\n\n'),

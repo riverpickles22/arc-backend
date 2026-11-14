@@ -238,6 +238,8 @@ test('a ratified rule binds what arc writes, never the prose the author already 
 test('the row declares what "minimal" is checked against, locks before the blast radius', () => {
   assert.deepEqual([...MINIMAL_REVISION_GATES], [
     'locks', 'lock-order', 'validator', 'withhold-literals', 'blast-radius', 'and-chain', 'sentence-length',
+    // A75-2: the answer is the whole scene body, however small the change.
+    'answer-whole',
   ])
   // blast-radius is MEASURED (A72-6). It was declared on the row before it
   // was built so every receipt said "minimal" was not yet checked; now the

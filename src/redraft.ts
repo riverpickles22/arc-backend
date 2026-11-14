@@ -327,7 +327,8 @@ export async function runRedraft(t: RedraftTarget, given?: CraftPlanned | null):
       known: [],
     }),
     validate,
-    ...(range ? { assembled } : {}),
+    // A passage answer is measured against the passage it rebuilds (A75-2).
+    ...(range ? { assembled, subjectPassage: paras.slice(range.from, range.to + 1).join('\n\n') } : {}),
     ...weightOf(canon, materialItems()),
   }
 
@@ -335,7 +336,7 @@ export async function runRedraft(t: RedraftTarget, given?: CraftPlanned | null):
   let wrote: string | null = null
   try {
     const out = await runGates({
-      row: { ...stage, ...cellOf(row, 'write'), withholding: row.withholding, withheld: row.withheld, envelope: row.envelope },
+      row: { ...stage, ...cellOf(row, 'write'), withholding: row.withholding, withheld: row.withheld, envelope: row.envelope, minShareOfSubject: row.minShareOfSubject },
       run, receipt, brief,
       repair: (refusal, resumed) => ({
         blocks: resumed

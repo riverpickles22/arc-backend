@@ -74,11 +74,11 @@ test('proof 2 alone: a body under the row\'s share of the subject refuses, with 
   assert.equal(v.record.proof, 'floor')
   assert.equal(v.record.measured, 0.14)
   assert.equal(v.record.bar, 0.3)
-  assert.equal(v.record.bar_from, 'minShareOfSubject on the explore · scene · one-shot row, as a share of the words of the scene itself')
+  assert.equal(v.record.bar_from, 'minShareOfSubject on the explore · scene · one-shot · standard row, as a share of the words of the scene itself')
   assert.ok(v.verdict === 'refused' && /it is 14% as long as the scene it re-imagines, where arc keeps one at 30% or more/.test(v.reason))
   if (v.verdict === 'refused') clean(v.reason)
   // the rewrite row names itself
-  assert.equal(gate(ctx, answer(body(4, 14), [1]), ROW_EXPLORE_ROUTE).record.bar_from, 'minShareOfSubject on the explore · route · one-shot row, as a share of the words of the scene itself')
+  assert.equal(gate(ctx, answer(body(4, 14), [1]), ROW_EXPLORE_ROUTE).record.bar_from, 'minShareOfSubject on the explore · route · one-shot · standard row, as a share of the words of the scene itself')
 })
 
 test('the share is compared unrounded: a body at 0.295 of its subject is refused against 0.30', () => {
@@ -104,7 +104,7 @@ test('on the rewrite row the floor is the scene\'s, never the route being rewrit
   assert.equal(v.verdict, 'refused')
   assert.equal(v.record.proof, 'floor')
   assert.deepEqual([v.record.measured, v.record.bar], [0.2, 0.3])
-  assert.match(v.record.bar_from!, /explore · route · one-shot row, as a share of the words of the scene itself$/)
+  assert.match(v.record.bar_from!, /explore · route · one-shot · standard row, as a share of the words of the scene itself$/)
   assert.ok(v.record.measured_against!.includes("floor: 0.2 of the scene's words, against 0.3"))
 })
 
@@ -113,7 +113,7 @@ test('both proofs together: the incident itself — four paragraphs, a seventh o
   assert.equal(v.verdict, 'refused')
   assert.equal(v.record.proof, 'paragraphs+floor')
   assert.deepEqual([v.record.measured, v.record.bar], [9, 4], 'the first proof carries the measurement')
-  assert.deepEqual(v.record.floor, { measured: 0.14, bar: 0.3, bar_from: 'minShareOfSubject on the explore · scene · one-shot row, as a share of the words of the scene itself' },
+  assert.deepEqual(v.record.floor, { measured: 0.14, bar: 0.3, bar_from: 'minShareOfSubject on the explore · scene · one-shot · standard row, as a share of the words of the scene itself' },
     'and the second keeps its own figures, structured, beside it')
   assert.ok(v.record.measured_against!.includes('opening: the body begins on a lowercase letter'))
   assert.ok(v.verdict === 'refused' && /paragraph 9 and has 4 paragraphs, and it is 14% as long/.test(v.reason), 'the sentence names both')

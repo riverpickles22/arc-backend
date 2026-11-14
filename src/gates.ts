@@ -122,6 +122,12 @@ export interface ProseGateCtx {
    *  the ones that measure the pass's own prose read the answer. Absent,
    *  the answer is the scene. */
   assembled?: (prose: string) => string
+  /** WHAT A PASSAGE ANSWER STANDS IN FOR (A75-2). At selection scope the
+   *  answer is the passage alone, so the `answer-whole` floor measures it
+   *  against the passage the pass was handed to rebuild, never the whole
+   *  scene, which would refuse every honest passage. Absent, the subject is
+   *  the scene. */
+  subjectPassage?: string
 }
 
 /** What U7's gates read (A74-1). */
@@ -562,7 +568,11 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
     const floor = row?.minShareOfSubject
     // THE SCENE, on every row — the rewrite's included: a route is a way
     // through the whole scene, so its parent route is never the measure.
-    const subject = wordsIn(ctx.sceneBody)
+    // The one exception is a passage answer (A75-2), whose subject is the
+    // passage it was handed to rebuild.
+    const passage = ctx.subjectPassage !== undefined
+    const of = passage ? 'the passage it rebuilds' : 'the scene itself'
+    const subject = wordsIn(passage ? ctx.subjectPassage! : ctx.sceneBody)
     const ratio = subject ? wordsIn(a.prose) / subject : null
     // Compared unrounded; only what goes on the record is rounded, so 0.295
     // does not hold against 0.30 — and to three places, so the record of a
@@ -571,17 +581,17 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
     // A scene with no words is no subject to measure against: not checked.
     const floorChecked = floor !== undefined && ratio !== null && share !== null
     const floorFail = floorChecked && ratio < floor
-    const floor_from = row ? `minShareOfSubject on the ${row.job} · ${row.scope} · ${row.mode} row, as a share of the words of the scene itself` : 'no row was given'
+    const floor_from = row ? `minShareOfSubject on the ${row.job} · ${row.scope} · ${row.mode} · ${row.depth} row, as a share of the words of ${of}` : 'no row was given'
     const observed = [
       `paragraphs: the claims name up to ${highest}, the body has ${paras}`,
       floorChecked
-        ? `floor: ${share} of the scene's words, against ${floor}`
-        : floor === undefined ? 'floor: not checked — the row states no share of the scene' : 'floor: not checked — the scene has no words',
+        ? `floor: ${share} of the ${passage ? 'passage' : 'scene'}'s words, against ${floor}`
+        : floor === undefined ? `floor: not checked — the row states no share of the ${passage ? 'passage' : 'scene'}` : `floor: not checked — the ${passage ? 'passage' : 'scene'} has no words`,
       ...(/^\p{Ll}/u.test(a.prose.trimStart()) ? ['opening: the body begins on a lowercase letter'] : []),
     ]
     const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
     const saysParas = `it places its beats as far as paragraph ${highest} and has ${plural(paras, 'paragraph')}`
-    const saysFloor = floorFail ? `it is ${percentBelow(ratio)}% as long as the scene it re-imagines, where arc keeps one at ${Math.round(floor * 100)}% or more` : ''
+    const saysFloor = floorFail ? `it is ${percentBelow(ratio)}% as long as ${passage ? 'the passage it rebuilds' : 'the scene it re-imagines'}, where arc keeps one at ${Math.round(floor * 100)}% or more` : ''
     if (paragraphsFail) {
       return refuse(
         `that answer did not come back whole: ${saysParas}${floorFail ? `, and ${saysFloor}` : ''}`,

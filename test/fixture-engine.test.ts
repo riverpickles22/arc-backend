@@ -433,6 +433,18 @@ for (const s of SCENARIOS) {
         assert.deepEqual(generatedFor('prose/ch-01/scene-01.md')?.entry.notes ?? [], [],
           'a keypoint is never handed to a pass as an instruction, so the accept resolves nothing')
         if (s.row.startsWith('revise.selection.')) {
+          // A75-2: THE FLOOR MEASURED THE PASSAGE ¶3–¶4, not the scene. The
+          // share is recomputed here from the scene as the author left it, so
+          // a dropped passage or a range off by one fails on the number.
+          const words = (t: string) => t.split(/\s+/).filter(Boolean).length
+          const answered = words(paras.slice(2, paras.length - (PRISTINE.length - 4)).join('\n\n'))
+          const ofPassage = Math.round(answered / words(PRISTINE.slice(2, 4).join('\n\n')) * 1000) / 1000
+          const ofScene = Math.round(answered / words(PRISTINE.join('\n\n')) * 1000) / 1000
+          assert.notEqual(ofPassage, ofScene)
+          const whole = readWorkingReceipt(out.run!)!.gates.find(g => g.gate === 'answer-whole' && g.attempt === 1)!
+          assert.equal(whole.verdict, 'held')
+          assert.equal(whole.bar_from, 'minShareOfSubject on the revise · selection · one-shot · standard row, as a share of the words of the passage it rebuilds')
+          assert.equal(whole.measured, ofPassage, `measured against the passage (${ofPassage}), not the scene (${ofScene})`)
           assert.deepEqual(paras.slice(0, 2), PRISTINE.slice(0, 2), 'everything above the range is byte-identical')
           assert.deepEqual(paras.slice(4), PRISTINE.slice(4), 'and everything below it')
         }
@@ -442,6 +454,23 @@ for (const s of SCENARIOS) {
         assert.match(out.reply, /settled|locked|would not keep it|could not run/,
           'the refusal names what it refused, in the author\'s words')
         assert.equal(seen.length, 2, 'one repair was attempted, and the store had no answer for it')
+        if (s.expect === 'truncated') {
+          // A75-2: A REBUILD THAT CAME BACK A FIFTH OF THE SCENE, with every
+          // other gate green — the lock kept, the rules held, the leans-on
+          // block all canon. The floor reached the write stage from the row.
+          const receipt = readWorkingReceipt(out.run!)!
+          assert.equal(receipt.ending, 'refused')
+          const first = receipt.gates.filter(g => g.attempt === 1 && g.stage === 'answer')
+          assert.ok(first.filter(g => g.gate !== 'answer-whole').every(g => g.verdict !== 'refused'),
+            `every gate before it held: ${JSON.stringify(first.map(g => [g.gate, g.verdict]))}`)
+          const gate = first.find(g => g.gate === 'answer-whole')!
+          assert.equal(gate.verdict, 'refused')
+          assert.equal(gate.proof, 'floor', 'the answer carries no coverage claims, so only the floor can refuse it')
+          assert.equal(gate.bar, 0.3)
+          assert.ok(typeof gate.measured === 'number' && gate.measured < 0.3 && gate.measured > 0.1, `about a fifth: ${gate.measured}`)
+          assert.equal(gate.bar_from, 'minShareOfSubject on the revise · scene · one-shot · standard row, as a share of the words of the scene itself')
+          assert.match(out.reply, /too short to be the whole scene/, 'the author reads which proof refused')
+        }
       }
       return
     }
@@ -480,7 +509,7 @@ for (const s of SCENARIOS) {
         assert.equal(gate.proof, 'paragraphs+floor')
         assert.deepEqual([gate.measured, gate.bar], [9, 4], 'the highest paragraph named, against the paragraphs the body has')
         assert.ok(gate.measured_against!.includes('opening: the body begins on a lowercase letter'), 'the mid-word opening is recorded')
-        assert.deepEqual(gate.floor, { measured: 0.173, bar: 0.3, bar_from: 'minShareOfSubject on the explore · scene · one-shot row, as a share of the words of the scene itself' },
+        assert.deepEqual(gate.floor, { measured: 0.173, bar: 0.3, bar_from: 'minShareOfSubject on the explore · scene · one-shot · standard row, as a share of the words of the scene itself' },
           'the floor keeps its own figures beside the paragraph proof: 104 of 600 words')
         assert.match(result.refused[0].outcome ?? '', /would not keep it: the answer is too short to be the whole scene, and places its beats in paragraphs it does not have/)
         break

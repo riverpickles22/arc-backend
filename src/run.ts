@@ -666,11 +666,15 @@ export const gateName = (gate: string): string => GATE_NAMES[gate] ?? `the ${gat
 /** Why one gate refused, rendered from its record — never from the answer's
  *  own words, which a model wrote. */
 function gateSentence(g: GateRecord): string {
-  const what = (g.proof ? GATE_WORDS[`${g.gate}:${g.proof}`] : undefined) ?? GATE_WORDS[g.gate] ?? `the ${g.gate} check did not hold`
+  let what = (g.proof ? GATE_WORDS[`${g.gate}:${g.proof}`] : undefined) ?? GATE_WORDS[g.gate] ?? `the ${g.gate} check did not hold`
   // A floor is a share, and the author reads it as one: whole percentages,
   // the same notation as the gate's own reason (A75-1).
   // The share is rounded down, so 29.5% never reads as the 30% it missed.
   const pct = (n: unknown, below = false) => `${below ? Math.floor(Number(n) * 100 + 1e-9) : Math.round(Number(n) * 100)}%`
+  // A75-2: a passage answer was measured against the passage, and the
+  // sentence follows the record's own subject.
+  const passage = g.gate === 'answer-whole' && /the passage it rebuilds$/.test(String(g.floor?.bar_from ?? g.bar_from ?? ''))
+  if (passage) what = what.replace('the whole scene', 'the whole passage it rebuilds')
   if (g.gate === 'answer-whole' && g.proof === 'floor') return `${what} (${pct(g.measured, true)} against ${pct(g.bar)})`
   if (g.gate === 'answer-whole' && g.proof === 'paragraphs+floor' && g.floor) {
     return `${what} (${pct(g.floor.measured, true)} against ${pct(g.floor.bar)}; paragraph ${g.measured} against ${g.bar})`
