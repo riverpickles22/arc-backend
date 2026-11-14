@@ -17,7 +17,7 @@
 // Everything produced here is ARGUED (conventions §11) and binds nothing: the
 // queue lives in docs/style.proposed.md, which no drafting pass ever reads.
 import { HttpError } from './http'
-import { currentEngine, stripFences } from './engine'
+import { currentEngine, stripFences, SDK_ENGINE_FIX } from './engine'
 import { runGates } from './gates'
 import { endingOf, gateCtx as gateCtxOf } from './reroute'
 import { jobFingerprint, LEARN_RULES, MIN_INDEPENDENT_EXAMPLES, ROW_LEARN_MANUSCRIPT, type SealedRow } from './registry'
@@ -558,7 +558,7 @@ async function learnRead(
   if (engine === 'sdk') {
     throw new HttpError(400,
       'arc can learn from your edits only when it runs on your claude login — it cannot show what it was given on the engine it is set up to use. '
-      + 'Log in with  claude  and ask again, or remove ANTHROPIC_API_KEY from arc-backend/.env.')
+      + SDK_ENGINE_FIX)
   }
 
   // Renumber after truncation so the numbers the model sees are the numbers

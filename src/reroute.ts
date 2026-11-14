@@ -50,7 +50,7 @@ import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
 import { STORY } from './config'
 import { annotations, openNotesOn } from './annotations'
 import { canonJson } from './canon'
-import { currentEngine, renderBrief, type Brief, type EngineErrorKind } from './engine'
+import { currentEngine, renderBrief, type Brief, type EngineErrorKind, noEngineSentence } from './engine'
 import { runGates, stripQuotedSpans, type ProseGateCtx, type WithheldSet } from './gates'
 import { ROUTE_WITHHELD, ROW_EXPLORE_ROUTE, ROW_EXPLORE_SCENE, findRow, jobFingerprint, type SealedRow } from './registry'
 import type { ResolvedRequest } from './request'
@@ -1260,10 +1260,10 @@ export async function runReroute(t: RerouteTarget): Promise<RerouteResponse> {
   }
   // A dry run consults no engine, so it needs none; a live one refuses here,
   // before the slice is assembled.
-  if (!t.dry && !(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
+  if (!t.dry && !currentEngine()) {
     refuseWithReceipt(request, ROW_EXPLORE_SCENE,
       { gate: 'engine', verdict: 'could not judge', attempt: 1, stage: 'launch', bar_from: 'an engine the seam can reach' },
-      'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI', 400)
+      noEngineSentence(), 400)
   }
 
   const paras = paragraphsOf(scene.body)
@@ -1585,10 +1585,10 @@ export async function runRevise(t: ReviseTarget): Promise<RerouteResponse> {
       { gate: 'locks', verdict: 'refused', attempt: 1, stage: 'intake', bar: 0, bar_from: 'locks/', measured_against: [whole.id] },
       `${whole.scope === 'chapter' ? 'this chapter' : 'this section'} is locked (${whole.id}) — the author settled it whole; a rewrite would unsettle it. Unlock it to keep working the route.`, 423)
   }
-  if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
+  if (!currentEngine()) {
     refuseWithReceipt(request, ROW_EXPLORE_ROUTE,
       { gate: 'engine', verdict: 'could not judge', attempt: 1, stage: 'launch', bar_from: 'an engine the seam can reach' },
-      'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI', 400)
+      noEngineSentence(), 400)
   }
 
   // The same context assembly as the reroute, minus the parts that describe

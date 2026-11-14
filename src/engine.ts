@@ -43,21 +43,73 @@ import { rowKey, type LaunchSpec } from './registry'
 
 export type Engine = 'sdk' | 'claude-cli' | 'fixture'
 
+type EngineEnv = { ARC_DRAFT_ENGINE?: string; ANTHROPIC_API_KEY?: string; ANTHROPIC_AUTH_TOKEN?: string }
+
+const FORCED: readonly string[] = ['sdk', 'claude-cli', 'fixture']
+const hasKey = (env: EngineEnv): boolean => !!(env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN)
+
 /** Pick the engine. Pure: env and CLI availability come in as arguments.
  *  ARC_DRAFT_ENGINE: 'sdk' | 'claude-cli' force an engine; 'fixture' answers
  *  from the recorded briefs and never a model (A67-9); 'none' disables
- *  generation outright (tests, metered environments). The fixture is never
- *  chosen by default — it is asked for, or it is not there. */
-export function chooseEngine(
-  env: { ARC_DRAFT_ENGINE?: string; ANTHROPIC_API_KEY?: string; ANTHROPIC_AUTH_TOKEN?: string },
-  cliAvailable: boolean,
-): Engine | null {
+ *  generation outright (tests, metered environments). Unforced, the claude
+ *  CLI answers whenever it is there, WHATEVER KEYS ARE SET (A78-1): every
+ *  rowed pass refuses on the SDK by design (A69-3), so a key that picked it
+ *  would turn every governed pass into a refusal. The SDK answers only when
+ *  asked for by name and has a key to answer with; named without one it is
+ *  no engine, so a bare launch never reaches the SDK's own credentials
+ *  error. A key with no CLI picks nothing. The fixture is
+ *  never chosen by default — it is asked for, or it is not there. */
+export function chooseEngine(env: EngineEnv, cliAvailable: boolean): Engine | null {
   if (env.ARC_DRAFT_ENGINE === 'none') return null
-  if (env.ARC_DRAFT_ENGINE === 'sdk' || env.ARC_DRAFT_ENGINE === 'claude-cli' || env.ARC_DRAFT_ENGINE === 'fixture') return env.ARC_DRAFT_ENGINE
-  if (env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN) return 'sdk'
+  if (env.ARC_DRAFT_ENGINE === 'sdk') return hasKey(env) ? 'sdk' : null
+  if (env.ARC_DRAFT_ENGINE && FORCED.includes(env.ARC_DRAFT_ENGINE)) return env.ARC_DRAFT_ENGINE as Engine
   if (cliAvailable) return 'claude-cli'
   return null
 }
+
+/** Which engine answers and why, for the startup banner. Pure, like
+ *  chooseEngine, and read from the same two inputs so the two cannot
+ *  disagree. */
+export function engineReason(env: EngineEnv, cliAvailable: boolean): string {
+  const engine = chooseEngine(env, cliAvailable)
+  const forced = env.ARC_DRAFT_ENGINE
+  if (forced === 'none') return 'none — ARC_DRAFT_ENGINE=none turns generation off'
+  if (engine === 'sdk') return 'sdk — ARC_DRAFT_ENGINE=sdk asks for it; every governed pass refuses on it'
+  if (forced === 'sdk') return 'none — ARC_DRAFT_ENGINE=sdk asks for the SDK, but no key is set, so nothing will answer'
+  if (engine === 'fixture') return 'fixture — ARC_DRAFT_ENGINE=fixture answers from recorded briefs, never a model'
+  if (engine === 'claude-cli' && forced === 'claude-cli')
+    return 'claude-cli — ARC_DRAFT_ENGINE=claude-cli asks for it' + (cliAvailable ? '' : ', but no claude CLI was found on PATH')
+  if (engine === 'claude-cli')
+    return 'claude-cli — the claude CLI on your login answers by default' + (hasKey(env) ? '; the key in the environment is unused unless ARC_DRAFT_ENGINE=sdk' : '')
+  return hasKey(env)
+    ? 'none — a key is set, but the SDK answers only when ARC_DRAFT_ENGINE=sdk, and no claude CLI was found on PATH'
+    : 'none — no claude CLI was found on PATH'
+}
+
+/** The author's sentence when no engine answers: what is missing and the
+ *  next thing to do, in keystrokes. Every "no engine" refusal says this. */
+export function noEngineSentence(env: EngineEnv = process.env): string {
+  if (env.ARC_DRAFT_ENGINE === 'none')
+    return `arc is set not to write anything right now: the setting ARC_DRAFT_ENGINE=none is on. ${unset('ARC_DRAFT_ENGINE=none')}`
+  if (env.ARC_DRAFT_ENGINE === 'sdk')
+    return `arc is set to write with a key, and no key is set, so nothing can answer. ${unset('ARC_DRAFT_ENGINE=sdk')}`
+  // Unforced, chooseEngine picks nothing only when there is no CLI.
+  return 'arc writes through Claude Code, signed in as you, and Claude Code is not on this computer. '
+    + `Install Claude Code, open a terminal, type  claude  and press Return to sign in, then ${REOPEN}`
+    + (hasKey(env) ? ' A key on its own is not enough: arc does not write with it.' : '')
+}
+
+/** How the author reopens arc, in keystrokes (arc-cli/CLAUDE.md: "type `arc`
+ *  and press Return"). */
+const REOPEN = 'press Control-C in the window arc is running in, type  arc  and press Return, and ask again.'
+
+/** How the author takes a setting away, wherever they put it. */
+const unset = (setting: string): string =>
+  `Remove ${setting} from your terminal's settings, or delete that line from arc-backend/.env if it is there; then ${REOPEN}`
+
+/** The fix for a refusal on the `sdk` engine, which is only ever chosen by
+ *  name: take the name away. */
+export const SDK_ENGINE_FIX = unset('ARC_DRAFT_ENGINE=sdk')
 
 let cliChecked: boolean | undefined
 /** Is the claude CLI on PATH? Checked once per process. */
@@ -76,6 +128,9 @@ function claudeCliAvailable(): boolean {
 export function currentEngine(): Engine | null {
   return chooseEngine(process.env, claudeCliAvailable())
 }
+
+/** Why `currentEngine()` answers as it does — the banner's line. */
+export const currentEngineReason = (): string => engineReason(process.env, claudeCliAvailable())
 
 /** Can the engine that would answer now RESUME a transcript?
  *
@@ -536,7 +591,13 @@ function spawnClaude(plan: SpawnPlan): Launch {
         cwd: plan.scratchDir,
         env: {
           ...process.env,
+          // The child answers on the author's own login, never a credential
+          // the environment happens to carry (A78-1): ANTHROPIC_API_KEY and
+          // ANTHROPIC_AUTH_TOKEN are both removed. A gateway set up through
+          // ANTHROPIC_AUTH_TOKEN with ANTHROPIC_BASE_URL is therefore not
+          // supported for the CLI child.
           ANTHROPIC_API_KEY: undefined,
+          ANTHROPIC_AUTH_TOKEN: undefined,
           ...(plan.runId ? { ARC_RUN_ID: plan.runId } : {}),
           ...(plan.pass ? { ARC_PASS: plan.pass } : {}),
           ...(plan.maxOutputTokens ? { CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(plan.maxOutputTokens) } : {}),
@@ -839,7 +900,7 @@ export async function askRow(row: LaunchSpec, brief: Brief, opts: AskOpts): Prom
     }
     return askSdk(row, brief, opts)
   }
-  throw new EngineError('unreachable', 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+  throw new EngineError('unreachable', noEngineSentence())
 }
 
 export const isDry = (a: CliAnswer | DryAnswer): a is DryAnswer => (a as DryAnswer).dry === true

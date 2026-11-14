@@ -389,8 +389,9 @@ repo shares. This file is only what is particular to the backend.
   bookkeeping of its own.
 - **The engine seam is `src/engine.ts`, and it takes the row first**
   (A67-2). `askRow(row, brief, opts)` answers a brief from whichever
-  engine is configured — the fixture, `claude -p` on the author's login,
-  or the SDK with a key — and the launch derives from the row: the toolbelt
+  engine is configured — the fixture, `claude -p` on the author's login
+  (the default whenever the CLI is there, whatever keys are set; A78-1),
+  or the SDK only when `ARC_DRAFT_ENGINE=sdk` names it — and the launch derives from the row: the toolbelt
   from its envelope, the wall clock from its budget, the output ceiling from
   its budget (the SDK's `max_tokens`; the CLI child's
   `CLAUDE_CODE_MAX_OUTPUT_TOKENS`), the session and the scratch directory

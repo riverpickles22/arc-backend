@@ -526,12 +526,13 @@ test('POST /api/record/update: validation, the counts and a run id; an unreadabl
 test('on the sdk engine the pass refuses in one sentence, and writes nothing', async () => {
   const before = git(STORY, 'status', '--porcelain')
   process.env.ARC_DRAFT_ENGINE = 'sdk'
+  process.env.ANTHROPIC_API_KEY = 'a-key-that-must-never-be-used'   // the SDK is chosen only with one (A78-1)
   try {
     const res = await post('/api/record/update', { scene: 'sc.01-1' })
     assert.equal(res.status, 400)
     assert.match((await res.json() as { error: string }).error, /cannot show what that reading was given/)
     assert.equal(git(STORY, 'status', '--porcelain'), before)
-  } finally { process.env.ARC_DRAFT_ENGINE = 'claude-cli' }
+  } finally { process.env.ARC_DRAFT_ENGINE = 'claude-cli'; delete process.env.ANTHROPIC_API_KEY }
 })
 
 // ---- through an accept ----------------------------------------------------------

@@ -24,7 +24,7 @@ import type { CanonDoc, UpdateRecordResponse } from 'arc-canon-graph'
 import { dump as yamlDump } from 'js-yaml'
 import { STORY } from './config'
 import { HttpError } from './http'
-import { currentEngine } from './engine'
+import { currentEngine, noEngineSentence, SDK_ENGINE_FIX } from './engine'
 import { CONFLICT_BY_CHECKS, CONFLICT_BY_NAMES, leaks, runGates, type ProposalGateCtx } from './gates'
 import { git } from './lane'
 import { canonJson, invalidateCanon, validateAt, validateStory } from './canon'
@@ -286,10 +286,10 @@ export async function runUpdateRecord(
   if (currentEngine() === 'sdk') {
     throw new HttpError(400,
       'arc cannot show what that reading was given on the engine it is set up to use — it can only do this when it runs the claude CLI on your login. '
-      + 'Log in with  claude  and ask again, or remove ANTHROPIC_API_KEY from arc-backend/.env.')
+      + SDK_ENGINE_FIX)
   }
-  if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
-    throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+  if (!currentEngine()) {
+    throw new HttpError(400, noEngineSentence())
   }
 
   const canon = JSON.parse(canonJson()) as {

@@ -6,17 +6,60 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { chooseEngine, parseStream, sessionIdFor, stripFences, transcriptPathFor, scratchParent, scratchDirFor, renderBrief } from '../src/engine.ts'
+import { chooseEngine, engineReason, noEngineSentence, SDK_ENGINE_FIX, parseStream, sessionIdFor, stripFences, transcriptPathFor, scratchParent, scratchDirFor, renderBrief } from '../src/engine.ts'
 
 const CAPTURE = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), 'captures', 'claude-cli-2.1.270-stream.jsonl'), 'utf8')
 
-test('chooseEngine: override wins, none disables, key → sdk, cli-only → claude-cli', () => {
+test('chooseEngine: override wins, none disables, the CLI answers by default whatever keys are set (A78-1)', () => {
   assert.equal(chooseEngine({ ARC_DRAFT_ENGINE: 'claude-cli', ANTHROPIC_API_KEY: 'k' }, false), 'claude-cli')
   assert.equal(chooseEngine({ ARC_DRAFT_ENGINE: 'none', ANTHROPIC_API_KEY: 'k' }, true), null)
-  assert.equal(chooseEngine({ ANTHROPIC_API_KEY: 'k' }, true), 'sdk')
-  assert.equal(chooseEngine({ ANTHROPIC_AUTH_TOKEN: 't' }, false), 'sdk')
+  assert.equal(chooseEngine({ ARC_DRAFT_ENGINE: 'fixture' }, false), 'fixture')
+  // criterion 1: a key or a token with the CLI there is the CLI
+  assert.equal(chooseEngine({ ANTHROPIC_API_KEY: 'k' }, true), 'claude-cli')
+  assert.equal(chooseEngine({ ANTHROPIC_AUTH_TOKEN: 't' }, true), 'claude-cli')
+  // criterion 2: the SDK only when asked for by name
+  assert.equal(chooseEngine({ ARC_DRAFT_ENGINE: 'sdk', ANTHROPIC_API_KEY: 'k' }, true), 'sdk')
+  assert.equal(chooseEngine({ ARC_DRAFT_ENGINE: 'sdk', ANTHROPIC_API_KEY: 'k' }, false), 'sdk')
+  // criterion 3: a key with no CLI picks nothing
+  assert.equal(chooseEngine({ ANTHROPIC_API_KEY: 'k' }, false), null)
+  assert.equal(chooseEngine({ ANTHROPIC_AUTH_TOKEN: 't' }, false), null)
   assert.equal(chooseEngine({}, true), 'claude-cli')
   assert.equal(chooseEngine({}, false), null)
+  // an unknown name is not a choice
+  assert.equal(chooseEngine({ ARC_DRAFT_ENGINE: 'gpt' }, true), 'claude-cli')
+})
+
+test('the banner says which engine answers and why, from the same inputs chooseEngine reads', () => {
+  assert.match(engineReason({ ANTHROPIC_API_KEY: 'k' }, true), /^claude-cli — .*by default; the key .* unused unless ARC_DRAFT_ENGINE=sdk$/)
+  assert.match(engineReason({}, true), /^claude-cli — the claude CLI on your login answers by default$/)
+  assert.match(engineReason({ ARC_DRAFT_ENGINE: 'sdk', ANTHROPIC_API_KEY: 'k' }, true), /^sdk — ARC_DRAFT_ENGINE=sdk asks for it/)
+  assert.match(engineReason({ ARC_DRAFT_ENGINE: 'fixture' }, true), /^fixture — /)
+  assert.match(engineReason({ ARC_DRAFT_ENGINE: 'none' }, true), /^none — ARC_DRAFT_ENGINE=none/)
+  assert.match(engineReason({ ARC_DRAFT_ENGINE: 'claude-cli' }, false), /^claude-cli — .*no claude CLI was found/)
+  assert.match(engineReason({ ANTHROPIC_AUTH_TOKEN: 't' }, false), /^none — a key is set, but the SDK answers only when ARC_DRAFT_ENGINE=sdk/)
+  assert.match(engineReason({}, false), /^none — no claude CLI was found on PATH$/)
+  // the banner's first word is the engine chooseEngine picks
+  for (const env of [{}, { ANTHROPIC_API_KEY: 'k' }, { ARC_DRAFT_ENGINE: 'sdk' }, { ARC_DRAFT_ENGINE: 'sdk', ANTHROPIC_API_KEY: 'k' }, { ARC_DRAFT_ENGINE: 'none' }, { ARC_DRAFT_ENGINE: 'fixture' }])
+    for (const cli of [true, false])
+      assert.equal(engineReason(env, cli).split(' ')[0], chooseEngine(env, cli) ?? 'none')
+})
+
+test('a key and no CLI is told how to get an engine, in keystrokes; the SDK fix names the setting to remove', () => {
+  const told = noEngineSentence({ ANTHROPIC_API_KEY: 'k' })
+  assert.match(told, /Install Claude Code, open a terminal, type {2}claude {2}and press Return to sign in/)
+  assert.match(told, /press Control-C in the window arc is running in, type {2}arc {2}and press Return/)
+  assert.match(told, /A key on its own is not enough/)
+  assert.doesNotMatch(noEngineSentence({}), /key/)
+  assert.match(noEngineSentence({ ARC_DRAFT_ENGINE: 'none' }), /ARC_DRAFT_ENGINE=none is on\. Remove ARC_DRAFT_ENGINE=none from your terminal's settings, or delete that line from arc-backend\/\.env/)
+  assert.match(noEngineSentence({ ARC_DRAFT_ENGINE: 'sdk' }), /no key is set, so nothing can answer/)
+  assert.match(SDK_ENGINE_FIX, /^Remove ARC_DRAFT_ENGINE=sdk from your terminal's settings, or delete that line from arc-backend\/\.env/)
+})
+
+test('ARC_DRAFT_ENGINE=sdk with no key is no engine, and the banner says so', () => {
+  assert.equal(chooseEngine({ ARC_DRAFT_ENGINE: 'sdk' }, true), null)
+  assert.equal(chooseEngine({ ARC_DRAFT_ENGINE: 'sdk' }, false), null)
+  assert.equal(chooseEngine({ ARC_DRAFT_ENGINE: 'sdk', ANTHROPIC_AUTH_TOKEN: 't' }, false), 'sdk')
+  assert.match(engineReason({ ARC_DRAFT_ENGINE: 'sdk' }, true), /^none — ARC_DRAFT_ENGINE=sdk asks for the SDK, but no key is set, so nothing will answer$/)
 })
 
 test('the real capture: the init event is the envelope the runtime says it loaded', () => {

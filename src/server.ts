@@ -105,7 +105,7 @@ function parsePlan(raw: unknown): CraftPlanned {
     }),
   }
 }
-import { currentEngine } from './engine'
+import { currentEngine, noEngineSentence } from './engine'
 import { authorStylePath, commitAuthorStyle, loadStyleLayers, styleContract } from './style'
 import { countableChecks } from './countable'
 import { DISMISSED_REL, QUEUE_REL, ratifyRule, ratifyTouchstone, readDismissed, readQueue, readTouchstones } from './style-queue'
@@ -336,7 +336,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     POST: async (req, res) => {
       const b = (await parsedBody(req)) as { scene?: unknown }
       if (typeof b.scene !== 'string' || !b.scene) throw new HttpError(400, 'scene required')
-      if (!currentEngine()) throw new HttpError(503, 'No generation engine available.')
+      if (!currentEngine()) throw new HttpError(503, noEngineSentence())
       const scene = proseScenes().find(s => s.scene === b.scene || s.file === b.scene)
       if (!scene) throw new HttpError(404, `no such scene: ${b.scene}`)
 
@@ -936,8 +936,8 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // argued claims in the reply.
   '/api/prose/redraft': {
     POST: async (req, res) => {
-      if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
-        throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+      if (!currentEngine()) {
+        throw new HttpError(400, noEngineSentence())
       }
       const b = (await parsedBody(req)) as { scene?: unknown; paragraphs?: unknown; guidance?: unknown; plan?: unknown }
       if (typeof b.scene !== 'string' || !b.scene) throw new HttpError(400, 'scene required')
@@ -965,8 +965,8 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // allows. A scene with no open notes is refused (409), never run on nothing.
   '/api/prose/work-notes': {
     POST: async (req, res) => {
-      if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
-        throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+      if (!currentEngine()) {
+        throw new HttpError(400, noEngineSentence())
       }
       const b = (await parsedBody(req)) as { scene?: unknown; mode?: unknown; guidance?: unknown }
       if (typeof b.scene !== 'string' || !b.scene) throw new HttpError(400, 'scene required')
@@ -994,8 +994,8 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     POST: async (req, res) => {
       const b = (await parsedBody(req)) as { scene?: unknown; count?: unknown; guidance?: unknown; dry?: unknown; depth?: unknown }
       // A dry run consults no engine, so it needs none (A67-2).
-      if (b.dry !== true && !(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
-        throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+      if (b.dry !== true && !currentEngine()) {
+        throw new HttpError(400, noEngineSentence())
       }
       if (typeof b.scene !== 'string' || !b.scene) throw new HttpError(400, 'scene required')
       // THE REQUEST (A67-8): the gesture the author made, resolved by code
@@ -1033,8 +1033,8 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   // endpoint would let a viewer bug turn one into the other.
   '/api/prose/reroute/again': {
     POST: async (req, res) => {
-      if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
-        throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+      if (!currentEngine()) {
+        throw new HttpError(400, noEngineSentence())
       }
       const b = (await parsedBody(req)) as { scene?: unknown; alt?: unknown; depth?: unknown }
       if (typeof b.scene !== 'string' || !b.scene || typeof b.alt !== 'string' || !b.alt) throw new HttpError(400, 'scene and alt required')
@@ -1111,8 +1111,8 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
 
   '/api/prose/reroute/revise': {
     POST: async (req, res) => {
-      if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
-        throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+      if (!currentEngine()) {
+        throw new HttpError(400, noEngineSentence())
       }
       const b = (await parsedBody(req)) as { scene?: unknown; alt?: unknown; note?: unknown; depth?: unknown }
       if (typeof b.scene !== 'string' || !b.scene || typeof b.alt !== 'string' || !b.alt) throw new HttpError(400, 'scene and alt required')
@@ -1265,14 +1265,12 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
 
   // The drafting pass: generate one scene into the working tree. The result
   // is an ordinary draft in /api/prose/draft — the author's accept or
-  // discard stays the only gate. Engine: the SDK when a key is set, else
-  // headless `claude -p` on the author's subscription login.
+  // discard stays the only gate. Engine: headless `claude -p` on the
+  // author's subscription login; the SDK only when ARC_DRAFT_ENGINE=sdk.
   '/api/prose/draft-scene': {
     POST: async (req, res) => {
       if (!currentEngine()) {
-        throw new HttpError(503,
-          'No generation engine. Either set ANTHROPIC_API_KEY in the environment, ' +
-          'or install and log in the claude CLI (its subscription login works — no key needed), then restart the backend.')
+        throw new HttpError(503, noEngineSentence())
       }
       const body = (await parsedBody(req)) as { chapter?: unknown; guidance?: unknown; plan?: unknown }
       if (typeof body.chapter !== 'string' || !body.chapter) throw new HttpError(400, 'chapter required')

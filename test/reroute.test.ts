@@ -284,6 +284,6 @@ test('a whole-scene lock refuses the run and names the lock; without a lock the 
       (e: unknown) => e instanceof HttpError && e.status === 423 && /lock\.001/.test(e.message) && /settled it whole/.test(e.message))
     fs.rmSync(path.join(story, 'locks', 'lock-001.yaml'))
     await assert.rejects(runReroute({ scene: 'sc.01-2' }),
-      (e: unknown) => e instanceof HttpError && e.status === 400 && /no engine/.test(e.message))
+      (e: unknown) => e instanceof HttpError && e.status === 400 && /set not to write anything/.test(e.message))
   } finally { reset() }
 })

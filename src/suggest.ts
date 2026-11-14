@@ -15,7 +15,7 @@
 // near miss, and the receipt says how many went and which (A69-10).
 import type { SuggestRequest, SuggestResponse } from 'arc-canon-graph'
 import { STORY } from './config'
-import { currentEngine } from './engine'
+import { currentEngine, noEngineSentence, SDK_ENGINE_FIX } from './engine'
 import { parseOptions, runGates, type ProseGateCtx } from './gates'
 import { HttpError } from './http'
 import { andCapFromContract, endingOf, gateCtx as gateCtxOf, wordCapFromContract } from './reroute'
@@ -106,12 +106,12 @@ export async function runSuggest(req: SuggestRequest): Promise<SuggestResponse> 
   // disk for a pass that could never have started are a record of nothing.
   if (!currentEngine()) {
     throw new HttpError(503,
-      'arc has no way to ask for wordings yet — log in with  claude  in a terminal, or put ANTHROPIC_API_KEY in arc-backend/.env, then ask again.')
+      noEngineSentence())
   }
   if (currentEngine() === 'sdk') {
     throw new HttpError(400,
       'arc cannot offer wordings on the engine it is set up to use — it can only show you what a pass was given when it runs the claude CLI on your login. ' +
-      'Log in with  claude  and ask again, or remove ANTHROPIC_API_KEY from arc-backend/.env.')
+      SDK_ENGINE_FIX)
   }
 
   const slice = assembleWritingSlice(row, { chapter: '' })

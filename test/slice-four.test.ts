@@ -326,6 +326,7 @@ test('(g) the sdk engine refuses every rowed pass in one sentence, and an accept
   edit(A, ['Tonight she trimmed and wound and logged and did not sing.', 'Tonight she trimmed, wound, logged, did not sing.'])
   git(STORY, 'add', '-A'); git(STORY, 'commit', '-qm', 'prose: accept sc.01-1 again')
   process.env.ARC_DRAFT_ENGINE = 'sdk'
+  process.env.ANTHROPIC_API_KEY = 'a-key-that-must-never-be-used'   // the SDK is chosen only with one (A78-1)
   try {
     for (const row of ROWS) {
       await assert.rejects(askRow(row, { blocks: [{ id: 'ask', text: 'x', cached: false }] }, { runId: 'run.9999' }), (e: unknown) => {
@@ -354,7 +355,7 @@ test('(g) the sdk engine refuses every rowed pass in one sentence, and an accept
     assert.equal(reads('u7'), 0)
     assert.deepEqual(unreadEpisodes().map(u => u.state), ['due'], 'listed, not failed: arc did not try')
     assert.ok(!exists('canon/entities/objects/the-barometer.yaml'))
-  } finally { process.env.ARC_DRAFT_ENGINE = 'claude-cli' }
+  } finally { process.env.ARC_DRAFT_ENGINE = 'claude-cli'; delete process.env.ANTHROPIC_API_KEY }
 })
 
 // ---- (h) delete .arc/ → the unread accepts are still known from the record ---------------------

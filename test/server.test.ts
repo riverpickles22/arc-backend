@@ -145,7 +145,7 @@ test('an accept with no engine still accepts, asks for no credential and reads n
     // and the route itself says why it cannot run, in a sentence
     const asked = await post('/api/record/update', { scene: 'sc.01-1' })
     assert.equal(asked.status, 400)
-    assert.match((await asked.json()).error, /no engine configured/)
+    assert.match((await asked.json()).error, /arc is set not to write anything right now/)
     assert.equal((await post('/api/record/update', {})).status, 400)
   } finally {
     if (savedKey !== undefined) process.env.ANTHROPIC_API_KEY = savedKey
@@ -162,7 +162,7 @@ test('draft-scene guards: 503 with no engine, 400 without a chapter', async () =
   try {
     const res = await post('/api/prose/draft-scene', { chapter: 'ch.01' })
     assert.equal(res.status, 503)
-    assert.match((await res.json()).error, /No generation engine/)
+    assert.match((await res.json()).error, /arc is set not to write anything right now/)
   } finally {
     // An engine named, none spent: the 400 below throws before any launch,
     // and the run's tripwire would refuse one anyway.

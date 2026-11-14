@@ -28,7 +28,7 @@
 // no prose.
 import type { InspectDraftResponse, InspectFinding } from 'arc-canon-graph'
 import { HttpError } from './http'
-import { currentEngine } from './engine'
+import { currentEngine, noEngineSentence, SDK_ENGINE_FIX } from './engine'
 import { assertBase } from './base'
 import { runGates } from './gates'
 import { citedScope } from './citations'
@@ -93,10 +93,10 @@ export async function runInspect(scene: string, base: unknown): Promise<InspectD
   if (currentEngine() === 'sdk') {
     throw new HttpError(400,
       'arc cannot read a change on the engine it is set up to use — it can only show you what a pass was given when it runs the claude CLI on your login. '
-      + 'Log in with  claude  and ask again, or remove ANTHROPIC_API_KEY from arc-backend/.env.')
+      + SDK_ENGINE_FIX)
   }
-  if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
-    throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+  if (!currentEngine()) {
+    throw new HttpError(400, noEngineSentence())
   }
 
   // BOTH SIDES ARE BODIES. The accepted side is `main.body`; the pending

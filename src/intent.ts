@@ -14,7 +14,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { MODEL } from './config'
 import { canonJson } from './canon'
 import { getClient } from './agent'
-import { currentEngine, runCliPrompt, stripFences } from './engine'
+import { currentEngine, runCliPrompt, stripFences, noEngineSentence } from './engine'
 import type { Run } from './run'
 import { HttpError } from './http'
 
@@ -157,7 +157,7 @@ export function parseEnvelope(text: string): IntentEnvelope {
 /** Read-only by construction: no tools on either engine. */
 export async function runIntake(input: string, run?: Run): Promise<IntentEnvelope> {
   const engine = currentEngine()
-  if (!engine) throw new HttpError(503, 'No generation engine available.')
+  if (!engine) throw new HttpError(503, noEngineSentence())
   const prompt = buildIntakePrompt(canonJson(), input)
 
   if (engine === 'claude-cli') {

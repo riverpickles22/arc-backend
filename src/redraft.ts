@@ -38,7 +38,7 @@ import { STORY } from './config'
 import { openNotesOn } from './annotations'
 import { canonJson } from './canon'
 import { cellOf, leansOnSentence, planFirst, writeValidated } from './draft'
-import { currentEngine } from './engine'
+import { currentEngine, noEngineSentence, SDK_ENGINE_FIX } from './engine'
 import { runGates, type ProseGateCtx } from './gates'
 import { HttpError } from './http'
 import { recordGenerated } from './ledger'
@@ -226,7 +226,7 @@ export async function runRedraft(t: RedraftTarget, given?: CraftPlanned | null):
   if (currentEngine() === 'sdk') {
     throw new HttpError(400,
       'arc cannot take a clean pass on the engine it is set up to use — it can only show you what a pass was given when it runs the claude CLI on your login. ' +
-      'Log in with  claude  and ask again, or remove ANTHROPIC_API_KEY from arc-backend/.env.')
+      SDK_ENGINE_FIX)
   }
 
   // AND NO ENGINE AT ALL IS A FREE REFUSAL, here rather than only at the
@@ -235,8 +235,8 @@ export async function runRedraft(t: RedraftTarget, given?: CraftPlanned | null):
   // receipt and assembles the whole brief before failing in the seam, and
   // the author gets `could not run` where they could have had a sentence
   // naming the one thing to do (A69-12 review).
-  if (!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) && !currentEngine()) {
-    throw new HttpError(400, 'no engine configured — set ANTHROPIC_API_KEY in arc-backend/.env, or log in to the claude CLI')
+  if (!currentEngine()) {
+    throw new HttpError(400, noEngineSentence())
   }
 
   const said = t.guidance?.trim() ?? ''

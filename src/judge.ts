@@ -16,7 +16,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import type { Register } from 'arc-canon-graph'
 import { MODEL } from './config'
 import { getClient } from './agent'
-import { currentEngine, runCliPrompt, stripFences } from './engine'
+import { currentEngine, runCliPrompt, stripFences, noEngineSentence } from './engine'
 import type { Run } from './run'
 import { HttpError } from './http'
 import type { IntentEnvelope } from './intent'
@@ -124,7 +124,7 @@ export function parseJudgment(text: string): Judgment {
  *  recorded on it (A76-2). It is not part of the brief. */
 export async function runJudge(brief: JudgeBrief, run?: Run): Promise<Judgment> {
   const engine = currentEngine()
-  if (!engine) throw new HttpError(503, 'No generation engine available.')
+  if (!engine) throw new HttpError(503, noEngineSentence())
   const prompt = buildJudgePrompt(brief)
 
   if (engine === 'claude-cli') {

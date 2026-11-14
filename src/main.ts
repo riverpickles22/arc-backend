@@ -2,7 +2,7 @@
 // importing config checks both repo paths) and listen.
 import { describeConfig, PORT } from './config'
 import { describeStyle, migrateAuthorStyle } from './style'
-import { currentEngine } from './engine'
+import { currentEngineReason } from './engine'
 import { createArcServer } from './server'
 import { registryStatus } from './registry'
 import { unfinishedRuns } from './run'
@@ -12,7 +12,8 @@ import { startWatcher } from './watch'
 // Probe for the claude CLI here, before anyone is listening. The probe itself
 // is synchronous and cached for the process; paying for it at startup keeps
 // the one place left that can block the loop out of the request path.
-const engine = currentEngine()
+// The banner says which engine answers and why (A78-1).
+const engine = currentEngineReason()
 
 // The author layer moves into its own versioned directory the first time any
 // server starts after the change — idempotent, and the old path becomes a
@@ -28,7 +29,7 @@ const unfinished = unfinishedRuns()   // nothing is live yet: this is startup
 // A note the book answered before a crash could close it closes now (A72-7).
 const settledNotes = settleAnsweredNotes()
 if (settledNotes.length) console.log(`  resolved ${settledNotes.length} note${settledNotes.length === 1 ? '' : 's'} the book had already answered`)
-console.log('arc-backend\n' + describeConfig() + `\n  style  ${describeStyle()}` + `\n  engine ${engine ?? 'none'}` + `\n  rows   ${rows}`
+console.log('arc-backend\n' + describeConfig() + `\n  style  ${describeStyle()}` + `\n  engine ${engine}` + `\n  rows   ${rows}`
   + (unfinished.length ? `\n  runs   ${unfinished.length} did not finish: ${unfinished.map(r => r.id).join(', ')}` : ''))
 createArcServer().listen(PORT, () => {
   console.log(`  listening on http://localhost:${PORT}`)

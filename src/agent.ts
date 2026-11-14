@@ -33,7 +33,7 @@ import {
 export type { ChatAction as Action }
 
 // Constructed lazily: the SDK throws without credentials, and every pass
-// that reaches for it checks for a key first — the CLI engine is the local
+// that reaches for it checks currentEngine() first — the CLI engine is the local
 // default (see engine.ts).
 //
 // Under the FIXTURE engine nothing may reach a model (A67-9). Only the rowed

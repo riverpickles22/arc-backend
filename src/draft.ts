@@ -22,7 +22,7 @@ import path from 'node:path'
 import type { CraftPlanned, DraftSceneResponse } from 'arc-canon-graph'
 import { STORY } from './config'
 import { canonJson, validateStory } from './canon'
-import { currentEngine } from './engine'
+import { currentEngine, SDK_ENGINE_FIX } from './engine'
 import { styleContract } from './style'
 import { recordGenerated } from './ledger'
 import { landingSentence } from './refusal'
@@ -141,7 +141,7 @@ export async function runDraft(
   if (currentEngine() === 'sdk') {
     throw new HttpError(400,
       'arc cannot draft on the engine it is set up to use — it can only show you what a pass was given when it runs the claude CLI on your login. ' +
-      'Log in with  claude  and ask again, or remove ANTHROPIC_API_KEY from arc-backend/.env.')
+      SDK_ENGINE_FIX)
   }
 
   const scenes = proseScenes()

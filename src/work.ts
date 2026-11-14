@@ -10,7 +10,7 @@ import path from 'node:path'
 import { load as yamlLoad } from 'js-yaml'
 import type { FiledItem, WorkResponse } from 'arc-canon-graph'
 import { HttpError } from './http'
-import { currentEngine } from './engine'
+import { currentEngine, noEngineSentence } from './engine'
 import { decide, runIntent, type RunOutcome } from './orchestrate'
 import { adoptRun, closeRun, pendingOutcome } from './runs'
 import { markWorked, readNote } from './notes'
@@ -40,7 +40,7 @@ export async function workNote(file: string): Promise<WorkResponse> {
   const note = readNote(file)
   if (!note.text.trim()) throw new HttpError(400, 'that note is empty')
   if (!currentEngine()) {
-    throw new HttpError(503, 'No generation engine available. Set ANTHROPIC_API_KEY, or log in to the claude CLI, and restart the backend. Your note is untouched.')
+    throw new HttpError(503, noEngineSentence() + ' Your note is untouched.')
   }
 
   let outcome: RunOutcome

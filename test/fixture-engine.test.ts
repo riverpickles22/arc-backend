@@ -35,7 +35,7 @@ const { readWorkingReceipt } = await import('../src/run.ts')
 
 test('the fixture engine is chosen only when asked for', () => {
   assert.equal(chooseEngine({ ARC_DRAFT_ENGINE: 'fixture', ANTHROPIC_API_KEY: 'k' }, true), 'fixture')
-  assert.equal(chooseEngine({ ANTHROPIC_API_KEY: 'k' }, true), 'sdk', 'a key never picks the fixture')
+  assert.equal(chooseEngine({ ANTHROPIC_API_KEY: 'k' }, true), 'claude-cli', 'a key never picks the fixture (nor the SDK, A78-1)')
   assert.equal(chooseEngine({}, true), 'claude-cli', 'the CLI never picks the fixture')
   assert.equal(chooseEngine({}, false), null, 'and with nothing configured there is no engine, not a fixture')
   assert.equal(currentEngine(), 'fixture')

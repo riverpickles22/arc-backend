@@ -19,7 +19,7 @@
 // trust property holds: every quote in the queue comes from arc's own table.
 import { HttpError } from './http'
 import { sha16 } from './records'
-import { currentEngine } from './engine'
+import { currentEngine, SDK_ENGINE_FIX } from './engine'
 import { annotations } from './annotations'
 import { editPairs, launchLearn, learnAsk, QUEUE_SUPPRESS_AT, significant, type LearnResult } from './learn-style'
 import { ROW_LEARN_MANUSCRIPT_FROM_PROSE } from './registry'
@@ -99,7 +99,7 @@ export async function runBootstrapStyle(): Promise<BootstrapResult> {
   if (engine === 'sdk') {
     throw new HttpError(400,
       'arc can read the history of your prose only when it runs on your claude login — it cannot show what it was given on the engine it is set up to use. '
-      + 'Log in with  claude  and ask again, or remove ANTHROPIC_API_KEY from arc-backend/.env.')
+      + SDK_ENGINE_FIX)
   }
 
   // The brief is the learner's own (the promoted contract and the declined

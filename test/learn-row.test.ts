@@ -170,10 +170,11 @@ test('a read that did not answer is a keyed receipt that did not land, and is li
 
 test('on the sdk engine it refuses in a sentence, before any token', async () => {
   process.env.ARC_DRAFT_ENGINE = 'sdk'
+  process.env.ANTHROPIC_API_KEY = 'a-key-that-must-never-be-used'   // the SDK is chosen only with one (A78-1)
   const n = calls()
   try {
     await assert.rejects(runLearnStyle([FILE], { [FILE]: INITIAL }), /only when it runs on your claude login/)
-  } finally { process.env.ARC_DRAFT_ENGINE = 'claude-cli' }
+  } finally { process.env.ARC_DRAFT_ENGINE = 'claude-cli'; delete process.env.ANTHROPIC_API_KEY }
   assert.equal(calls(), n)
 })
 
