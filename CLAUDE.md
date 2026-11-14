@@ -69,11 +69,18 @@ repo shares. This file is only what is particular to the backend.
   A67-10) and committed: `toRecordReceipt` strips every absolute path from
   every field, and no prose ever reaches it — a test greps for both. A
   refusal that produced nothing reaches no decision, so it leaves the
-  working receipt only, which is what `arc doctor` will count. `result.commit`
-  is filled by the accept that commits the adopted route
-  (`stampReceiptCommit`), and the receipt is then committed by `commitRecords`
-  in its OWN commit right behind it — no file can hold the hash of the commit
-  that contains it. A run launches more than once (two seeds, a repair), so
+  working receipt only, which is what `arc doctor` will count. EVERY decision
+  on a pending draft a run wrote — scene, paragraph or sentence accept, or
+  discard, whatever the origin — goes through ONE writer,
+  `recordDraftDecision` (A76-1): the step is appended to
+  `author_decision.taken` at the grain the decision named, `result.commit`
+  takes the decision's hash, and the receipt is then committed by
+  `commitRecords` in its OWN commit right behind it — no file can hold the
+  hash of the commit that contains it. A paragraph or sentence REJECT is a
+  step too, committed receipt-only like the discard. A whole-scene accept, a
+  discard, or the last piece taken or refused (nothing left pending at the
+  path) settles the draft; a later accept at that path is the author's own hand and
+  writes nothing, as does a draft with no run behind it. A run launches more than once (two seeds, a repair), so
   the receipt ACCUMULATES: one set of brief slots per launch, tokens summed,
   evidence summed, and each answer marked landed by its own attempt, never by
   whichever arrived last. Arc writes every field from the slice manifest and

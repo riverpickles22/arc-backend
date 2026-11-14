@@ -549,7 +549,14 @@ interface Receipt {
   context_manifest: { id: string; version: string }[]
   checks: unknown
   judgment: unknown
-  author_decision?: { decision: 'accepted' | 'rejected' | 'abandoned'; note?: string }
+  author_decision?: {
+    decision: 'accepted' | 'rejected' | 'abandoned'
+    note?: string
+    /** WHAT THE AUTHOR TOOK OF A PENDING DRAFT, one entry per decision, at
+     *  the grain that decision named (A76-1). A draft accepted in two steps
+     *  is two entries on one receipt. Indices, never the words. */
+    taken?: DraftStep[]
+  }
   /** A TRIGGERED RUN'S KEY (A74-3, invariant 3): sha16 of job · scene ·
    *  range.from · range.to · the fingerprint of the combined diff. Two runs
    *  with one key never both file, and a key whose receipt ended `landed` is
@@ -777,20 +784,84 @@ export function toRecordReceipt(r: Receipt): Receipt {
   return out
 }
 
-/** Fill in the commit on a record receipt already in history/ — the accept
- *  that committed an adopted route happens after the decision that wrote
- *  it, and `result.commit` is the link between the two. */
-export function stampReceiptCommit(runId: string, commit: string): boolean {
-  const file = path.join(historyDir(), `${runId}.yaml`)
-  try {
-    const r = yamlLoad(fs.readFileSync(file, 'utf8')) as Receipt
-    if (!r || r.result?.commit) return false
-    r.result = { ...r.result, commit }
-    fs.writeFileSync(file, yaml(r))
-    return true
-  } catch {
-    return false
-  }
+/** One decision on a pending draft, at the grain the decision named: the
+ *  whole scene, one paragraph by side and index, one sentence, or the
+ *  discard. A paragraph or sentence is taken or refused (`verdict`).
+ *  `commit` is the decision's own commit — null for a discard or a refusal,
+ *  which commit no prose. `settled` says nothing was left pending at that
+ *  path after it: the draft is decided, piece by piece. */
+export type DraftStep = { file: string; commit: string | null; settled?: true } & (
+  | { grain: 'scene' }
+  | { grain: 'paragraph'; verdict: 'accepted' | 'rejected'; side: 'main' | 'draft'; paragraph: number }
+  | { grain: 'sentence'; verdict: 'accepted' | 'rejected'; side: 'main' | 'draft'; paragraph: number; sentence: number }
+  | { grain: 'discard' }
+)
+
+const stepWords = (s: DraftStep): string =>
+  s.grain === 'scene' ? `accepted ${s.file}`
+    : s.grain === 'paragraph' ? `${s.verdict} ${s.side} paragraph ${s.paragraph} of ${s.file}`
+      : s.grain === 'sentence' ? `${s.verdict} sentence ${s.sentence} of ${s.side} paragraph ${s.paragraph} of ${s.file}`
+        : `discarded ${s.file}`
+
+/** Did this step put any of the run's words into the book? */
+const took = (s: DraftStep): boolean =>
+  s.grain === 'scene' || ((s.grain === 'paragraph' || s.grain === 'sentence') && s.verdict === 'accepted')
+
+/** Is the draft this run wrote already decided? A whole-scene accept or a
+ *  discard settles it, and so does the last piece of it taken or refused;
+ *  so does the older shape, an adopted route whose accept stamped a commit
+ *  before steps were kept. After that the ledger may still name the run (it
+ *  does until the learner consumes the entry), but what is pending at that
+ *  path is the author's own hand. */
+export const draftSettled = (r: Receipt): boolean => {
+  const taken = r.author_decision?.taken
+  if (taken?.length) return taken.some(s => s.grain === 'scene' || s.grain === 'discard' || s.settled === true)
+  return !!r.result?.commit
+}
+
+/** THE AUTHOR'S DECISION ON A PENDING DRAFT, ON THE RUN THAT WROTE IT
+ *  (A76-1). Every origin goes through here — a draft, a clean pass, a notes
+ *  revision, an adopted route — and every grain: the step is appended, the
+ *  note accumulates, and `result.commit` names the latest decision's commit,
+ *  so a draft accepted in two steps ends with one receipt that says both.
+ *  Called AFTER the decision's commit, whose hash it then carries; the
+ *  receipt joins the record in its own commit behind (`commitRecords`).
+ *
+ *  Returns the receipt's path relative to the story, or null when there is
+ *  nothing to write: no receipt (a draft from before receipts), or a draft
+ *  already settled. Written through `writeReceipt`, so stripped — no prose,
+ *  no brief text, no absolute path. */
+export function recordDraftDecision(runId: string, step: DraftStep): string | null {
+  const record = readRecordReceipt(runId)
+  if (record && draftSettled(record)) return null
+  const base = record ?? readWorkingReceipt(runId)
+  if (!base) return null
+  const taken = [...(base.author_decision?.taken ?? []), step]
+  const earlier = base.author_decision?.note
+  const note = stepWords(step)
+  const decidedAt = new Date()
+  // The first decision on the run measures how long it waited on the author,
+  // from its landing, exactly as the route adoption does. Never budget.
+  const landedAt = record ? NaN : Date.parse(base.decided_at || base.started_at)
+  return writeReceipt({
+    ...base,
+    decided_at: decidedAt.toISOString(),
+    story_revision_at_decision: storyRevision(),
+    ...(Number.isFinite(landedAt) ? { waiting_on_author_ms: Math.max(0, decidedAt.getTime() - landedAt) } : {}),
+    author_decision: {
+      // A discard or a refusal after part of the draft was taken leaves that
+      // part in the book: the run's words were accepted, and the note says
+      // the rest went.
+      decision: taken.some(took) ? 'accepted' : 'rejected',
+      note: earlier ? `${earlier}; ${note}` : note,
+      taken,
+    },
+    result: {
+      ...base.result,
+      records: [...new Set([...(base.result?.records ?? []), step.file])],
+      commit: step.commit ?? base.result?.commit ?? null,
+    },
+  })
 }
 
 /** EVERY RECEIPT A TRIGGERED JOB LEFT, newest key winning: the record
@@ -825,7 +896,7 @@ export function readRecordReceipt(runId: string): Receipt | null {
 }
 
 /** Put the commit of the author's LATEST decision on a record receipt (A74-4).
- *  Unlike `stampReceiptCommit` it overwrites: a run's proposals are decided
+ *  It overwrites whatever commit is there: a run's proposals are decided
  *  in as many requests as the author makes, and each is its own commit. The
  *  receipt cannot hold the hash of the commit that contains it, so this is
  *  written right after that commit and rides in the next records commit. */

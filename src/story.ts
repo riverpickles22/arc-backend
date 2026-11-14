@@ -28,7 +28,7 @@ import { jobFingerprint, rowByKey } from './registry'
 import { styleForPass } from './reroute'
 import { canonicalYaml } from './agent'
 import { validateStory } from './canon'
-import { readWorkingReceipt } from './run'
+import { draftSettled, readWorkingReceipt, type Receipt } from './run'
 
 // The wire types live in arc-canon-graph (graph/api-types.ts) — one source
 // of truth shared with the frontend. Re-exported so importers of this
@@ -704,8 +704,12 @@ export function commitRecords(message: string, paths: string[]): string | null {
         .filter(f => f.endsWith('.yaml') && !paths.includes(f))
         .filter(f => {
           try {
-            const doc = yamlLoad(fs.readFileSync(path.join(STORY, f), 'utf8')) as { result?: { commit?: unknown } } | null
-            return typeof doc?.result?.commit === 'string' && !!doc.result.commit
+            const doc = yamlLoad(fs.readFileSync(path.join(STORY, f), 'utf8')) as Receipt | null
+            if (typeof doc?.result?.commit === 'string' && !!doc.result.commit) return true
+            // AND A DRAFT DECIDED WITH NO COMMIT OF ITS OWN (A76-1): a discard,
+            // or a draft refused piece by piece until nothing pended. Its
+            // decision is complete, so there is no hash for it to wait for.
+            return !!doc?.author_decision?.taken?.length && draftSettled(doc)
           } catch { return false }
         })
     } catch { return [] }

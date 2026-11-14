@@ -34,6 +34,7 @@ import type { DecisionHistoryResponse, PutBackPreview, PutBackResult, ProseDraft
   NotesResponse,
   OkResponse,
   ProseAcceptResponse,
+  ProseDiscardResponse,
   ProseCheckHit,
   ProseChecksResponse,
   ProseParagraphRequest,
@@ -125,7 +126,7 @@ import { decideWork, workNote } from './work'
 import { closeRun, deleteRunTranscripts, getRun, listRuns, observe, openRun, pendingOutcome, registerRun, stopRun } from './runs'
 import { resolveRequest } from './request'
 import { hook, listAgents } from './agents'
-import { Run, subscribeRuns, stampReceiptCommit } from './run'
+import { Run, subscribeRuns, recordDraftDecision, type DraftStep } from './run'
 import { runLensFanOut } from './lenses'
 import { decide } from './orchestrate'
 
@@ -206,6 +207,54 @@ async function parsedBody(req: http.IncomingMessage): Promise<unknown> {
     throw new HttpError(400, 'request body is not valid JSON')
   }
 }
+
+/** The run that wrote each of these pending drafts, from the ledger; a file
+ *  arc never wrote, or wrote before runs were kept, has none (A76-1). */
+function draftRuns(files: string[]): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const f of files) {
+    const run = generatedFor(f)?.entry.run
+    if (run) out.set(f, run)
+  }
+  return out
+}
+
+/** Nothing left pending at this path: a draft taken or refused piece by
+ *  piece is decided once its last piece is (A76-1). */
+const nothingPends = (file: string): true | undefined =>
+  proseDraft().changes.some(c => c.file === file) ? undefined : true
+
+/** THE AUTHOR'S DECISION ON A PENDING DRAFT, ONTO THE RECEIPT OF THE RUN THAT
+ *  WROTE IT (A76-1) — one path for every origin and every grain. Called
+ *  after the decision landed: the step goes on the receipt with the
+ *  decision's hash, and the receipts join the record in their own commit
+ *  right behind it (A67-4). Never throws — the decision already happened —
+ *  and returns false when the record of it could not be kept. */
+function joinDraftReceipts(runOf: Map<string, string>, steps: DraftStep[], what: string): boolean {
+  const written: string[] = []
+  let kept = true
+  for (const step of steps) {
+    const run = runOf.get(step.file)
+    if (!run) continue
+    try {
+      const rel = recordDraftDecision(run, step)
+      if (rel && !written.includes(rel)) written.push(rel)
+    } catch (e) {
+      console.error(`[records] the receipt of ${run} could not take the decision (the decision itself landed):`, e)
+      kept = false
+    }
+  }
+  if (written.length && !commitRecords(`Record: ${written.length === 1 ? 'the receipt' : `${written.length} receipts`} for ${what}`, written)) kept = false
+  return kept
+}
+
+/** What the author reads when the record of a draft decision was not kept:
+ *  the decision stands, in their words, and only arc's own record is
+ *  outstanding. A refusal or a discard put no words in the book, so it does
+ *  not say it did. */
+const draftRecordLost = (landed: boolean): string => landed
+  ? landedThenFailed('its note of where these words came from was not kept')
+  : 'arc did what you asked. What it could not finish is its own record of it — its note of where this draft came from, and of what you decided, was not kept. Nothing of yours is lost.'
 
 /** Validate a sentence decision's shape. The sentence is named by identity —
  *  side plus index — and prose never travels this direction, so there is
@@ -768,34 +817,33 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       // actually ADOPTED into is settled by this accept, and the ledger
       // records exactly that (origin 'reroute', written at adopt).
       const adopted = new Map<string, string>()
-      // And WHICH run produced each adopted route, so the accept can stamp
-      // its commit onto that run's receipt (A67-4) — the artefact the
-      // receipt is committed beside.
-      const adoptedRun = new Map<string, string>()
+      // And WHICH run wrote each pending draft — any origin, a route adopted
+      // or a draft, a clean pass, a notes revision — so the accept can put
+      // the author's decision and its commit on that run's receipt (A67-4,
+      // A76-1). Read before the accept, while the ledger still answers.
+      const runOf = draftRuns(proseDraft().changes.map(c => c.file))
       // And WHICH route was adopted, so the clear below does not record the
       // adopted route as superseded by its own adoption (A67-10).
       const adoptedRoute = new Map<string, string>()
       for (const c of proseDraft().changes) {
         const gen = generatedFor(c.file)
         if (gen?.entry.origin === 'reroute' && gen.entry.scene) adopted.set(c.file, gen.entry.scene)
-        if (gen?.entry.origin === 'reroute' && gen.entry.run) adoptedRun.set(c.file, gen.entry.run)
         if (gen?.entry.origin === 'reroute' && gen.entry.route) adoptedRoute.set(c.file, gen.entry.route)
       }
       const result = proseAccept(typeof body.message === 'string' ? body.message : undefined, files, body.bases)
       // Kept here rather than inside proseAccept so story.ts and reroute.ts
       // stay acyclic, and never on a paragraph or sentence accept — those do
       // not settle the scene.
-      const stamped: string[] = []
-      for (const f of result.files) {
-        const scene = adopted.get(f)
-        if (scene) clearAlternatives(scene, { adopted: adoptedRoute.get(f) })
-        const run = adoptedRun.get(f)
-        if (run && stampReceiptCommit(run, result.hash)) stamped.push(path.join('history', `${run}.yaml`))
-      }
-      // The receipts join the record in their own commit, right behind the
-      // accept whose hash they now name (A67-4).
-      if (stamped.length) {
-        commitRecords(`Record: ${stamped.length === 1 ? 'the receipt' : `${stamped.length} receipts`} for ${result.hash}`, stamped)
+      const kept = joinDraftReceipts(runOf, result.files.map(f => ({ file: f, commit: result.hash, grain: 'scene' as const })), result.hash)
+      const afterwards: string[] = kept ? [] : [draftRecordLost(true)]
+      try {
+        for (const f of result.files) {
+          const scene = adopted.get(f)
+          if (scene) clearAlternatives(scene, { adopted: adoptedRoute.get(f) })
+        }
+      } catch (e) {
+        console.error('[error] the routes beside an accepted scene could not be cleared (the accept itself landed):', e)
+        afterwards.push(landedThenFailed('the other ways through that scene are still beside it — cancel them by hand'))
       }
       // The notes this change answered close with it (A63-4): the ledger
       // says which, so nothing is judged — the thought goes because the
@@ -806,14 +854,13 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       // if their accept had not happened. The words are in; what did not
       // finish is said as what it is.
       let notesResolved: string[] = []
-      let afterwards: string | null = null
       try {
         notesResolved = closeAnsweredNotes(result.files)
       } catch (e) {
         console.error('[error] the notes this accept answered could not be closed (the accept itself landed):', e)
-        afterwards = landedThenFailed('the notes it answered are still open — close them by hand, or ask again')
+        afterwards.push(landedThenFailed('the notes it answered are still open — close them by hand, or ask again'))
       }
-      json(res, 200, { ...result, notesResolved, ...(afterwards ? { afterwards } : {}) } satisfies ProseAcceptResponse)
+      json(res, 200, { ...result, notesResolved, ...(afterwards.length ? { afterwards: afterwards.join(' ') } : {}) } satisfies ProseAcceptResponse)
 
     },
   },
@@ -836,8 +883,10 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   '/api/prose/accept-paragraph': {
     POST: async (req, res) => {
       const t = paragraphTarget(await parsedBody(req))
+      const runOf = draftRuns([t.file])
       const out = proseAcceptParagraph(t.file, t, t.base, t.message)
-      json(res, 200, { ...out, notesResolved: notesClosedAfter(t.file) })
+      const kept = joinDraftReceipts(runOf, [{ file: t.file, commit: out.hash, grain: 'paragraph', verdict: 'accepted', side: t.side, paragraph: t.paragraph, settled: nothingPends(t.file) }], out.hash)
+      json(res, 200, { ...out, notesResolved: notesClosedAfter(t.file), ...(kept ? {} : { afterwards: draftRecordLost(true) }) })
     },
   },
 
@@ -847,7 +896,12 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   '/api/prose/reject-paragraph': {
     POST: async (req, res) => {
       const t = paragraphTarget(await parsedBody(req))
-      json(res, 200, proseRejectParagraph(t.file, t, t.base))
+      const runOf = draftRuns([t.file])
+      const out = proseRejectParagraph(t.file, t, t.base)
+      // A refusal commits no prose, so — as the discard — only the receipt
+      // joins the record (A76-1).
+      const kept = joinDraftReceipts(runOf, [{ file: t.file, commit: null, grain: 'paragraph', verdict: 'rejected', side: t.side, paragraph: t.paragraph, settled: nothingPends(t.file) }], `a refusal in ${t.file}`)
+      json(res, 200, { ...out, ...(kept ? {} : { afterwards: draftRecordLost(false) }) })
     },
   },
 
@@ -856,15 +910,20 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   '/api/prose/accept-sentence': {
     POST: async (req, res) => {
       const t = sentenceTarget(await parsedBody(req))
+      const runOf = draftRuns([t.file])
       const out = proseAcceptSentence(t.file, t, t.base, t.message)
-      json(res, 200, { ...out, notesResolved: notesClosedAfter(t.file) })
+      const kept = joinDraftReceipts(runOf, [{ file: t.file, commit: out.hash, grain: 'sentence', verdict: 'accepted', side: t.side, paragraph: t.paragraph, sentence: t.sentence, settled: nothingPends(t.file) }], out.hash)
+      json(res, 200, { ...out, notesResolved: notesClosedAfter(t.file), ...(kept ? {} : { afterwards: draftRecordLost(true) }) })
     },
   },
 
   '/api/prose/reject-sentence': {
     POST: async (req, res) => {
       const t = sentenceTarget(await parsedBody(req))
-      json(res, 200, proseRejectSentence(t.file, t, t.base))
+      const runOf = draftRuns([t.file])
+      const out = proseRejectSentence(t.file, t, t.base)
+      const kept = joinDraftReceipts(runOf, [{ file: t.file, commit: null, grain: 'sentence', verdict: 'rejected', side: t.side, paragraph: t.paragraph, sentence: t.sentence, settled: nothingPends(t.file) }], `a refusal in ${t.file}`)
+      json(res, 200, { ...out, ...(kept ? {} : { afterwards: draftRecordLost(false) }) })
     },
   },
 
@@ -1189,8 +1248,15 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     POST: async (req, res) => {
       const body = (await parsedBody(req)) as { file?: unknown; base?: unknown }
       if (typeof body.file !== 'string') throw new HttpError(400, 'file required')
+      // Before the discard, which clears the ledger entry that names the run.
+      const runOf = draftRuns([body.file])
       proseDiscard(body.file, body.base)
-      json(res, 200, { ok: true } satisfies OkResponse)
+      // The loudest refusal is a decision too (A76-1): it goes on the run's
+      // receipt, and the receipt — only the receipt — joins the record, as a
+      // never on a proposal does. A discard commits no prose, so there is no
+      // decision commit for the receipt to name.
+      const kept = joinDraftReceipts(runOf, [{ file: body.file, commit: null, grain: 'discard' }], `the discard of ${body.file}`)
+      json(res, 200, { ok: true, ...(kept ? {} : { afterwards: draftRecordLost(false) }) } satisfies ProseDiscardResponse)
     },
   },
 

@@ -955,7 +955,7 @@ export function adoptAlternative(scene: string, id: string, base?: unknown): Ado
   })
   // The author decided about this route, so its receipt joins the record —
   // ids, hashes and links only. The commit follows at the accept
-  // (`stampReceiptCommit`), which is the artefact this receipt is committed
+  // (`recordDraftDecision`), which is the artefact this receipt is committed
   // beside. A route written by an older arc carries no run and no receipt.
   // The author decided about this route: adopted (§4, the evidence log).
   recordDisposition({
