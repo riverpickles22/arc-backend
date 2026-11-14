@@ -63,7 +63,7 @@ export interface Scenario {
   /** what the fixture's `expect` field must say. `leak` is the one that
    *  never reaches the engine: the gate proves the brief and refuses before
    *  the send (A67-7), so the scenario carries no recorded answer. */
-  expect: 'lands' | 'overlap' | 'coverage-drop' | 'leak' | 'validator-refused' | 'leaned-on' | 'lock-touched' | 'conflict-found' | 'overreach'
+  expect: 'lands' | 'overlap' | 'coverage-drop' | 'leak' | 'validator-refused' | 'leaned-on' | 'lock-touched' | 'conflict-found' | 'overreach' | 'truncated'
   /** the story state and request, in one breath — copied into the fixture */
   scenario: string
   prepare?: () => Promise<void>
@@ -216,6 +216,11 @@ export const SCENARIOS: Scenario[] = [
     row: 'explore.scene.one-shot', name: 'coverage-drop', expect: 'coverage-drop',
     scenario: 'the example scene as shipped; another way through with the guidance "give the supply boat a line" — the answer claims a beat the destination never held',
     run: () => runReroute({ scene: SCENE, count: 1, guidance: 'give the supply boat a line' }),
+  },
+  {
+    row: 'explore.scene.one-shot', name: 'truncated', expect: 'truncated',
+    scenario: 'the example scene as shipped; another way through with the guidance "begin as late as you can" — the answer begins mid-word, has four paragraphs and about a sixth of the words of the scene, and its claims place beats at a seventh and a ninth paragraph; the answer-whole gate refuses it',
+    run: () => runReroute({ scene: SCENE, count: 1, guidance: 'begin as late as you can' }),
   },
   {
     row: 'explore.scene.one-shot', name: 'leak', expect: 'leak',

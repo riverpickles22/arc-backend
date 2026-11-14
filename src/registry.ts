@@ -142,6 +142,12 @@ export type GateId =
    *  predicate — is dropped (proven); one that only resembles a declined
    *  rule by wording is kept, with `resembles` recorded on it (argued). */
   | 'not-declined'
+  /** A75-1: the prose came back WHOLE. Proven, by count alone: every
+   *  paragraph a coverage claim names exists in the body, and the body holds
+   *  at least the row's `minShareOfSubject` of the words of the scene it
+   *  re-imagines. A lowercase first letter is recorded and never refuses on
+   *  its own. Says nothing about whether the prose is good. */
+  | 'answer-whole'
 
 /** How the answer is shaped, so a gate can read it without a model. */
 /** THE CRAFT MOVES (A69-4; §4, "The craft plan"). Q11, decided by the author
@@ -263,6 +269,15 @@ export interface RowBase extends Cell {
    *  must rest on. Declared on the row that owns the gate, so the number has
    *  one address and the gate's record names it. */
   minIndependentExamples?: number
+  /** THE FLOOR of the `answer-whole` gate (A75-1): the share of the
+   *  words of the MANUSCRIPT SCENE the answer re-imagines below which an
+   *  answer is not a whole one. Always the scene, on the rewrite row too, and
+   *  never the route being rewritten: a route is a way through the whole
+   *  scene, and measuring a rewrite against its parent would let a
+   *  fragment's rewrite pass as whole. Declared on the row, so the number has one
+   *  address and the gate's record names it. Absent: the gate does not
+   *  measure length, and its record says so. */
+  minShareOfSubject?: number
 }
 
 export interface SealedRow extends RowBase { pattern: 'sealed'; envelope: SealedEnvelope }
@@ -322,7 +337,7 @@ export interface RecordAgentRow extends RowBase { pattern: 'record-agent'; envel
  *  It carries the CELL because a stage has its own fixture directory: the
  *  write stage of a draft and the reading that precedes it are two different
  *  briefs, and `rowKey` is what tells them apart. */
-export type LaunchSpec = Cell & Pick<SealedRow, 'withholding' | 'withheld' | 'gates' | 'answer' | 'budget' | 'envelope'>
+export type LaunchSpec = Cell & Pick<SealedRow, 'withholding' | 'withheld' | 'gates' | 'answer' | 'budget' | 'envelope' | 'minShareOfSubject'>
 
 export type Row = SealedRow | StagedRow | FanOutRow | InvestigationRow | RecordAgentRow
 
@@ -461,7 +476,13 @@ nothing else inside the fence:
 /** The gates both route passes share — one set, so the two cannot drift
  *  apart gate by gate. `leak` is first and different in kind: it runs on the
  *  assembled brief BEFORE the send, and the rest run on the answer. */
-const ROUTE_GATES: readonly GateId[] = ['leak', 'locks', 'lock-order', 'withhold-literals', 'and-chain', 'sentence-length', 'overlap', 'coverage-tail']
+const ROUTE_GATES: readonly GateId[] = ['leak', 'locks', 'lock-order', 'withhold-literals', 'and-chain', 'sentence-length', 'overlap', 'coverage-tail', 'answer-whole']
+
+/** A ROUTE IS A WHOLE SCENE (A75-1): one that came back at under three
+ *  tenths of the words of the scene it re-imagines is a fragment, whatever
+ *  else its gates say. A deliberately spare route still clears it — a late
+ *  entry at half the length holds. */
+export const ROUTE_MIN_SHARE_OF_SUBJECT = 0.3
 
 /** What U4 and U5 withhold: the scene as it stands, less what the author
  *  has settled (locked paragraphs) and what the contract quotes as a literal
@@ -494,10 +515,11 @@ export const ROW_EXPLORE_SCENE: SealedRow = {
   answer: 'coverage-tail',
   budget: { outputTokens: ROUTE_OUTPUT_TOKENS, wallClockMs: ROUTE_WALL_CLOCK_MS },
   rules: REROUTE_RULES,
+  minShareOfSubject: ROUTE_MIN_SHARE_OF_SUBJECT,
   // The recorded answers this row is testable against. The leak scenario
   // has none on purpose: its gate refuses the brief before the send, so
   // there is never an answer to record (A67-7).
-  fixtures: ['lands', 'overlap', 'coverage-drop'],
+  fixtures: ['lands', 'overlap', 'coverage-drop', 'truncated'],
 }
 
 // ---- U5 · Explore · route · one-shot, withholding -------------------------
@@ -562,6 +584,9 @@ export const ROW_EXPLORE_ROUTE: SealedRow = {
   answer: 'coverage-tail',
   budget: { outputTokens: ROUTE_OUTPUT_TOKENS, wallClockMs: ROUTE_WALL_CLOCK_MS },
   rules: REROUTE_REVISE_RULES,
+  // Measured against the manuscript scene, not the route this rewrites — on
+  // purpose: a fragment's rewrite must not pass as whole by matching it.
+  minShareOfSubject: ROUTE_MIN_SHARE_OF_SUBJECT,
   fixtures: ['lands', 'overlap', 'coverage-drop'],
 }
 

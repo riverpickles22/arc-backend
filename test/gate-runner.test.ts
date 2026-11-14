@@ -125,6 +125,22 @@ test('nothing retries further: two refusals end the run refused, with both attem
   assert.equal(fs.readdirSync(path.join(STORY, '.arc', 'runs', out.run!, 'refused')).length, 1, 'both answers were the same text, kept once under its fingerprint')
 })
 
+test('a fragment goes through the one repair like any refusal; refused twice, the author reads which proof failed (A75-1)', async () => {
+  // Two paragraphs, enough words to clear the floor, and a claim at a ninth.
+  const FRAGMENT = 'ay in, by the door at the foot of the light.\n\nAnd out again by the stairs.\n\n=== BRIEFING ===\nwhere each beat lands.\n\n```json\n{"coverage": [{"item": "The wreck is known before it is seen.", "paragraph": 9}]}\n```'
+  script({ text: FRAGMENT }, { text: FRAGMENT })
+  const { out, receipt } = await route()
+  assert.equal(out.alternatives.length, 0)
+  assert.equal(launches().length, 2, 'the one repair, and no more')
+  assert.match(launches()[1].prompt, /YOUR PREVIOUS ANSWER WAS REFUSED: that answer did not come back whole/)
+  assert.equal(receipt!.ending, 'refused')
+  const refused = receipt!.gates!.filter(g => g.verdict === 'refused')
+  assert.deepEqual(refused.map(g => [g.gate, g.attempt, g.proof]), [['answer-whole', 1, 'paragraphs'], ['answer-whole', 2, 'paragraphs']])
+  const line = out.refused[0].outcome!
+  assert.match(line, /would not keep it: the answer places its beats in paragraphs it does not have \(9 against 2\)/)
+  assert.doesNotMatch(line, /answer-whole|\bgit\b|\bcommit\b|\bagents?\b/i)
+})
+
 test('a stop during the repair reaches the author as a stop, and a gate refusal keeps its own ending', async () => {
   // A gate refuses, then the repair fails on the engine: the ending stays
   // `refused`, because that is what stopped the run — and the repair's own
@@ -173,7 +189,9 @@ test('a missing coverage marker refuses the write, because the gate cannot run',
 
 test('a gate that genuinely cannot judge is recorded as such — never as passed', async () => {
   // Two paragraphs is under the overlap gate's floor, so it cannot judge.
-  script({ text: `A short way in.\n\nAnd out again.${TAIL}` })
+  // Long enough to clear the answer-whole floor (A75-1), which is a
+  // different gate measuring a different thing.
+  script({ text: `A short way in, by the door at the foot.\n\nAnd out again by the stairs.${TAIL}` })
   const { out, receipt } = await route()
   assert.equal(out.alternatives.length, 1)
   const overlap = receipt!.gates!.find(g => g.gate === 'overlap')!

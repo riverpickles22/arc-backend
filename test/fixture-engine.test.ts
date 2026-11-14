@@ -89,11 +89,12 @@ test('every fixture on disk has a scenario, and every scenario a fixture', () =>
 })
 
 test('U4 and U5 each ship the scenarios the slice needs: one that lands, one the leak gate fires on, one the overlap gate refuses, one with a coverage claim to drop', () => {
-  for (const row of ['explore.scene.one-shot', 'explore.route.one-shot']) {
-    assert.deepEqual(SCENARIOS.filter(s => s.row === row).map(s => s.expect).sort(), ['coverage-drop', 'lands', 'leak', 'overlap'], row)
-    // Three of the four send a brief and have a recorded answer; the leak
+  // U4 carries one more: the fragment the answer-whole gate refuses (A75-1).
+  for (const [row, extra] of [['explore.scene.one-shot', ['truncated']], ['explore.route.one-shot', []]] as const) {
+    assert.deepEqual(SCENARIOS.filter(s => s.row === row).map(s => s.expect).sort(), ['coverage-drop', 'lands', 'leak', 'overlap', ...extra].sort(), row)
+    // All but the leak send a brief and have a recorded answer; the leak
     // is refused before the send, so it has none.
-    assert.deepEqual(loadFixtures().filter(f => f.row === row).map(f => f.expect).sort(), ['coverage-drop', 'lands', 'overlap'], row)
+    assert.deepEqual(loadFixtures().filter(f => f.row === row).map(f => f.expect).sort(), ['coverage-drop', 'lands', 'overlap', ...extra].sort(), row)
   }
 })
 
@@ -460,6 +461,30 @@ for (const s of SCENARIOS) {
         assert.equal(seen.length, 2, 'one repair was attempted')
         assert.match(result.refused[0].reason, /arc tried once more, and: that pass ended before it answered/, 'the repair could not be answered, and the author is told so in words')
         break
+      case 'truncated': {
+        // A FRAGMENT, WITH EVERY OTHER GATE GREEN (A75-1): the locks held,
+        // the overlap could not judge four paragraphs, the coverage tail is
+        // there — and the body is a sixth of the scene, opens mid-word, and
+        // says its beats land in paragraphs it does not have.
+        assert.deepEqual(result.alternatives, [], 'nothing lands')
+        assert.equal(result.refused.length, 1)
+        assert.match(result.refused[0].reason, /^that answer did not come back whole: it places its beats as far as paragraph 9 and has 4 paragraphs, and it is \d+% as long as the scene/,
+          'the refusal names both proofs, in the author\'s words')
+        assert.equal(seen.length, 2, 'one repair was attempted, and the store had no answer for it')
+        const receipt = readWorkingReceipt(result.run!)!
+        assert.equal(receipt.ending, 'refused')
+        const first = receipt.gates.filter(g => g.attempt === 1)
+        assert.ok(first.filter(g => g.stage === 'answer' && g.gate !== 'answer-whole').every(g => g.verdict !== 'refused'), 'every gate before it held')
+        const gate = first.find(g => g.gate === 'answer-whole')!
+        assert.equal(gate.verdict, 'refused')
+        assert.equal(gate.proof, 'paragraphs+floor')
+        assert.deepEqual([gate.measured, gate.bar], [9, 4], 'the highest paragraph named, against the paragraphs the body has')
+        assert.ok(gate.measured_against!.includes('opening: the body begins on a lowercase letter'), 'the mid-word opening is recorded')
+        assert.deepEqual(gate.floor, { measured: 0.173, bar: 0.3, bar_from: 'minShareOfSubject on the explore · scene · one-shot row, as a share of the words of the scene itself' },
+          'the floor keeps its own figures beside the paragraph proof: 104 of 600 words')
+        assert.match(result.refused[0].outcome ?? '', /would not keep it: the answer is too short to be the whole scene, and places its beats in paragraphs it does not have/)
+        break
+      }
       case 'coverage-drop': {
         const alt = expectLanded(result.alternatives[0], result.refused)
         // The claim named a beat the destination never held: dropped, and

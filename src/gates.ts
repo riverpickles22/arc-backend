@@ -151,6 +151,10 @@ export interface ParsedAnswer {
   prose: string
   briefing: string
   coverage: RouteCoverage[] | null
+  /** EVERY CLAIM THE TAIL MADE, before resolution (A75-1): a claim that was
+   *  dropped still said where a beat lands, and `answer-whole` holds the
+   *  answer to the paragraphs it says it has. Absent where no tail is read. */
+  claims?: RouteCoverage[] | null
   /** claims that did not resolve, by reason */
   dropped: DroppedClaim[]
   /** how many claims the pass made that DID resolve — not the destination's
@@ -251,7 +255,10 @@ type GateVerdict =
   | { verdict: 'held' | 'could not judge' | 'not applicable'; record: Omit<GateRecord, 'gate' | 'attempt' | 'verdict'> }
   | { verdict: 'refused'; reason: string; record: Omit<GateRecord, 'gate' | 'attempt' | 'verdict'> }
 
-type GateFn = (ctx: ProseGateCtx, a: ParsedAnswer) => GateVerdict
+/** The row is the third argument for a gate whose bar the ROW states
+ *  (A75-1); absent where the gate is run on its own, and a gate that needs
+ *  it then says what it did not check. */
+type GateFn = (ctx: ProseGateCtx, a: ParsedAnswer, row?: LaunchSpec) => GateVerdict
 
 /** A scene-file answer is the one whose body opens with a binding. */
 const row_answer_is_scene_file = (a: ParsedAnswer): boolean => a.prose !== a.body
@@ -532,7 +539,75 @@ export const GATES: Partial<Record<GateId, GateFn>> = {
     // nothing.
     return held({ measured: a.coverage.filter(c => c.paragraph !== null).length, bar: ctx.destination.length, bar_from, measured_against: ctx.destination, stage: 'answer' })
   },
+  /** THE ANSWER CAME BACK WHOLE (A75-1). Proven, by count: no other gate
+   *  reads the prose as a whole answer — coverage-tail resolves claims
+   *  against the destination, overlap scores a fragment well, the shape only
+   *  asks for a body and a briefing. Two proofs, each of which refuses:
+   *
+   *    paragraphs   every paragraph a coverage claim names is one the body
+   *                 has — a briefing that places beats at ¶7 and ¶9 of a
+   *                 four-paragraph body is describing prose that did not
+   *                 come back
+   *    floor        the body holds at least the row's `minShareOfSubject`
+   *                 of the words of the scene it re-imagines; a row that
+   *                 states no floor is not measured, and the record says so
+   *
+   *  And one observation that never refuses alone: a body whose first
+   *  character is a lowercase letter began mid-word or mid-sentence. */
+  'answer-whole': (ctx, a, row) => {
+    const paras = paragraphsOf(a.prose).length
+    const named = (a.claims ?? a.coverage ?? []).map(c => c.paragraph).filter((p): p is number => p !== null)
+    const highest = named.length ? Math.max(...named) : 0
+    const paragraphsFail = highest > paras
+    const floor = row?.minShareOfSubject
+    // THE SCENE, on every row — the rewrite's included: a route is a way
+    // through the whole scene, so its parent route is never the measure.
+    const subject = wordsIn(ctx.sceneBody)
+    const ratio = subject ? wordsIn(a.prose) / subject : null
+    // Compared unrounded; only what goes on the record is rounded, so 0.295
+    // does not hold against 0.30 — and to three places, so the record of a
+    // refusal never reads as the bar itself.
+    const share = ratio === null ? null : Math.round(ratio * 1000) / 1000
+    // A scene with no words is no subject to measure against: not checked.
+    const floorChecked = floor !== undefined && ratio !== null && share !== null
+    const floorFail = floorChecked && ratio < floor
+    const floor_from = row ? `minShareOfSubject on the ${row.job} · ${row.scope} · ${row.mode} row, as a share of the words of the scene itself` : 'no row was given'
+    const observed = [
+      `paragraphs: the claims name up to ${highest}, the body has ${paras}`,
+      floorChecked
+        ? `floor: ${share} of the scene's words, against ${floor}`
+        : floor === undefined ? 'floor: not checked — the row states no share of the scene' : 'floor: not checked — the scene has no words',
+      ...(/^\p{Ll}/u.test(a.prose.trimStart()) ? ['opening: the body begins on a lowercase letter'] : []),
+    ]
+    const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
+    const saysParas = `it places its beats as far as paragraph ${highest} and has ${plural(paras, 'paragraph')}`
+    const saysFloor = floorFail ? `it is ${percentBelow(ratio)}% as long as the scene it re-imagines, where arc keeps one at ${Math.round(floor * 100)}% or more` : ''
+    if (paragraphsFail) {
+      return refuse(
+        `that answer did not come back whole: ${saysParas}${floorFail ? `, and ${saysFloor}` : ''}`,
+        { stage: 'answer', proof: floorFail ? 'paragraphs+floor' : 'paragraphs', measured: highest, bar: paras,
+          bar_from: "the answer's own coverage claims, against the paragraphs of its body", measured_against: observed,
+          // Both failed: the floor keeps its own figures, structured, beside
+          // the paragraph proof's.
+          ...(floorFail ? { floor: { measured: share, bar: floor, bar_from: floor_from } } : {}) })
+    }
+    if (floorFail) {
+      return refuse(`that answer did not come back whole: ${saysFloor}`,
+        { stage: 'answer', proof: 'floor', measured: share, bar: floor, bar_from: floor_from, measured_against: observed })
+    }
+    return floorChecked
+      ? held({ stage: 'answer', measured: share, bar: floor, bar_from: floor_from, measured_against: observed })
+      : held({ stage: 'answer', measured: highest, bar: paras, bar_from: "the answer's own coverage claims, against the paragraphs of its body", measured_against: observed })
+  },
 }
+
+/** Words, as the floor counts them: runs of anything but space, the same
+ *  rule on both sides of the share. */
+const wordsIn = (s: string): number => s.split(/\s+/).filter(Boolean).length
+
+/** A share under a floor, as a whole percentage the author reads: rounded
+ *  DOWN, so a body at 29.5% never reads as the 30% it fell short of. */
+const percentBelow = (share: number): number => Math.floor(share * 100 + 1e-9)
 
 /** U7's gates, one proposal at a time (A74-1). `a.body` is the proposal as
  *  JSON. Each refusal DROPS that proposal and never the answer. */
@@ -975,7 +1050,7 @@ export function runRowGates(row: LaunchSpec, ctx: ProseGateCtx, text: string, at
   const a: ParsedAnswer = {
     body: body.trim(),
     prose: row.answer === 'scene-file' ? withoutFrontmatter(body.trim()) : body.trim(),
-    briefing: parsedTail.briefing, coverage: resolved.coverage, dropped, returned: resolved.returned, overlap: null,
+    briefing: parsedTail.briefing, coverage: resolved.coverage, claims: parsedTail.coverage, dropped, returned: resolved.returned, overlap: null,
     leansOn: leans.leansOn,
   }
 
@@ -989,7 +1064,7 @@ export function runRowGates(row: LaunchSpec, ctx: ProseGateCtx, text: string, at
       gates.push({ gate: id, verdict: 'could not judge', attempt, ...(launch ? { launch } : {}), stage: 'answer', bar_from: 'this arc has no implementation for that gate' })
       return { ok: false, reason: `arc could not check ${id} on that answer, so nothing was written. Ask again.`, gates }
     }
-    const out = fn(ctx, a)
+    const out = fn(ctx, a, row)
     gates.push({ gate: id, verdict: out.verdict, attempt, ...(launch ? { launch } : {}), ...out.record })
     if (out.verdict === 'refused') {
       return { ok: false, reason: out.reason, gates }

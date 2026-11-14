@@ -401,6 +401,12 @@ export interface GateRecord {
   launch?: string
   /** the stage a refusal happened at, when it never reached the engine */
   stage?: 'intake' | 'slice' | 'brief' | 'launch' | 'answer' | 'write'
+  /** which of a gate's proofs refused, for a gate that has more than one
+   *  (`answer-whole`, A75-1) — so the author's sentence can name it */
+  proof?: string
+  /** the floor proof's own figures when it failed BESIDE another proof, so
+   *  `measured`/`bar` can carry the first and nothing is left to prose */
+  floor?: { measured: number; bar: number; bar_from: string }
 }
 
 /** The cell a request resolved to, and the gesture the author made. */
@@ -568,6 +574,11 @@ const GATE_WORDS: Record<string, string> = {
   'sentence-length': 'the sentences ran longer than the style contract allows',
   overlap: 'it reused too much of the original wording',
   'coverage-tail': 'the answer did not say where the beats land',
+  // A75-1: one gate, two proofs, and the sentence names the one that failed.
+  'answer-whole': 'the answer did not come back whole',
+  'answer-whole:paragraphs': 'the answer places its beats in paragraphs it does not have',
+  'answer-whole:floor': 'the answer is too short to be the whole scene',
+  'answer-whole:paragraphs+floor': 'the answer is too short to be the whole scene, and places its beats in paragraphs it does not have',
   validator: 'the answer did not validate',
   'leaned-on': 'what the draft rests on did not check out',
   'options-shape': 'the wordings did not come back as a list arc could read',
@@ -598,6 +609,7 @@ const GATE_NAMES: Record<string, string> = {
   'sentence-length': 'sentence length',
   overlap: 'wording reused from the scene',
   'coverage-tail': 'where the beats land',
+  'answer-whole': 'the answer came back whole',
   validator: 'the answer validates',
   'leaned-on': 'what the prose rests on is settled',
   shape: 'the answer came back in two parts',
@@ -625,7 +637,15 @@ export const gateName = (gate: string): string => GATE_NAMES[gate] ?? `the ${gat
 /** Why one gate refused, rendered from its record — never from the answer's
  *  own words, which a model wrote. */
 function gateSentence(g: GateRecord): string {
-  const what = GATE_WORDS[g.gate] ?? `the ${g.gate} check did not hold`
+  const what = (g.proof ? GATE_WORDS[`${g.gate}:${g.proof}`] : undefined) ?? GATE_WORDS[g.gate] ?? `the ${g.gate} check did not hold`
+  // A floor is a share, and the author reads it as one: whole percentages,
+  // the same notation as the gate's own reason (A75-1).
+  // The share is rounded down, so 29.5% never reads as the 30% it missed.
+  const pct = (n: unknown, below = false) => `${below ? Math.floor(Number(n) * 100 + 1e-9) : Math.round(Number(n) * 100)}%`
+  if (g.gate === 'answer-whole' && g.proof === 'floor') return `${what} (${pct(g.measured, true)} against ${pct(g.bar)})`
+  if (g.gate === 'answer-whole' && g.proof === 'paragraphs+floor' && g.floor) {
+    return `${what} (${pct(g.floor.measured, true)} against ${pct(g.floor.bar)}; paragraph ${g.measured} against ${g.bar})`
+  }
   const measured = g.measured === null || g.measured === undefined ? ''
     : g.bar === null || g.bar === undefined ? ` (${g.measured})`
     : ` (${g.measured} against ${g.bar})`
