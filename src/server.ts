@@ -35,6 +35,8 @@ import type { DecisionHistoryResponse, PutBackPreview, PutBackResult, ProseDraft
   OkResponse,
   ProseAcceptResponse,
   ProseDiscardResponse,
+  ProsePartAcceptResponse,
+  ProsePartRejectResponse,
   ProseCheckHit,
   ProseChecksResponse,
   ProseParagraphRequest,
@@ -886,7 +888,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       const runOf = draftRuns([t.file])
       const out = proseAcceptParagraph(t.file, t, t.base, t.message)
       const kept = joinDraftReceipts(runOf, [{ file: t.file, commit: out.hash, grain: 'paragraph', verdict: 'accepted', side: t.side, paragraph: t.paragraph, settled: nothingPends(t.file) }], out.hash)
-      json(res, 200, { ...out, notesResolved: notesClosedAfter(t.file), ...(kept ? {} : { afterwards: draftRecordLost(true) }) })
+      json(res, 200, { ...out, notesResolved: notesClosedAfter(t.file), ...(kept ? {} : { afterwards: draftRecordLost(true) }) } satisfies ProsePartAcceptResponse)
     },
   },
 
@@ -901,7 +903,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       // A refusal commits no prose, so — as the discard — only the receipt
       // joins the record (A76-1).
       const kept = joinDraftReceipts(runOf, [{ file: t.file, commit: null, grain: 'paragraph', verdict: 'rejected', side: t.side, paragraph: t.paragraph, settled: nothingPends(t.file) }], `a refusal in ${t.file}`)
-      json(res, 200, { ...out, ...(kept ? {} : { afterwards: draftRecordLost(false) }) })
+      json(res, 200, { ...out, ...(kept ? {} : { afterwards: draftRecordLost(false) }) } satisfies ProsePartRejectResponse)
     },
   },
 
@@ -913,7 +915,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       const runOf = draftRuns([t.file])
       const out = proseAcceptSentence(t.file, t, t.base, t.message)
       const kept = joinDraftReceipts(runOf, [{ file: t.file, commit: out.hash, grain: 'sentence', verdict: 'accepted', side: t.side, paragraph: t.paragraph, sentence: t.sentence, settled: nothingPends(t.file) }], out.hash)
-      json(res, 200, { ...out, notesResolved: notesClosedAfter(t.file), ...(kept ? {} : { afterwards: draftRecordLost(true) }) })
+      json(res, 200, { ...out, notesResolved: notesClosedAfter(t.file), ...(kept ? {} : { afterwards: draftRecordLost(true) }) } satisfies ProsePartAcceptResponse)
     },
   },
 
@@ -923,7 +925,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
       const runOf = draftRuns([t.file])
       const out = proseRejectSentence(t.file, t, t.base)
       const kept = joinDraftReceipts(runOf, [{ file: t.file, commit: null, grain: 'sentence', verdict: 'rejected', side: t.side, paragraph: t.paragraph, sentence: t.sentence, settled: nothingPends(t.file) }], `a refusal in ${t.file}`)
-      json(res, 200, { ...out, ...(kept ? {} : { afterwards: draftRecordLost(false) }) })
+      json(res, 200, { ...out, ...(kept ? {} : { afterwards: draftRecordLost(false) }) } satisfies ProsePartRejectResponse)
     },
   },
 
