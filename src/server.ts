@@ -106,7 +106,8 @@ function parsePlan(raw: unknown): CraftPlanned {
   }
 }
 import { currentEngine } from './engine'
-import { authorStylePath, commitAuthorStyle, loadStyleLayers } from './style'
+import { authorStylePath, commitAuthorStyle, loadStyleLayers, styleContract } from './style'
+import { countableChecks } from './countable'
 import { DISMISSED_REL, QUEUE_REL, ratifyRule, ratifyTouchstone, readDismissed, readQueue, readTouchstones } from './style-queue'
 import { joinStyleReceipt, stampStyleDecision } from './style-receipt'
 import { runLearnStyle } from './learn-style'
@@ -122,7 +123,7 @@ import { addRouteNote, adoptAlternative, clearAlternatives, deleteRouteNote, dro
 import { doctorRecords } from './doctor'
 import { generatedFor } from './ledger'
 import type { AdoptRouteResponse, DoctorRecordsResponse, RerouteResponse, RouteListResponse, WorkNotesMode, WorkNotesResponse } from 'arc-canon-graph/api-types.ts'
-import { createLock, locks, locksOn, removeLock } from './locks'
+import { createLock, lockResolver, locks, removeLock } from './locks'
 import { addNote, deleteNote, listNotes, updateNote as reviseNote } from './notes'
 import { decideWork, workNote } from './work'
 import { closeRun, deleteRunTranscripts, getRun, listRuns, observe, openRun, pendingOutcome, registerRun, stopRun } from './runs'
@@ -1311,21 +1312,31 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   '/api/prose/checks': {
     GET: (_req, res) => {
       const findings: ProseCheckHit[] = []
-      for (const sc of proseScenes()) {
+      // The ratified contract, read once: the countable rules (A77-1) list a
+      // sentence only over a number the contract states, through the gates'
+      // own readers and counter. The proposed layer is never read here.
+      const style = styleContract()
+      const scenes = proseScenes()
+      const locksFor = lockResolver(scenes)
+      for (const sc of scenes) {
         const hits = proseChecks(sc.body)
-        if (!hits.length) continue
+        const standing = locksFor(sc.scene, sc.body).filter(l =>
+          l.resolution.state === 'resolved' || l.resolution.state === 'drifted')
         // A finding inside settled prose names its lock — the author reads
         // "there is a typo, and you locked it" and decides; nothing repairs.
-        const locked = new Map(locksOn(sc.scene, sc.body)
-          .filter(l => l.resolution.paragraph !== null &&
-            (l.resolution.state === 'resolved' || l.resolution.state === 'drifted'))
+        const locked = new Map(standing
+          .filter(l => l.resolution.paragraph !== null)
           .map(l => [l.resolution.paragraph!, l.id]))
-        const wide = locksOn(sc.scene, sc.body).find(l =>
-          (l.scope === 'scene' || l.scope === 'chapter') &&
-          (l.resolution.state === 'resolved' || l.resolution.state === 'drifted'))
+        const wide = standing.find(l => l.scope === 'scene' || l.scope === 'chapter')
         for (const h of hits) {
           const lock = locked.get(h.paragraph) ?? wide?.id
           findings.push({ scene: sc.scene, file: sc.file, ...h, ...(lock ? { lock } : {}) })
+        }
+        // A count is never held against settled prose: a locked paragraph,
+        // or every paragraph under a scene or chapter lock, is not counted.
+        if (wide) continue
+        for (const h of countableChecks(sc.body, style, (_p, i) => locked.has(i))) {
+          findings.push({ scene: sc.scene, file: sc.file, ...h })
         }
       }
       json(res, 200, { findings } satisfies ProseChecksResponse)

@@ -36,7 +36,7 @@
 // overlap — which proves the answer reused too much of the original WORDING
 // and nothing more. Whether the scene took a different dramatic route is a
 // reading; it stays argued, in the briefing and in the author's eye.
-import { andCapFromContract, wordCapFromContract } from './countable'
+import { andCapFromContract, sentencesOver, wordCapFromContract } from './countable'
 export { andCapFromContract, wordCapFromContract }
 import fs from 'node:fs'
 import path from 'node:path'
@@ -44,7 +44,7 @@ import { createHash } from 'node:crypto'
 import { dump as yamlDump, load as yamlLoad } from 'js-yaml'
 import type { CanonDoc, ProseScene, ResolvedAnnotation, ResolvedLock, SceneContract } from 'arc-canon-graph'
 import type { AdoptRouteResponse, DroppedClaim, RerouteRefusal, RerouteResponse, RouteAlternative, RouteCoverage, RouteListResponse, RouteLockNotice, RouteNote, RouteReceipt } from 'arc-canon-graph/api-types.ts'
-import { dateOf, splitSentences } from 'arc-canon-graph'
+import { dateOf } from 'arc-canon-graph'
 import { buildContextPack } from 'arc-canon-graph/context-pack-lib.ts'
 import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
 import { STORY } from './config'
@@ -577,32 +577,19 @@ export function lexicalOverlap(alternative: string, current: string, locked: str
 /** PROVEN: sentences that join more than `cap` "and"s. The count is the
  *  decidable half of §3's rule; whether a chain is one process deepening or
  *  a procedure stays the author's reading. Locked paragraphs are the
- *  author's settled text and are never counted against. */
+ *  author's settled text and are never counted against. The counter is
+ *  countable.ts's, shared with /api/prose/checks (A77-1). */
 export function andChainViolations(body: string, cap: number, locked: string[] = []): { sentence: string; ands: number }[] {
   const lockedNorm = new Set(locked.map(norm))
-  const out: { sentence: string; ands: number }[] = []
-  for (const para of paragraphsOf(body)) {
-    if (lockedNorm.has(norm(para))) continue
-    for (const sentence of splitSentences(para)) {
-      const ands = (sentence.text.match(/\band\b/gi) ?? []).length
-      if (ands > cap) out.push({ sentence: sentence.text.trim(), ands })
-    }
-  }
-  return out
+  return sentencesOver(body, 'and-chain', cap, para => lockedNorm.has(norm(para)))
+    .map(o => ({ sentence: o.sentence, ands: o.count }))
 }
 
 /** PROVEN: sentences longer than `cap` words; locked paragraphs never counted. */
 export function longSentenceViolations(body: string, cap: number, locked: string[] = []): { sentence: string; words: number }[] {
   const lockedNorm = new Set(locked.map(norm))
-  const out: { sentence: string; words: number }[] = []
-  for (const para of paragraphsOf(body)) {
-    if (lockedNorm.has(norm(para))) continue
-    for (const sentence of splitSentences(para)) {
-      const n = words(sentence.text)
-      if (n > cap) out.push({ sentence: sentence.text.trim(), words: n })
-    }
-  }
-  return out
+  return sentencesOver(body, 'sentence-length', cap, para => lockedNorm.has(norm(para)))
+    .map(o => ({ sentence: o.sentence, words: o.count }))
 }
 
 /** PROVEN: locked paragraphs keep their relative order. A missing one is

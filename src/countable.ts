@@ -4,6 +4,9 @@
 // enforce. One definition: the prose gates (reroute.ts re-exports these) and
 // U12's gates (rule-gates.ts) both read through here.
 
+import { splitSentences } from 'arc-canon-graph'
+import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
+
 /** The one countable style rule the contract states as a number: "A chain
  *  stops at three." Read from the ratified contract, never from a constant,
  *  so the author owns the number; absent from the contract, there is no gate.
@@ -28,3 +31,94 @@ export function wordCapFromContract(style: string): number | null {
   return Number.isInteger(n) && n > 0 ? n : null
 }
 
+// ---- the counter: one for the gates, one for the manuscript checks (A77-1) --
+//
+// The gates ask of an answer "which sentences go over the contract's number";
+// /api/prose/checks asks the same of the manuscript. One counter answers both,
+// so the number the author reads beside a sentence is the number a gate would
+// refuse it at. What is skipped is the caller's to say — the gates know their
+// locked paragraphs by text, the checks by paragraph index — and the counter
+// never decides it.
+
+/** The two countable rules, by the name a finding and a gate both carry. */
+export type CountableRule = 'and-chain' | 'sentence-length'
+
+/** What each rule counts in one sentence. */
+export const countIn: Record<CountableRule, (sentence: string) => number> = {
+  'and-chain': s => (s.match(/\band\b/gi) ?? []).length,
+  'sentence-length': s => s.split(/\s+/).filter(Boolean).length,
+}
+
+export interface OverTheBar {
+  /** 0-based paragraph index, the manuscript's own addressing */
+  paragraph: number
+  sentence: string
+  count: number
+}
+
+/** PROVEN: every sentence whose count under `rule` is over `bar`. The count
+ *  is the decidable half of the rule; what the number means is the author's
+ *  ratified contract. `skip` names paragraphs never counted against — the
+ *  locked ones, the author's settled text. */
+export function sentencesOver(
+  body: string,
+  rule: CountableRule,
+  bar: number,
+  skip: (paragraph: string, index: number) => boolean = () => false,
+): OverTheBar[] {
+  const out: OverTheBar[] = []
+  paragraphsOf(body).forEach((para, paragraph) => {
+    if (skip(para, paragraph)) return
+    for (const sentence of splitSentences(para)) {
+      const count = countIn[rule](sentence.text)
+      if (count > bar) out.push({ paragraph, sentence: sentence.text.trim(), count })
+    }
+  })
+  return out
+}
+
+export interface CountableFinding {
+  check: CountableRule
+  paragraph: number
+  /** the start of the sentence, verbatim — only the author's words; the
+   *  count and the bar travel as fields and the viewer says them */
+  excerpt: string
+  register: 'proven'
+  measured: number
+  bar: number
+}
+
+const START_CHARS = 48
+
+/** The start of a sentence, cut at a word so the excerpt reads. */
+export function sentenceStart(sentence: string): string {
+  if (sentence.length <= START_CHARS) return sentence
+  const cut = sentence.slice(0, START_CHARS)
+  const at = cut.lastIndexOf(' ')
+  return `${(at > 0 ? cut.slice(0, at) : cut).replace(/[\s,;:—-]+$/, '')}…`
+}
+
+/** The manuscript side: every sentence over a number the contract states,
+ *  read through the same readers and the same counter the gates use. A rule
+ *  the contract does not state lists nothing. Nothing here offers a repair. */
+export function countableChecks(
+  body: string,
+  style: string,
+  skip: (paragraph: string, index: number) => boolean = () => false,
+): CountableFinding[] {
+  const bars: [CountableRule, number | null][] = [
+    ['and-chain', andCapFromContract(style)],
+    ['sentence-length', wordCapFromContract(style)],
+  ]
+  const out: CountableFinding[] = []
+  for (const [rule, bar] of bars) {
+    if (bar === null) continue
+    for (const o of sentencesOver(body, rule, bar, skip)) {
+      out.push({
+        check: rule, paragraph: o.paragraph, register: 'proven', measured: o.count, bar,
+        excerpt: sentenceStart(o.sentence),
+      })
+    }
+  }
+  return out.sort((a, b) => a.paragraph - b.paragraph)
+}
