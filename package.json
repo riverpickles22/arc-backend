@@ -14,6 +14,8 @@
     "redraft": "tsx src/redraft-cli.ts",
     "notes": "tsx src/notes-cli.ts",
     "measure": "tsx src/measure-cli.ts",
+    "eval:record": "tsx src/eval-cli.ts record",
+    "eval:compare": "tsx src/eval-cli.ts compare",
     "fixtures:rekey": "tsx test/rekey-fixtures.ts",
     "check": "npm run typecheck && npm run lint && npm test"
   },

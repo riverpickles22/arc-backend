@@ -75,7 +75,7 @@ const refuseAtCommit = (): void => {
  *  a allow-list on purpose: a verb nobody here has used yet fails the check
  *  rather than slipping through it. */
 const READ_ONLY = new Set([
-  'rev-parse', 'status', 'show', 'log', 'ls-files', 'ls-tree', 'diff', 'cat-file',
+  'rev-parse', 'status', 'show', 'log', 'ls-files', 'ls-tree', 'diff', 'cat-file', 'check-ignore',
   'for-each-ref', 'symbolic-ref', 'merge-base', 'rev-list', 'describe', 'blame', 'grep',
 ])
 

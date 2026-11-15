@@ -22,7 +22,7 @@ import path from 'node:path'
 import type { CraftPlanned, DraftSceneResponse } from 'arc-canon-graph'
 import { STORY } from './config'
 import { canonJson } from './canon'
-import { currentEngine, SDK_ENGINE_FIX } from './engine'
+import { currentEngine, SDK_ENGINE_FIX, type Brief } from './engine'
 import { styleContract } from './style'
 import { recordGenerated } from './ledger'
 import { landingSentence } from './refusal'
@@ -44,6 +44,45 @@ import { sha16 } from './records'
 import { andCapFromContract, wordCapFromContract } from './countable'
 import { cellOf, endingOf, gateCtx as gateCtxOf } from './gate-ctx'
 import type { CanonDoc } from 'arc-canon-graph'
+
+/** THE WRITING BRIEF OF A DRAFT, IN ONE PLACE (A82-3): rules · slice · ask.
+ *  The pass calls this, and so does the evaluation recorder (`eval.ts`) —
+ *  which exists to say whether a change to the rules made the prose better,
+ *  and can only say it about the brief the pass really sends. A second
+ *  assembly would drift from the first and the comparison would be of
+ *  something nobody runs. Pure: it reads the record and writes nothing. */
+export function writeBriefFor(
+  row: StagedRow,
+  stage: StagedRow['stages'][number],
+  at: {
+    chapterId: string; sceneId: string; file: string
+    said: string; plan?: { moves: CraftPlanned['moves'] }
+    chapterScenes: { scene: string; file: string }[]
+  },
+): { slice: ReturnType<typeof assembleWritingSlice>; brief: Brief } {
+  // The STAGE's slice and ceiling, not the row's: a stage is a launch, and
+  // the first stage with a narrower slice must not be briefed from the job.
+  const slice = assembleWritingSlice(
+    { ...row, slice: stage.slice, budget: stage.budget },
+    { chapter: at.chapterId, sceneId: at.sceneId },
+    { stage: 'write', intent: { line: at.said || undefined, plan: at.plan } })
+  const assignment = draftUserMessage(at.chapterId, at.sceneId, at.file, undefined, at.chapterScenes)
+  return {
+    slice,
+    brief: {
+      blocks: [
+        { id: 'rules', text: stage.rules, cached: true },
+        { id: 'slice', text: slice.render(), cached: true },
+        { id: 'ask', text: assignment, cached: false },
+      ],
+    },
+  }
+}
+
+/** What the seam is handed for the writing stage: the stage's own budget,
+ *  gates and answer, under the row's cell, withholding and envelope. */
+export const writeLaunchSpec = (row: StagedRow, stage: StagedRow['stages'][number]) =>
+  ({ ...stage, ...cellOf(row, 'write'), withholding: row.withholding, withheld: row.withheld, envelope: row.envelope })
 
 /** Scene file slot for a chapter: directory from the chapter id's number
  *  (ch.00-prologue → prose/ch-00), next scene number from existing files.
@@ -167,9 +206,7 @@ export async function runDraft(
   // here, in the author's words, and nothing is spent finding out. The
   // STAGE's slice and ceiling, not the row's: a stage is a launch, and the
   // first stage with a narrower slice must not be briefed from the job.
-  const slice = assembleWritingSlice(
-    { ...row, slice: stage.slice, budget: stage.budget }, subject,
-    { stage: 'write', intent: { line: said || undefined, plan } })
+  const { slice, brief } = writeBriefFor(row, stage, { chapterId, sceneId, file, said, plan, chapterScenes })
 
   const ctx = openRowRun(request, row, {
     ...slice.forReceipt(),
@@ -195,15 +232,6 @@ export async function runDraft(
     // Only when there was nothing to translate AND nothing translated: a
     // second call may carry the settled plan and not the line that made it.
     ...(!said && !plan ? { note: 'nothing to translate' } : {}),
-  }
-
-  const assignment = draftUserMessage(chapterId, sceneId, file, undefined, chapterScenes)
-  const brief = {
-    blocks: [
-      { id: 'rules', text: stage.rules, cached: true },
-      { id: 'slice', text: slice.render(), cached: true },
-      { id: 'ask', text: assignment, cached: false },
-    ],
   }
 
   // THE GATE CHECKS; IT DOES NOT WRITE. The story's validator can only read a
@@ -241,7 +269,7 @@ export async function runDraft(
   let wrote: string | null = null
   try {
     const out = await runGates({
-      row: { ...stage, ...cellOf(row, 'write'), withholding: row.withholding, withheld: row.withheld, envelope: row.envelope },
+      row: writeLaunchSpec(row, stage),
       run, receipt, brief,
       repair: (refusal, resumed) => ({
         blocks: resumed

@@ -110,7 +110,13 @@ test(`the ratchet: ${BARE_SEAM_CALLS} seam launches carry no row, and the count 
     `${bare.length} launches carry no row, fewer than the ${BARE_SEAM_CALLS} recorded — a pass migrated; lower BARE_SEAM_CALLS in the same change: ${where}`)
   assert.equal(new Set(bare.map(s => s.file)).size, 4, 'across four passes')
   const rowed = launchSites().filter(s => s.rowed)
-  assert.deepEqual(rowed.map(s => s.file), ['gates.ts'], 'the one rowed launch is the gate runner\'s, and it serves every rowed pass')
+  // TWO, AND THE SECOND PROPOSES NOTHING (A82-3). Every rowed PASS launches
+  // through the gate runner. `eval.ts` is not a pass: it records the engine's
+  // real answer to the drafting brief for the author to judge, mints no run,
+  // and writes only under .arc/eval/ — `test/eval.test.ts` holds that. A
+  // third name here is a pass launching around its gates, and is refused.
+  assert.deepEqual(rowed.map(s => s.file), ['eval.ts', 'gates.ts'],
+    'the gate runner\'s launch serves every rowed pass; the evaluation recorder\'s is the only other, and it lands nothing')
 })
 
 test('every row in the registry is reached by a launch, or is honestly accounted for', () => {

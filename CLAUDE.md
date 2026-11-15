@@ -420,6 +420,33 @@ repo shares. This file is only what is particular to the backend.
   refusing `claude` first on PATH — a test that reaches it fails loudly,
   naming the file and the pass (the child's `ARC_PASS`). A test that wants a
   model pins the engine and installs the stub, after the preload.
+- **A recording for evaluation is not a run** (A82-3). `src/eval.ts` keeps
+  what the engine really answers to the drafting brief, under a label, so two
+  versions of the rules can be judged side by side — the question the fixture
+  engine cannot answer, since it replays a recording. The brief is the pass's
+  own: `writeBriefFor` in `draft.ts` assembles it for `runDraft` and for the
+  recorder, and a test holds the two to the same text. It is the one caller
+  of `askRow` outside the gate runner, and it may be because it proposes
+  nothing: no run is minted, no gate reads the answer, nothing lands in the
+  draft layer, the ledger, `.arc/runs/` or `history/`; everything it writes
+  in the story is under `.arc/eval/`, and it REFUSES a story that does not
+  git-ignore that path, so a recording can never show as a change to the
+  book. Every refusal is one sentence before anything is asked
+  (`assertCanRecord`): no engine, an un-ignored story, a case already
+  recorded under that label without `--again`. The launch still carries its
+  row, so the envelope is proven as a run's is; the runtime's own transcript
+  sits outside the story with no run to delete it through, so the recording
+  names its path. `compare` proves only what fingerprints can — the rules
+  differ, the rest of the brief differs (the record moved, so a difference is
+  not the rules' alone), or neither — and refuses to pair two answers to
+  different scenes, which is what "the chapter's next scene" becomes once one
+  lands in between. It shows the answers blind, names its files for the two
+  labels in order so either way round finds the same judgments, and counts
+  the author's three numbers per answer — it keeps everything they wrote in
+  that file and never argues which is better. A case is the plain request for a chapter's next scene: the
+  author's line reaches the writing stage only as a craft plan, a model call
+  of its own, so it is not part of a case. `npm run eval:record` spends the
+  author's login and is theirs to run; no test does.
 - **The fixture engine answers only a brief it has seen** (A67-9).
   `ARC_DRAFT_ENGINE=fixture` selects `src/fixtures.ts`: a recorded answer
   keyed by the fingerprint of the rendered brief, a miss refused with the
