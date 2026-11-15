@@ -14,7 +14,6 @@ import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
 import { sentencesOver } from './countable'
 import type { EngineErrorKind } from './engine'
 import type { ProseGateCtx } from './gates'
-import type { StagedRow } from './registry'
 
 export const MAX_OVERLAP = 0.4
 /** Below this many words a paragraph is not counted on either side of the
@@ -276,4 +275,3 @@ export const planGateCtx = (): ProseGateCtx => gateCtx({
   andCap: null, wordCap: null, destination: [], known: [],
 })
 
-export const cellOf = (row: StagedRow, stage: string) => ({ job: row.job, scope: row.scope, mode: row.mode, depth: row.depth, stage })

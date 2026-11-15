@@ -35,15 +35,55 @@ import { resolveWithin } from './safe-path'
 import { resolveRequest } from './request'
 import { assembleWritingSlice, weightOf } from './slice'
 import { runGates, type ProseGateCtx } from './gates'
-import { CRAFT_MOVES, jobFingerprint, rowKey, stageRuns, type StagedRow } from './registry'
+import { CRAFT_MOVES, jobFingerprint, rowKey, stageLaunch, stageRuns, type StagedRow } from './registry'
 import { openRowRun, closeReceipt } from './rowrun'
 import { endRun, stateOf } from './runs'
 import { planFirst } from './craft-plan'
 import { outcomeSentence } from './run'
 import { sha16 } from './records'
-import { andCapFromContract, wordCapFromContract } from './countable'
-import { cellOf, endingOf, gateCtx as gateCtxOf } from './gate-ctx'
+import { countableBars } from './countable'
+import { endingOf, gateCtx as gateCtxOf } from './gate-ctx'
 import type { CanonDoc } from 'arc-canon-graph'
+
+/** WHAT A DRAFT OF A CHAPTER'S NEXT SCENE IS A REQUEST FOR (A81-9), derived
+ *  once: the gesture resolved by code to the row that admits it (§4) —
+ *  refused here, in the author's words, if the rows do not list it — its two
+ *  stages, the slot the scene takes and the scenes the chapter already has.
+ *  runDraft and the evaluation recorder both read it, so the recorder's case
+ *  is the request a draft makes and not a second derivation of it. Reads the
+ *  record; writes nothing.
+ *
+ *  THE SLOT IS ABOUT WHAT IS ON DISK, not about what parses. `proseScenes()`
+ *  drops any file whose frontmatter is broken — a scene the author is
+ *  halfway through editing — and a slot chosen from the parsed list would
+ *  hand back that exact path and write over their work (A69-3). A replay
+ *  (`into`) goes back to its own slot, never the next free one.
+ *
+ *  THE SLOT IS READ WHEN ASKED FOR (`target`), not before: runDraft refuses
+ *  the `sdk` engine between the two, and a refusal that needs nothing from
+ *  prose/ must not first walk it — an unreadable scene file would answer an
+ *  author who could never have drafted with a file error instead of the
+ *  sentence about their engine. */
+export function draftRequest(chapterId: string) {
+  const canon = JSON.parse(canonJson()) as CanonDoc
+  const chapter = (canon.chapters ?? []).find(c => c.id === chapterId)
+  if (!chapter) throw new HttpError(400, `no chapter ${chapterId}`)
+  const request = resolveRequest({
+    said: `draft the next scene of ${chapterId}`,
+    job: 'draft', scope: 'scene', mode: 'one-shot',
+    subject: chapterId,
+  })
+  const row = request.row as StagedRow
+  const stage = row.stages.find(s => s.id === 'write')
+  const planStage = row.stages.find(s => s.id === 'craft-plan')
+  if (!stage || !planStage) throw new HttpError(500, 'the drafting row is missing a stage')
+  const target = (into?: { file: string; sceneId: string }) => {
+    const scenes = proseScenes()
+    const { file, sceneId } = into ?? sceneSlot(chapterId, chapter.order, proseFiles())
+    return { file, sceneId, chapterScenes: scenes.filter(s => s.chapter === chapterId) }
+  }
+  return { canon, chapter, request, row, stage, planStage, target }
+}
 
 /** THE WRITING BRIEF OF A DRAFT, IN ONE PLACE (A82-3): rules · slice · ask.
  *  The pass calls this, and so does the evaluation recorder (`eval.ts`) —
@@ -78,11 +118,6 @@ export function writeBriefFor(
     },
   }
 }
-
-/** What the seam is handed for the writing stage: the stage's own budget,
- *  gates and answer, under the row's cell, withholding and envelope. */
-export const writeLaunchSpec = (row: StagedRow, stage: StagedRow['stages'][number]) =>
-  ({ ...stage, ...cellOf(row, 'write'), withholding: row.withholding, withheld: row.withheld, envelope: row.envelope })
 
 /** Scene file slot for a chapter: directory from the chapter id's number
  *  (ch.00-prologue → prose/ch-00), next scene number from existing files.
@@ -132,22 +167,9 @@ export async function runDraft(
    *  beside the author's rather than in its place. */
   into?: { replaces: { sha: string; run?: string }; file: string; sceneId: string },
 ): Promise<DraftSceneResponse> {
-  const canon = JSON.parse(canonJson()) as CanonDoc
-  const chapter = (canon.chapters ?? []).find(c => c.id === chapterId)
-  if (!chapter) throw new HttpError(400, `no chapter ${chapterId}`)
-
-  // THE REQUEST (§4): the gesture the author made, resolved by code to a cell
-  // and then to the row that admits it — refused here, in their words, if the
-  // rows do not list it.
-  const request = resolveRequest({
-    said: `draft the next scene of ${chapterId}`,
-    job: 'draft', scope: 'scene', mode: 'one-shot',
-    subject: chapterId,
-  })
-  const row = request.row as StagedRow
-  const stage = row.stages.find(s => s.id === 'write')
-  const planStage = row.stages.find(s => s.id === 'craft-plan')
-  if (!stage || !planStage) throw new HttpError(500, 'the drafting row is missing a stage')
+  // THE REQUEST (§4), the row, its stages, the slot and the chapter's scenes
+  // — from `draftRequest`, which the evaluation recorder reads too (A81-9).
+  const { canon, request, row, stage, planStage, target } = draftRequest(chapterId)
 
   // NO RUN FOR A PASS THAT CANNOT RUN. Every rowed pass refuses on the `sdk`
   // engine (A69-3), and finding that out after a run is minted and a receipt
@@ -158,16 +180,10 @@ export async function runDraft(
       SDK_ENGINE_FIX)
   }
 
-  const scenes = proseScenes()
-  // THE SLOT IS ABOUT WHAT IS ON DISK, not about what parses. `proseScenes()`
-  // drops any file whose frontmatter is broken — a scene the author is
-  // halfway through editing — and a slot chosen from the parsed list would
-  // hand back that exact path and write over their work (A69-3).
-  const { file, sceneId } = into ?? sceneSlot(chapterId, chapter.order, proseFiles())
+  const { file, sceneId, chapterScenes } = target(into)
   // THE DESTINATION AT LAUNCH (A72-4). For a new scene that is its ABSENCE,
   // which is a state a target can stop being while the pass runs.
   const dest = destinationAt(file)
-  const chapterScenes = scenes.filter(s => s.chapter === chapterId)
 
   // THE SLICE, before anything is sent. A floor that will not fit refuses
   // here, in the author's words, and nothing is spent finding out.
@@ -253,8 +269,7 @@ export async function runDraft(
       sceneLocks: [],
       lockedTexts: [],
       literals: [],
-      andCap: andCapFromContract(styleContract()),
-      wordCap: wordCapFromContract(styleContract()),
+      ...countableBars(styleContract()),
       destination: [],
       known: [],
     }),
@@ -269,7 +284,7 @@ export async function runDraft(
   let wrote: string | null = null
   try {
     const out = await runGates({
-      row: writeLaunchSpec(row, stage),
+      row: stageLaunch(row, stage),
       run, receipt, brief,
       repair: (refusal, resumed) => ({
         blocks: resumed

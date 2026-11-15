@@ -31,7 +31,8 @@ import { entityKeys, recordKeys } from './proposals'
 import { rowKey, type Cell } from './registry'
 import type { GateRecord, Receipt } from './run'
 import { SESSION_GAP_HOURS } from './briefing'
-import { countedIntervals, IDLE_MINUTES, SESSIONS_REL } from './session'
+import { countedIntervals, IDLE_MINUTES, kindOfPath, RECORD_DIRS, SESSIONS_REL } from './session'
+import { COUNTABLE_RULES } from './countable'
 import type { SessionInterval, SessionKind } from 'arc-canon-graph/api-types.ts'
 
 // ---- the result ------------------------------------------------------------------
@@ -401,8 +402,10 @@ function capturePrecision(rec: StoryRecord): Omit<MeasureResult, 'id' | 'name' |
 
 // ---- 2. style-gate usefulness ------------------------------------------------------
 
-/** The gates that hold arc's prose to a countable rule of the style contract. */
-export const STYLE_GATES: readonly string[] = ['and-chain', 'sentence-length']
+/** The gates that hold arc's prose to a countable rule of the style contract
+ *  — the countable rules themselves, by the name a gate and a finding share
+ *  (`countable.ts`), so a third rule is a style gate the day it is one. */
+export const STYLE_GATES: readonly string[] = COUNTABLE_RULES
 
 const isStyleGate = (g: GateRecord): boolean => STYLE_GATES.includes(g.gate)
 
@@ -523,12 +526,10 @@ function reviewPrecision(rec: StoryRecord): Omit<MeasureResult, 'id' | 'name' | 
  *  touches prose counts as writing — an accept carries its evidence line
  *  beside the scene — and one that touches neither (arc's own receipts in
  *  history/) is no author time and is left out. */
-export const RECORD_PATHS: readonly string[] = ['canon/', 'notes/', 'docs/', 'annotations/', 'locks/', 'material/']
-
 export function kindOfCommit(files: string[]): SessionKind | null {
-  if (files.some(f => f.startsWith('prose/'))) return 'writing'
-  if (files.some(f => RECORD_PATHS.some(p => f.startsWith(p)))) return 'record'
-  return null
+  // The directories are session.ts's, the ones the timer watches (A81-3).
+  const kinds = files.map(kindOfPath)
+  return kinds.includes('writing') ? 'writing' : kinds.includes('record') ? 'record' : null
 }
 
 interface Stamp { at: string; kind: SessionKind }
@@ -725,7 +726,7 @@ export const MEASURES: MeasureSpec[] = [
       + `A SESSION is a run of counted time and commits with no gap longer than ${SESSION_GAP_HOURS} hours between them (the briefing's gap). `
       + `MINUTES are the session timer's: what the author counted as writing or as the record in the viewer's header; a count in which nothing happened — no input in the viewer, no change to the story's files — for ${IDLE_MINUTES} minutes was closed at the last thing that did. `
       + 'Where the timer counted anything in a session, the timer alone decides it. '
-      + `FALLBACK (inferred, and printed when used): a session the timer counted nothing in is read from commit times — the time between two commits is given to what the later one changed, writing for prose/, the record for ${RECORD_PATHS.join(', ')}; a commit that touches prose counts as writing — so a scene accept that carries record changes beside the prose counts as writing — one that touches neither is left out, the first commit of a session has no time before it, and no gap counts for more than ${IDLE_MINUTES} minutes (the timer's idle bound). `
+      + `FALLBACK (inferred, and printed when used): a session the timer counted nothing in is read from commit times — the time between two commits is given to what the later one changed, writing for prose/, the record for ${RECORD_DIRS.map(d => `${d}/`).join(', ')}; a commit that touches prose counts as writing — so a scene accept that carries record changes beside the prose counts as writing — one that touches neither is left out, the first commit of a session has no time before it, and no gap counts for more than ${IDLE_MINUTES} minutes (the timer's idle bound). `
       + 'Commits are not where minutes go, so an inferred session is a proxy, not a count. '
       + 'TREND: the least-squares slope of the burden over the sessions that have writing time, in order — falling, rising, or flat within 0.01 per session — over the timed sessions only, or, with fewer than two of those, over the inferred ones only, and it says which.',
     sources: [

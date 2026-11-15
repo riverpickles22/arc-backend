@@ -17,7 +17,8 @@ import type { Receipt } from '../src/run.ts'
 import { SCENARIOS, SCENE, STORY, renderScenario, reset } from './fixture-scenarios.ts'
 import { git } from './fixture.ts'
 
-const { runReroute, listAlternatives, adoptAlternative } = await import('../src/reroute.ts')
+const { runReroute, adoptAlternative } = await import('../src/reroute.ts')
+const { listAlternatives } = await import('../src/alternatives.ts')
 const { readWorkingReceipt, runFilePath } = await import('../src/run.ts')
 const { ROW_EXPLORE_SCENE, jobFingerprint } = await import('../src/registry.ts')
 const { proseScenes } = await import('../src/story.ts')

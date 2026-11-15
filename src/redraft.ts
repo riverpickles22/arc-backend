@@ -47,9 +47,9 @@ import { destinationAt, landOrKeep, leansOnSentence, movedSentence, restoreIfOur
 import { READ_MAP, readsFrom, rebaseToLanded } from './reads'
 import { fingerprintsAtWrite } from './style-projection'
 import { locksOn } from './locks'
-import { andCapFromContract, wordCapFromContract } from './countable'
-import { cellOf, endingOf, gateCtx as gateCtxOf, literalWithholds } from './gate-ctx'
-import { CRAFT_MOVES, jobFingerprint, rowKey, stageRuns, type StagedRow } from './registry'
+import { countableBars } from './countable'
+import { endingOf, gateCtx as gateCtxOf, literalWithholds } from './gate-ctx'
+import { CRAFT_MOVES, jobFingerprint, rowKey, stageLaunch, stageRuns, type StagedRow } from './registry'
 import { resolveRequest } from './request'
 import { outcomeSentence } from './run'
 import { closeReceipt, openRowRun } from './rowrun'
@@ -282,8 +282,7 @@ export async function runRedraft(t: RedraftTarget, given?: CraftPlanned | null):
       sceneBody: scene.body,
       sceneLocks, lockedTexts,
       literals: literalWithholds(scene.contract?.must_withhold),
-      andCap: andCapFromContract(styleContract()),
-      wordCap: wordCapFromContract(styleContract()),
+      ...countableBars(styleContract()),
       destination: [],
       known: [],
     }),
@@ -297,7 +296,7 @@ export async function runRedraft(t: RedraftTarget, given?: CraftPlanned | null):
   let wrote: string | null = null
   try {
     const out = await runGates({
-      row: { ...stage, ...cellOf(row, 'write'), withholding: row.withholding, withheld: row.withheld, envelope: row.envelope, minShareOfSubject: row.minShareOfSubject },
+      row: stageLaunch(row, stage),
       run, receipt, brief,
       repair: (refusal, resumed) => ({
         blocks: resumed

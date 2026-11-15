@@ -13,7 +13,7 @@ process.env.ARC_DRAFT_ENGINE = 'none'
 const { parseSuggestions, suggestAssignment, runSuggest } = await import('../src/suggest.ts')
 const { REPHRASE_RULES, SYNONYM_RULES, ROW_REPHRASE, ROW_SYNONYMS } = await import('../src/registry.ts')
 const { parseOptions, runRowGates } = await import('../src/gates.ts')
-const { gateCtx } = await import('../src/reroute.ts')
+const { gateCtx } = await import('../src/gate-ctx.ts')
 
 test('the rephrase rules make the author\'s own contract the authority, and promise nothing is written', () => {
   assert.match(REPHRASE_RULES, /REPHRASE pass/)

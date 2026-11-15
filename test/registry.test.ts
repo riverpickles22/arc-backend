@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { makeStory } from './fixture.ts'
+import type { StagedRow } from '../src/registry.ts'
 
 process.env.ARC_STORY_PATH = makeStory()
 process.env.ARC_DRAFT_ENGINE = 'none'
@@ -17,7 +18,7 @@ const {
   ROWS, ROW_EXPLORE_SCENE, ROW_EXPLORE_ROUTE, ROW_DRAFT_SCENE, ROW_REVISE_SCENE, ROW_REVISE_SELECTION,
   ROW_REVISE_SCENE_STAGED,
   ROUTE_WALL_CLOCK_MS, ROUTE_OUTPUT_TOKENS,
-  findRow, rowKey, jobFingerprint, rowStatus, readStatusReceipts, fixturesRecorded, registryStatus,
+  findRow, rowKey, jobFingerprint, rowStatus, readStatusReceipts, fixturesRecorded, registryStatus, stageLaunch, rowByKey,
 } = await import('../src/registry.ts')
 const { PASS_REGISTRY } = await import('../src/invocation.ts')
 const { buildReroutePrompt, buildRevisePrompt } = await import('../src/reroute.ts')
@@ -199,4 +200,62 @@ test('registryStatus reads the story\'s history and reports every row', () => {
   assert.deepEqual(status.map(s => s.key), ALL_ROWS)
   assert.deepEqual(status.map(s => s.status), ALL_ROWS.map(() => 'built'), 'no receipt in this story yet')
   assert.equal(status[0].fingerprint, fp)
+})
+
+// ---- a stage's launch (A81-2) ---------------------------------------------
+
+test('a stage launches with its row\'s fields from one function: the cell, the envelope, the withholding and the floor', () => {
+  const staged = ALL_ROWS.map(k => rowByKey(k)).filter(r => r?.pattern === 'staged') as StagedRow[]
+  assert.ok(staged.length >= 4, 'the draft, the two clean passes and the minimal revision are staged')
+  for (const row of staged) {
+    for (const stage of row.stages) {
+      const spec = stageLaunch(row, stage)
+      assert.equal(rowKey(spec), `${rowKey(row)}.${stage.id}`, 'the stage is the cell\'s stage, so it has its own fixture directory')
+      assert.equal(spec.envelope, row.envelope, 'the envelope is the job\'s, never a stage\'s')
+      assert.equal(spec.withholding, row.withholding)
+      assert.equal(spec.withheld, row.withheld)
+      assert.equal(spec.minShareOfSubject, row.minShareOfSubject, `${rowKey(spec)} carries the row's floor`)
+      assert.equal(spec.gates, stage.gates, 'and the gates, the answer and the budget are the stage\'s own')
+      assert.equal(spec.budget, stage.budget)
+    }
+  }
+})
+
+test('the row\'s floor reaches the redraft and work-notes stage launches', () => {
+  // redraft.ts launches the write stage of the clean pass (scene and
+  // selection); work-notes.ts every stage of the minimal revision.
+  for (const key of ['revise.scene.one-shot', 'revise.selection.one-shot', 'revise.scene.one-shot.quick']) {
+    const row = rowByKey(key) as StagedRow
+    assert.equal(typeof row.minShareOfSubject, 'number', `${key} declares a floor`)
+    for (const stage of row.stages) assert.equal(stageLaunch(row, stage).minShareOfSubject, row.minShareOfSubject)
+  }
+})
+
+test('no pass spreads a stage\'s launch by hand any more', () => {
+  const src = path.join(import.meta.dirname, '..', 'src')
+  const hand = fs.readdirSync(src).filter(f => f.endsWith('.ts') && f !== 'registry.ts')
+    .filter(f => /cellOf\(|withholding:\s*row\.withholding/.test(fs.readFileSync(path.join(src, f), 'utf8')))
+  assert.deepEqual(hand, [], 'no file but registry.ts builds a launch from a row\'s fields by the two spellings the passes used')
+  // And the four passes that launch a stage, and the recorder, each call the
+  // one function — a hand-built spec under another spelling would have to
+  // replace this call to exist.
+  for (const f of ['craft-plan.ts', 'draft.ts', 'redraft.ts', 'work-notes.ts', 'eval.ts']) {
+    assert.match(fs.readFileSync(path.join(src, f), 'utf8'), /\bstageLaunch\(row, \w+\)/, `${f} launches its stage through stageLaunch()`)
+  }
+})
+
+// ---- one estimate of a brief's tokens (A81-4) -------------------------------
+
+test('the three places that estimated a brief\'s tokens by hand now call one function, which rounds up', async () => {
+  const { estimateTokens } = await import('../src/records.ts')
+  assert.equal(estimateTokens(''), 0)
+  assert.equal(estimateTokens('abcd'), 1)
+  assert.equal(estimateTokens('abcde'), 2, 'up, never to nearest: a budget is a ceiling')
+  const src = path.join(import.meta.dirname, '..', 'src')
+  const byHand = fs.readdirSync(src).filter(f => f.endsWith('.ts') && f !== 'records.ts')
+    .filter(f => /\.length\s*\/\s*4\b/.test(fs.readFileSync(path.join(src, f), 'utf8')))
+  assert.deepEqual(byHand, [], 'no other file divides a length by four')
+  for (const f of ['gates.ts', 'run.ts', 'slice.ts']) {
+    assert.match(fs.readFileSync(path.join(src, f), 'utf8'), /\bestimateTokens\(/, `${f} calls estimateTokens()`)
+  }
 })

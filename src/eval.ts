@@ -31,10 +31,9 @@ import { STORY } from './config'
 import { canonJson } from './canon'
 import { askRow, currentEngine, isDry, renderBrief, type Brief, type EnvelopeProof, type Tokens } from './engine'
 import { git } from './lane'
-import { proseFiles, sceneSlot, writeBriefFor, writeLaunchSpec } from './draft'
-import { proseScenes } from './story'
-import { resolveRequest } from './request'
-import { rowKey, type StagedRow } from './registry'
+import { draftRequest, writeBriefFor } from './draft'
+import { HttpError } from './http'
+import { rowKey, stageLaunch, type StagedRow } from './registry'
 import { sha16 } from './records'
 
 export const AXES = ['voice', 'usefulness', 'effort'] as const
@@ -101,22 +100,19 @@ export function caseKey(chapterId: string): string {
 export function draftEvalBrief(chapterId: string): {
   row: StagedRow; stage: StagedRow['stages'][number]; sceneId: string; file: string; brief: Brief; rendered: string
 } {
-  const canon = JSON.parse(canonJson()) as CanonDoc
-  const chapter = (canon.chapters ?? []).find(c => c.id === chapterId)
-  if (!chapter) {
-    const known = (canon.chapters ?? []).map(c => c.id).join(', ')
-    throw new EvalError(`this story has no chapter ${chapterId}.${known ? ` Its chapters: ${known}.` : ''}`)
+  // The request is the pass's own (A81-9): the row, the writing stage, the
+  // slot the scene would take and the chapter's scenes, from the one function
+  // runDraft reads them through.
+  let asked: ReturnType<typeof draftRequest>
+  try { asked = draftRequest(chapterId) } catch (e) {
+    if (e instanceof HttpError && e.status === 400 && /^no chapter /.test(e.message)) {
+      const known = ((JSON.parse(canonJson()) as CanonDoc).chapters ?? []).map(c => c.id).join(', ')
+      throw new EvalError(`this story has no chapter ${chapterId}.${known ? ` Its chapters: ${known}.` : ''}`)
+    }
+    throw e
   }
-  const request = resolveRequest({
-    said: `draft the next scene of ${chapterId}`,
-    job: 'draft', scope: 'scene', mode: 'one-shot',
-    subject: chapterId,
-  })
-  const row = request.row as StagedRow
-  const stage = row.stages.find(s => s.id === 'write')
-  if (!stage) throw new EvalError('the drafting row has no writing stage.')
-  const { file, sceneId } = sceneSlot(chapterId, chapter.order, proseFiles())
-  const chapterScenes = proseScenes().filter(s => s.chapter === chapterId)
+  const { row, stage } = asked
+  const { file, sceneId, chapterScenes } = asked.target()
   const { brief } = writeBriefFor(row, stage, { chapterId, sceneId, file, said: '', chapterScenes })
   return { row, stage, sceneId, file, brief, rendered: renderBrief(brief) }
 }
@@ -151,7 +147,7 @@ export function assertCanRecord(chapterId: string, label: string, opts: { again?
 export async function recordCase(chapterId: string, label: string, opts: { again?: boolean } = {}): Promise<{ file: string; saved: EvalCase }> {
   const key = assertCanRecord(chapterId, label, opts)
   const { row, stage, sceneId, brief, rendered } = draftEvalBrief(chapterId)
-  const spec = writeLaunchSpec(row, stage)
+  const spec = stageLaunch(row, stage)
   const at = new Date()
   const answer = await askRow(spec, brief, { runId: `eval-${label}-${sha16(`${key}-${at.getTime()}`).slice(0, 12)}` })
   if (isDry(answer)) throw new EvalError('a dry answer where an answer was asked for')
@@ -226,9 +222,101 @@ const started = (j: Judged | undefined): boolean =>
 export const xIs = (key: string, a: string, b: string): string =>
   parseInt(sha16(`${key}|${a}|${b}`).slice(0, 2), 16) % 2 === 0 ? a : b
 
-/** Set two labels side by side. Writes the page, the key and the judgments
- *  file under `.arc/eval/`; reads the judgments back when the author has
- *  filled them. A judgment the author has started is never overwritten. */
+/** One case set side by side: which label is behind X and which behind Y,
+ *  and what each recorded. */
+export interface Pair { case: string; X: { label: string; recorded: EvalCase }; Y: { label: string; recorded: EvalCase } }
+
+/** STEP 1 — THE PAGE: blind. The author reads X and Y; which is which is in
+ *  the key, a separate file. Both are rewritten every time. */
+export function writePage(pairs: Pair[], f: { a: string; b: string; pageFile: string; keyFile: string; judgeFile: string }): void {
+  const page: string[] = [
+    `# ${f.a} and ${f.b}, side by side`, '',
+    `Private working state — generated prose, never the record. Written ${new Date().toISOString().slice(0, 10)}.`, '',
+    `Read each pair, then put three numbers on each answer in \`${path.basename(f.judgeFile)}\`:`,
+    AXES_LINE + '.', '',
+    `Which label is X and which is Y changes from case to case; it is in \`${path.basename(f.keyFile)}\`. Judge first.`, '',
+  ]
+  for (const p of pairs) {
+    page.push(`## ${p.case}`, '', `The next scene of ${p.X.recorded.chapter}.`, '',
+      '### X', '', p.X.recorded.answer.trim(), '', '### Y', '', p.Y.recorded.answer.trim(), '')
+  }
+  fs.mkdirSync(path.dirname(f.pageFile), { recursive: true })
+  fs.writeFileSync(f.pageFile, page.join('\n'))
+  fs.writeFileSync(f.keyFile, JSON.stringify(Object.fromEntries(pairs.map(p => [p.case, { X: p.X.label, Y: p.Y.label }])), null, 2) + '\n')
+}
+
+/** STEP 2 — THE JUDGMENTS: the author's file. What they have started is kept
+ *  as it is; a case they have not touched is (re)laid out against what is
+ *  recorded now; a judged case whose answers were recorded again is `stale`
+ *  and not counted. A file that is not JSON is left exactly as it is. */
+export function layJudgments(pairs: Pair[], judgeFile: string): { held: Judgments; stale: string[]; unreadable: boolean } {
+  let held: Judgments = { how: AXES_LINE, cases: {} }
+  let onDisk: string | null = null
+  if (fs.existsSync(judgeFile)) {
+    onDisk = fs.readFileSync(judgeFile, 'utf8')
+    try {
+      // Everything the author put in the file stays in it — a note beside a
+      // case, a key of their own — not only the numbers.
+      const parsed = JSON.parse(onDisk) as Judgments
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
+      held = { ...parsed, how: parsed.how ?? AXES_LINE, cases: parsed.cases ?? {} }
+    } catch { return { held, stale: [], unreadable: true } }
+  }
+  const stale: string[] = []
+  for (const p of pairs) {
+    const of = { X: p.X.recorded.answer_fingerprint, Y: p.Y.recorded.answer_fingerprint }
+    const j = held.cases[p.case]
+    if (started(j)) { if (j.of?.X !== of.X || j.of?.Y !== of.Y) stale.push(p.case); continue }
+    // Untouched: laid out against what is recorded now, keeping anything
+    // else the author wrote on the case.
+    held.cases[p.case] = { ...j, X: blank(), Y: blank(), of }
+  }
+  if (onDisk === null || JSON.stringify(JSON.parse(onDisk)) !== JSON.stringify(held)) {
+    fs.mkdirSync(path.dirname(judgeFile), { recursive: true })
+    fs.writeFileSync(judgeFile, JSON.stringify(held, null, 2) + '\n')
+  }
+  return { held, stale, unreadable: false }
+}
+
+/** STEP 3 — THE TALLY: pure. Counts only cases scored in full, 1 to 5 on
+ *  every axis, and not stale: each axis's mean per label, and which label's
+ *  three numbers summed higher in each case. `held` null (an unreadable
+ *  file) counts nothing. */
+export function tallyJudgments(pairs: Pair[], held: Judgments | null, stale: string[], labels: [string, string]): {
+  judged: string[]; partly: string[]
+  means: Record<string, Record<Axis, number>>; won: Record<string, number>; ties: number
+} {
+  const [a, b] = labels
+  const means: Record<string, Record<Axis, number>> = {}
+  const won: Record<string, number> = { [a]: 0, [b]: 0 }
+  let ties = 0
+  const live = held ? pairs.filter(p => !stale.includes(p.case)) : []
+  const judgedPairs = live.filter(p => scored(held!.cases[p.case]?.X) && scored(held!.cases[p.case]?.Y))
+  const judged = judgedPairs.map(p => p.case)
+  const partly = live.filter(p => !judged.includes(p.case) && started(held!.cases[p.case])).map(p => p.case)
+  if (judgedPairs.length) {
+    const sums: Record<string, Record<Axis, number>> = { [a]: { voice: 0, usefulness: 0, effort: 0 }, [b]: { voice: 0, usefulness: 0, effort: 0 } }
+    for (const p of judgedPairs) {
+      const j = held!.cases[p.case]
+      const total: Record<string, number> = {}
+      for (const side of ['X', 'Y'] as const) {
+        const label = p[side].label, sc = j[side] as Record<Axis, number>
+        for (const ax of AXES) sums[label][ax] += sc[ax]
+        total[label] = AXES.reduce((n, ax) => n + sc[ax], 0)
+      }
+      if (total[a] > total[b]) won[a]++; else if (total[b] > total[a]) won[b]++; else ties++
+    }
+    for (const label of [a, b]) {
+      means[label] = { voice: 0, usefulness: 0, effort: 0 }
+      for (const ax of AXES) means[label][ax] = Math.round((sums[label][ax] / judgedPairs.length) * 100) / 100
+    }
+  }
+  return { judged, partly, means, won, ties }
+}
+
+/** Set two labels side by side: join the cases, say what the fingerprints
+ *  prove, then the three steps above — the page and its key, the judgments
+ *  file, the tally. A judgment the author has started is never overwritten. */
 export function compare(first: string, second: string): Comparison {
   checkLabel(first); checkLabel(second)
   if (first === second) throw new EvalError('comparing a label with itself shows nothing — name two.')
@@ -279,78 +367,14 @@ export function compare(first: string, second: string): Comparison {
 
   const base = path.join(evalDir(), `compare-${a}-vs-${b}`)
   const pageFile = `${base}.md`, keyFile = `${base}.key.json`, judgeFile = `${base}.judgments.json`
-
-  // THE PAGE: blind. The author reads X and Y; which is which is in the key.
-  const key: Record<string, { X: string; Y: string }> = {}
-  const page: string[] = [
-    `# ${a} and ${b}, side by side`, '',
-    `Private working state — generated prose, never the record. Written ${new Date().toISOString().slice(0, 10)}.`, '',
-    `Read each pair, then put three numbers on each answer in \`${path.basename(judgeFile)}\`:`,
-    AXES_LINE + '.', '',
-    `Which label is X and which is Y changes from case to case; it is in \`${path.basename(keyFile)}\`. Judge first.`, '',
-  ]
-  for (const k of shared) {
+  const pairs: Pair[] = shared.map(k => {
     const x = xIs(k, a, b), y = x === a ? b : a
-    key[k] = { X: x, Y: y }
-    const cx = (x === a ? A : B).get(k)!, cy = (y === a ? A : B).get(k)!
-    page.push(`## ${k}`, '', `The next scene of ${cx.chapter}.`, '',
-      '### X', '', cx.answer.trim(), '', '### Y', '', cy.answer.trim(), '')
-  }
-  fs.mkdirSync(evalDir(), { recursive: true })
-  fs.writeFileSync(pageFile, page.join('\n'))
-  fs.writeFileSync(keyFile, JSON.stringify(key, null, 2) + '\n')
+    return { case: k, X: { label: x, recorded: (x === a ? A : B).get(k)! }, Y: { label: y, recorded: (y === a ? A : B).get(k)! } }
+  })
 
-  // THE JUDGMENTS: the author's file. What they have started is kept as it
-  // is; a case they have not touched is (re)laid out against what is recorded
-  // now; a judged case whose answers were recorded again is not counted.
-  let held: Judgments = { how: AXES_LINE, cases: {} }
-  let unreadable = false, onDisk: string | null = null
-  if (fs.existsSync(judgeFile)) {
-    onDisk = fs.readFileSync(judgeFile, 'utf8')
-    try {
-      // Everything the author put in the file stays in it — a note beside a
-      // case, a key of their own — not only the numbers.
-      const parsed = JSON.parse(onDisk) as Judgments
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
-      held = { ...parsed, how: parsed.how ?? AXES_LINE, cases: parsed.cases ?? {} }
-    } catch { unreadable = true }
-  }
-  const stale: string[] = []
-  if (!unreadable) {
-    for (const k of shared) {
-      const of = { X: (key[k].X === a ? A : B).get(k)!.answer_fingerprint, Y: (key[k].Y === a ? A : B).get(k)!.answer_fingerprint }
-      const j = held.cases[k]
-      if (started(j)) { if (j.of?.X !== of.X || j.of?.Y !== of.Y) stale.push(k); continue }
-      // Untouched: laid out against what is recorded now, keeping anything
-      // else the author wrote on the case.
-      held.cases[k] = { ...j, X: blank(), Y: blank(), of }
-    }
-    const next = JSON.stringify(held, null, 2) + '\n'
-    if (onDisk === null || JSON.stringify(JSON.parse(onDisk)) !== JSON.stringify(held)) fs.writeFileSync(judgeFile, next)
-  }
-
-  const means: Record<string, Record<Axis, number>> = {}
-  const won: Record<string, number> = { [a]: 0, [b]: 0 }
-  let ties = 0
-  const judged = unreadable ? [] : shared.filter(k => !stale.includes(k) && scored(held.cases[k]?.X) && scored(held.cases[k]?.Y))
-  const partly = unreadable ? [] : shared.filter(k => !judged.includes(k) && !stale.includes(k) && started(held.cases[k]))
-  if (judged.length) {
-    const sums: Record<string, Record<Axis, number>> = { [a]: { voice: 0, usefulness: 0, effort: 0 }, [b]: { voice: 0, usefulness: 0, effort: 0 } }
-    for (const k of judged) {
-      const j = held.cases[k]
-      const total: Record<string, number> = {}
-      for (const side of ['X', 'Y'] as const) {
-        const label = key[k][side], s = j[side] as Record<Axis, number>
-        for (const ax of AXES) sums[label][ax] += s[ax]
-        total[label] = AXES.reduce((n, ax) => n + s[ax], 0)
-      }
-      if (total[a] > total[b]) won[a]++; else if (total[b] > total[a]) won[b]++; else ties++
-    }
-    for (const label of [a, b]) {
-      means[label] = { voice: 0, usefulness: 0, effort: 0 }
-      for (const ax of AXES) means[label][ax] = Math.round((sums[label][ax] / judged.length) * 100) / 100
-    }
-  }
+  writePage(pairs, { a, b, pageFile, keyFile, judgeFile })
+  const { held, stale, unreadable } = layJudgments(pairs, judgeFile)
+  const { judged, partly, means, won, ties } = tallyJudgments(pairs, unreadable ? null : held, stale, [a, b])
 
   lines.push('', `the page:      ${pageFile}`, `the judgments: ${judgeFile}`)
   if (unreadable) {

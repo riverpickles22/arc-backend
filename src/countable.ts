@@ -1,8 +1,10 @@
 // The two countable style rules a contract can state as a number, and the
 // readers that find them (conventions §10). Read from the contract, never from
 // a constant, so the author owns the number; absent, there is no rule to
-// enforce. One definition: the prose gates (reroute.ts re-exports these) and
-// U12's gates (rule-gates.ts) both read through here.
+// enforce. One definition: the prose gates take both numbers through
+// `countableBars()`, the manuscript checks (checks.ts) through
+// `countableChecks()`, and U12's gates (rule-gates.ts) call the two readers
+// by name — all of them here.
 
 import { splitSentences } from 'arc-canon-graph'
 import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
@@ -77,6 +79,23 @@ export const countIn: Record<CountableRule, (sentence: string) => number> = {
   'sentence-length': s => s.split(/\s+/).filter(Boolean).length,
 }
 
+/** The number the contract states for each rule, or null when it states
+ *  none — the reader beside the counter, one row per rule. */
+export const barIn: Record<CountableRule, (style: string) => number | null> = {
+  'and-chain': andCapFromContract,
+  'sentence-length': wordCapFromContract,
+}
+
+/** Both bars from ONE composed contract, as the gate context names them
+ *  (A81-5). A pass composes its style once and hands it here; four of the
+ *  six sites used to compose it once per bar. */
+export const countableBars = (style: string): { andCap: number | null; wordCap: number | null } =>
+  ({ andCap: barIn['and-chain'](style), wordCap: barIn['sentence-length'](style) })
+
+/** Every countable rule, from the one table that says what each counts: the
+ *  type makes that table total, so this list cannot miss a rule. */
+export const COUNTABLE_RULES = Object.keys(countIn) as readonly CountableRule[]
+
 export interface OverTheBar {
   /** 0-based paragraph index, the manuscript's own addressing */
   paragraph: number
@@ -134,10 +153,7 @@ export function countableChecks(
   style: string,
   skip: (paragraph: string, index: number) => boolean = () => false,
 ): CountableFinding[] {
-  const bars: [CountableRule, number | null][] = [
-    ['and-chain', andCapFromContract(style)],
-    ['sentence-length', wordCapFromContract(style)],
-  ]
+  const bars = COUNTABLE_RULES.map(rule => [rule, barIn[rule](style)] as const)
   const out: CountableFinding[] = []
   for (const [rule, bar] of bars) {
     if (bar === null) continue

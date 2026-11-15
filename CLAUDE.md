@@ -479,5 +479,23 @@ repo shares. This file is only what is particular to the backend.
   deletes the entry it replaces. `src/registry.types.test.ts` is the
   negative type test — a sealed row cannot carry a toolbelt, a session or a
   subagent pool — proven by `npm run typecheck`.
+- **What several passes need has one address, and a test that says so**
+  (A81). A stage of a staged job launches through `stageLaunch(row, stage)`
+  in `registry.ts` — never a hand-spread of the row's cell, envelope,
+  withholding and floor. A text's tokens are estimated by `estimateTokens`
+  in `records.ts`, rounded up; the slice holds its layers against the row's
+  input budget with it and the receipt estimates the whole brief with it,
+  which are two quantities. Both countable bars come from
+  `countableBars(style)` in `countable.ts`, from one composed contract. The
+  routes waiting beside a scene are `alternatives.ts` — a store, not a pass:
+  the accept, the briefing and doctor read it and never import `reroute.ts`,
+  and it is the only place a route file is removed. The request a draft
+  makes — row, stages, slot, the chapter's scenes — is `draftRequest` in
+  `draft.ts`, read by the pass and by the evaluation recorder. The author's
+  directories are `STORY_DIRS` in `session.ts`, shared by the timer and the
+  measure's commit fallback. The manuscript checks are `checks.ts`; the
+  route only calls it. A fixture's fingerprint is read as text, never as
+  YAML. `/api/health` carries `engine_reason` and `engine_next`, and whatever
+  starts arc prints those rather than choosing an engine a second time.
 - Checks before you say done: `npm run check` (typecheck, lint, tests — one
   exit code). Commit with `-s` (DCO).

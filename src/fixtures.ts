@@ -66,13 +66,50 @@ export function briefFingerprint(brief: string): string {
 
 const FM_RE = /^---\n([\s\S]*?)\n---\n/
 
+/** THE FINGERPRINT IS READ AS TEXT, never as YAML (A81-1). Sixteen hex
+ *  characters are sometimes all digits, and sometimes digits around one `e`
+ *  — which YAML reads as an integer past what a double holds, or as a float
+ *  with an exponent — and either way the value that comes back is not the
+ *  fingerprint and the fixture is silently not found. Quoted or bare, the
+ *  characters on the line are the fingerprint.
+ *
+ *  The line may end in a YAML comment, as the format above shows one. The
+ *  LAST such line in the header is the key: a `fingerprint:` line inside a
+ *  quoted scalar above it is prose. Sixteen LOWERCASE hex, as `sha16` writes
+ *  them — anything else on the line is not a fingerprint and the fixture is
+ *  not one. */
+const FINGERPRINT_RE = /^fingerprint:[ \t]*(["']?)([0-9a-f]{16})\1[ \t]*(?:#.*)?$/gm
+
+/** Rewrite one frontmatter field, in the frontmatter ONLY. The recorded
+ *  answer below it is model prose and may hold a line starting `because:` or
+ *  `fingerprint:` of its own; a whole-file replace would edit the answer and
+ *  leave the header untouched. The replacement is a function so a reason
+ *  containing `$&` or `$1` is written as the author typed it. */
+export function setFixtureField(text: string, field: string, value: string): string {
+  const head = text.match(FM_RE)
+  if (!head) throw new Error('fixture has no frontmatter')
+  // The same separator the reader takes — a writer that needed exactly one
+  // space would miss a line the reader found and append a second key.
+  const line = new RegExp(`^${field}:[ \\t]*.*$`, 'm')
+  const block = line.test(head[1])
+    ? head[1].replace(line, () => `${field}: ${value}`)
+    : `${head[1]}\n${field}: ${value}`
+  return `---\n${block}\n---\n` + text.slice(head[0].length)
+}
+
+/** A fixture with its fingerprint moved — written QUOTED, so the file says
+ *  it is a string to any YAML reader, not only to this one. */
+export const withFingerprint = (text: string, fingerprint: string): string =>
+  setFixtureField(text, 'fingerprint', JSON.stringify(fingerprint))
+
 export function parseFixture(text: string, file: string): Fixture | null {
   const m = text.match(FM_RE)
   if (!m) return null
   const head = yamlLoad(m[1]) as Partial<Fixture> | null
-  if (!head || typeof head.row !== 'string' || typeof head.name !== 'string' || typeof head.fingerprint !== 'string') return null
+  const fingerprint = [...m[1].matchAll(FINGERPRINT_RE)].at(-1)?.[2]
+  if (!head || typeof head.row !== 'string' || typeof head.name !== 'string' || !fingerprint) return null
   return {
-    row: head.row, name: head.name, fingerprint: head.fingerprint,
+    row: head.row, name: head.name, fingerprint,
     expect: String(head.expect ?? ''), scenario: String(head.scenario ?? '').trim(),
     ...(head.because ? { because: String(head.because).trim() } : {}),
     answer: text.slice(m[0].length).replace(/^\n/, '').replace(/\n$/, ''),

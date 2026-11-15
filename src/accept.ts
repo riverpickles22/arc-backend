@@ -29,7 +29,7 @@ import type {
 import { closeAnsweredNotes } from './annotations'
 import { generatedFor } from './ledger'
 import { landedThenFailed } from './refusal'
-import { clearAlternatives } from './reroute'
+import { clearAlternatives } from './alternatives'
 import { recordDraftDecision, type DraftStep } from './run'
 import {
   commitRecords, proseAccept, proseAcceptParagraph, proseAcceptSentence, proseDiscard, proseDraft,

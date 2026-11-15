@@ -53,7 +53,7 @@ process.env.PATH = `${installStubCli({
 })}${path.delimiter}${process.env.PATH}`
 
 const { createArcServer } = await import('../src/server.ts')
-const { listAlternatives } = await import('../src/reroute.ts')
+const { listAlternatives } = await import('../src/alternatives.ts')
 const { unfinishedRuns, Run, recordLaunch } = await import('../src/run.ts')
 const server = createArcServer()
 await new Promise<void>(resolve => server.listen(0, resolve))

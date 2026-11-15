@@ -139,14 +139,15 @@ test('with the note resolved, the same route lands and the gate holds with its m
 })
 
 test('the rewrite may be shown the route it is rewriting: a span of the scene that survived into a landed route is its subject, not a leak', async () => {
-  const { runRevise, listAlternatives } = await import('../src/reroute.ts')
+  const { runRevise } = await import('../src/reroute.ts')
+  const { listAlternatives } = await import('../src/alternatives.ts')
   const { addRouteNote } = await import('../src/reroute.ts')
   reset()
   // A route that legitimately carries a sentence of the scene — under the
   // overlap bar, so it landed.
   const s = scene()
   const carried = s.body.split('\n\n')[3]
-  const { writeAlternative } = await import('../src/reroute.ts')
+  const { writeAlternative } = await import('../src/alternatives.ts')
   writeAlternative({
     id: 'alt-deadbeef', scene: SCENE, seed: 'late-entry', based_on: 'x', created_at: new Date().toISOString(),
     body: `A different opening entirely, in words of its own.\n\n${carried}\n\nAnd out again by another door.`,

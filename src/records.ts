@@ -71,6 +71,16 @@ export function idsInFile(abs: string, rel: string): string[] {
 
 export const fingerprint = (body: string): string => createHash('sha256').update(body).digest('hex').slice(0, 12)
 
+/** ONE ESTIMATE OF A TEXT'S TOKENS (A81-4): four characters to a token,
+ *  rounded UP. Two things use it and they measure different text: the slice
+ *  sums it over its kept LAYERS and holds that against the row's
+ *  `budget.inputTokens` before a brief is sent; the receipt records it for
+ *  the WHOLE brief — rules, slice and ask, once per launch — as `estimated`
+ *  beside what the runtime reported. One arithmetic, so the two cannot
+ *  disagree by a rounding; they are not the same quantity. Up, not to
+ *  nearest: a budget is a ceiling. */
+export const estimateTokens = (text: string): number => Math.ceil(text.length / 4)
+
 /** The wider fingerprint arc uses wherever a hash names a thing on disk or
  *  on a receipt — a brief, a job, a route body, a ledger entry: sixteen hex
  *  characters of sha256. One helper, so the width is one decision. */

@@ -29,6 +29,19 @@ const servedBases = async (files: string[]): Promise<Record<string, string>> => 
 const servedBase = async (file: string): Promise<string> => (await servedBases([file]))[file]
 
 
+test('health says which engine answers and why, in the backend\'s own words (A81-6)', async () => {
+  const { currentEngine, currentEngineReason, engineReason } = await import('../src/engine.ts')
+  const health = await (await get('/api/health')).json() as { engine: string | null; engine_reason: string }
+  assert.equal(health.engine, currentEngine())
+  assert.equal(health.engine_reason, currentEngineReason(), 'the same sentence the backend prints at startup')
+  // The test run pins ARC_DRAFT_ENGINE=none (the tripwire), so this is that case.
+  assert.equal(health.engine_reason, engineReason({ ARC_DRAFT_ENGINE: 'none' }, true))
+  assert.match(health.engine_reason, /^none — /)
+  // And with nothing to answer, the next thing to do, in the author's words.
+  const { noEngineSentence } = await import('../src/engine.ts')
+  assert.equal((health as { engine_next?: string | null }).engine_next, noEngineSentence())
+})
+
 test('GET shapes match the shared envelopes', async () => {
   const docs = await (await get('/api/docs')).json()
   assert.ok(Array.isArray(docs.articles))

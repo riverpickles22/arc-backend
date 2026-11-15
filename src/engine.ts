@@ -67,7 +67,9 @@ export function chooseEngine(env: EngineEnv, cliAvailable: boolean): Engine | nu
   return null
 }
 
-/** Which engine answers and why, for the startup banner. Pure, like
+/** Which engine answers and why — the startup banner's line, and what
+ *  /api/health carries as `engine_reason` for whatever starts arc to print
+ *  (A81-6). Pure, like
  *  chooseEngine, and read from the same two inputs so the two cannot
  *  disagree. */
 export function engineReason(env: EngineEnv, cliAvailable: boolean): string {
@@ -136,7 +138,7 @@ export function currentEngine(): Engine | null {
   return chooseEngine(process.env, claudeCliAvailable())
 }
 
-/** Why `currentEngine()` answers as it does — the banner's line. */
+/** Why `currentEngine()` answers as it does — the banner's line, and health's. */
 export const currentEngineReason = (): string => engineReason(process.env, claudeCliAvailable())
 
 /** Can the engine that would answer now RESUME a transcript?

@@ -16,7 +16,8 @@ const STORY = makeExampleStory()
 process.env.ARC_STORY_PATH = STORY
 process.env.ARC_DRAFT_ENGINE = 'none'
 
-const { adoptAlternative, writeAlternative, clearAlternatives } = await import('../src/reroute.ts')
+const { adoptAlternative } = await import('../src/reroute.ts')
+const { writeAlternative, clearAlternatives } = await import('../src/alternatives.ts')
 const { proseScenes } = await import('../src/story.ts')
 const { baseOf } = await import('../src/base.ts')
 const { laneHolder } = await import('../src/lane.ts')

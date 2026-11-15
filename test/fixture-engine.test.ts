@@ -20,7 +20,7 @@ import { paragraphsOf } from 'arc-canon-graph/annotations.ts'
 import type { RouteAlternative } from 'arc-canon-graph/api-types.ts'
 
 const { chooseEngine, currentEngine } = await import('../src/engine.ts')
-const { briefFingerprint, loadFixtures, runFixturePrompt, FixtureMiss, FIXTURES_DIR } = await import('../src/fixtures.ts')
+const { briefFingerprint, loadFixtures, parseFixture, runFixturePrompt, withFingerprint, FixtureMiss, FIXTURES_DIR } = await import('../src/fixtures.ts')
 const { buildDestination, sceneKeypoints } = await import('../src/reroute.ts')
 const { MAX_OVERLAP } = await import('../src/gate-ctx.ts')
 const { ROW_EXPLORE_SCENE } = await import('../src/registry.ts')
@@ -74,6 +74,39 @@ test('under the fixture engine an unrowed pass refuses before the SDK, even with
 test('the fingerprint is exact: a changed byte is a changed brief', () => {
   assert.notEqual(briefFingerprint('the brief'), briefFingerprint('the brief '))
   assert.equal(briefFingerprint('the brief'), briefFingerprint('the brief'))
+})
+
+test('a fingerprint that reads as a number is still the fingerprint (A81-1)', async () => {
+  const fixture = (line: string): string => `---\nrow: explore.scene.one-shot\nname: digits\n${line}\nexpect: lands\n---\nthe answer\n`
+  // All digits: YAML reads an integer too large for a double to hold exactly.
+  // Digits around one `e`, with an exponent small enough to be a real float:
+  // YAML reads 1.234567890123e+22, 123456789012340 and 0. (A huge exponent
+  // overflows and stays a string, so it would prove nothing.)
+  const { load } = await import('js-yaml')
+  for (const fp of ['1234567890123456', '0000000000000042', '1234567890123e10', '12345678901234e1', '0e12345678901234']) {
+    assert.equal(typeof (load(`f: ${fp}`) as { f: unknown }).f, 'number', `${fp} is one YAML reads as a number — the case this guards`)
+    assert.equal(parseFixture(fixture(`fingerprint: ${fp}`), 'x.md')?.fingerprint, fp, `${fp}, bare`)
+    assert.equal(parseFixture(fixture(`fingerprint: "${fp}"`), 'x.md')?.fingerprint, fp, `${fp}, quoted`)
+  }
+  assert.equal(parseFixture(fixture('fingerprint: b8e73495c854a559'), 'x.md')?.fingerprint, 'b8e73495c854a559')
+  assert.equal(parseFixture(fixture('fingerprint: not-a-fingerprint'), 'x.md'), null, 'and what is not sixteen hex characters is not one')
+  assert.equal(parseFixture(fixture('fingerprint: b8e73495c854a559   # briefFingerprint() over the rendered brief'), 'x.md')?.fingerprint,
+    'b8e73495c854a559', 'a trailing comment, as the format block shows one, is allowed')
+  const quoting = '---\nrow: r\nname: n\nscenario: "first\nfingerprint: 1111111111111111\nlast"\nfingerprint: b8e73495c854a559\n---\nanswer\n'
+  assert.equal(parseFixture(quoting, 'x.md')?.fingerprint, 'b8e73495c854a559', 'a line inside a quoted scalar above the key is prose')
+})
+
+test('a rekey writes the fingerprint quoted, in the header only', () => {
+  const text = '---\nrow: r\nname: n\nfingerprint: b8e73495c854a559\n---\nfingerprint: prose that happens to start this way\n'
+  const moved = withFingerprint(text, '1234567890123456')
+  assert.match(moved, /^fingerprint: "1234567890123456"$/m)
+  assert.ok(moved.endsWith('---\nfingerprint: prose that happens to start this way\n'), 'the recorded answer is untouched')
+  assert.equal(parseFixture(moved, 'x.md')?.fingerprint, '1234567890123456')
+  // The writer finds any line the reader finds: a tab after the colon is
+  // rewritten in place, never left beside a second key.
+  const tabbed = withFingerprint('---\nrow: r\nname: n\nfingerprint:\t"b8e73495c854a559"\n---\nanswer\n', '0e12345678901234')
+  assert.equal(tabbed.match(/^fingerprint:/gm)?.length, 1)
+  assert.equal(parseFixture(tabbed, 'x.md')?.fingerprint, '0e12345678901234')
 })
 
 test('every fixture on disk has a scenario, and every scenario a fixture', () => {

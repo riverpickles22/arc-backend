@@ -38,12 +38,10 @@ process.env.ARC_STORY_PATH = STORY
 process.env.ARC_DRAFT_ENGINE = 'claude-cli'
 process.env.PATH = `${installStubCli({ name: 'revise', answer: JSON.stringify(ANSWER) })}${path.delimiter}${process.env.PATH}`
 
-const {
-  runReroute, runRevise, listAlternatives, pruneKeepIds, buildRevisePrompt, flattenPrompt,
-  reviseBrief, addRouteNote, deleteRouteNote, clearAlternatives, listRoutes,
-} = await import('../src/reroute.ts')
+const { runReroute, runRevise, buildRevisePrompt, flattenPrompt, reviseBrief, addRouteNote, deleteRouteNote, listRoutes } = await import('../src/reroute.ts')
+const { listAlternatives, pruneKeepIds, clearAlternatives } = await import('../src/alternatives.ts')
 const { gateCtx } = await import('../src/gate-ctx.ts')
-const reroute = await import('../src/reroute.ts')
+const reroute = { ...(await import('../src/reroute.ts')), ...(await import('../src/alternatives.ts')) }
 const { literalWithholds } = await import('../src/gate-ctx.ts')
 const { runRowGates } = await import('../src/gates.ts')
 const { buildCliArgs } = await import('../src/invocation.ts')

@@ -15,7 +15,7 @@
 // HIT, so its new fingerprint is on disk before they run.
 import fs from 'node:fs'
 import { SCENARIOS, renderScenario } from './fixture-scenarios.ts'
-import { loadFixtures } from '../src/fixtures.ts'
+import { loadFixtures, setFixtureField, withFingerprint } from '../src/fixtures.ts'
 
 const flag = process.argv.indexOf('--because')
 const BECAUSE = flag >= 0 ? (process.argv[flag + 1] ?? '').trim() : ''
@@ -28,21 +28,6 @@ if (!BECAUSE) {
     'a rekey has to say why the brief moved, and the reason is recorded on every fixture it touches:\n' +
     '  npm run fixtures:rekey -- --because "what changed, and the card that changed it"')
   process.exit(1)
-}
-
-/** Rewrite one frontmatter field, in the frontmatter ONLY. The recorded
- *  answer below it is model prose and may hold a line starting `because:` or
- *  `fingerprint:` of its own; a whole-file replace would edit the answer and
- *  leave the header untouched. The replacement is a function so a reason
- *  containing `$&` or `$1` is written as the author typed it. */
-function setField(text: string, field: string, value: string): string {
-  const head = text.match(/^---\n([\s\S]*?)\n---\n/)
-  if (!head) throw new Error('fixture has no frontmatter')
-  const line = new RegExp(`^${field}: .*$`, 'm')
-  const block = line.test(head[1])
-    ? head[1].replace(line, () => `${field}: ${value}`)
-    : `${head[1]}\n${field}: ${value}`
-  return `---\n${block}\n---\n` + text.slice(head[0].length)
 }
 
 let moved = 0
@@ -58,7 +43,7 @@ for (const s of SCENARIOS) {
   if (rendered === fixture.fingerprint) { console.log(`${s.row}/${s.name}  ${rendered}  unchanged`); continue }
   const text = fs.readFileSync(fixture.file, 'utf8')
   fs.writeFileSync(fixture.file,
-    setField(setField(text, 'fingerprint', rendered), 'because', JSON.stringify(BECAUSE)))
+    setFixtureField(withFingerprint(text, rendered), 'because', JSON.stringify(BECAUSE)))
   console.log(`${s.row}/${s.name}  ${fixture.fingerprint} → ${rendered}`)
   moved++
 }

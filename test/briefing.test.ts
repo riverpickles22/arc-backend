@@ -33,7 +33,7 @@ const HEAD_AT = git(STORY, 'log', '-1', '--pretty=format:%aI').trim()
 
 const { createArcServer } = await import('../src/server.ts')
 const { currentEngine } = await import('../src/engine.ts')
-const { writeAlternative } = await import('../src/reroute.ts')
+const { writeAlternative } = await import('../src/alternatives.ts')
 const { lastSessionOf } = await import('../src/briefing.ts')
 const { dueIn } = await import('../src/due.ts')
 

@@ -10,7 +10,8 @@
 // reaches no pass — directly, or through any chain of shared modules —
 // except for the edges named below, each with its reason. The due list
 // (due.ts) left briefing.ts for the same reason: the slice read it there,
-// and briefing.ts reaches the routes and the episodes.
+// and briefing.ts reaches the episodes (and reached the reroute pass, for the
+// routes' store, until A81-8).
 //
 // The lists are explicit on purpose. A new pass goes into PASSES in the same
 // change that adds it; a file listed here that no longer exists fails.
@@ -143,12 +144,45 @@ test('an indirect edge through a shared module is caught', () => {
 })
 
 test('the chain A80-1 broke would be caught: the assembler reading the due list from the briefing', () => {
-  // dueRows lived in briefing.ts, which reaches the routes and the episodes.
+  // dueRows lived in briefing.ts, which reaches the episodes. (It reached the
+  // routes too, through reroute.ts, until A81-8 gave the routes waiting
+  // beside a scene their own module — that chain no longer exists to catch.)
   const planted = new Map(GRAPH)
   planted.set('slice', [...GRAPH.get('slice')!, { from: 'slice', to: 'briefing', typeOnly: false }])
   const found = forbidden(planted)
-  for (const chain of ['slice → briefing → reroute', 'slice → briefing → episodes → learn-style', 'slice → briefing → episodes → update-record']) {
+  for (const chain of ['slice → briefing → episodes → learn-style', 'slice → briefing → episodes → update-record']) {
     assert.ok(found.includes(chain), `${chain} in:\n${found.join('\n')}`)
+  }
+  assert.ok(!found.some(c => c.startsWith('slice → briefing → reroute')), 'the briefing no longer reaches the reroute pass')
+})
+
+// ---- the routes' store is not a pass (A81-8) -------------------------------
+
+test('the accept, the briefing and doctor reach the routes waiting through their store, never through the reroute pass', () => {
+  // alternatives.ts is the store: list, write, clear, count. Before A81-8 it
+  // was inside reroute.ts, so each of these imported a pass to read a
+  // directory. Reaching reroute — directly or through any shared module —
+  // is what must not come back.
+  for (const mod of ['accept', 'briefing', 'doctor']) {
+    assert.ok(importsOf(mod).some(e => e.to === 'alternatives'), `${mod} reads the store`)
+    const viaReroute = passesReached(mod).filter(h => h.to === 'reroute').map(h => h.via.join(' → '))
+    assert.deepEqual(viaReroute, [], `${mod} reaches the reroute pass`)
+  }
+  // The accept reaches NO pass at all. (The briefing reaches the learner and
+  // the record pass through episodes.ts — the work it reports as due — which
+  // is its own composition and not this card's.)
+  assert.deepEqual(passesReached('accept').map(h => h.via.join(' → ')), [], 'the accept launches nothing and reads no pass')
+  // And the store itself launches nothing and reaches no pass.
+  assert.deepEqual(passesReached('alternatives').map(h => h.via.join(' → ')), [])
+  // server.ts still imports reroute.ts — it routes the pass's own requests —
+  // but takes the store's four functions from the store.
+  const server = fs.readFileSync(path.join(SRC, 'server.ts'), 'utf8')
+  // EVERY import server.ts makes from reroute.ts, not the first one it finds.
+  const imports = [...server.matchAll(/import\s+\{([^}]*)\}\s+from\s+'\.\/reroute'/g)].map(m => m[1])
+  assert.ok(imports.some(i => /\brunReroute\b/.test(i)), 'the reader found the import that carries the pass\'s own functions')
+  const fromReroute = imports.join(',')
+  for (const name of ['listAlternatives', 'writeAlternative', 'clearAlternatives', 'routeCounts']) {
+    assert.ok(!new RegExp(`\\b${name}\\b`).test(fromReroute), `server.ts takes ${name} from reroute.ts`)
   }
 })
 

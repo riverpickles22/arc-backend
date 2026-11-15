@@ -18,7 +18,7 @@ process.env.ARC_DRAFT_ENGINE = 'none'
 
 const { doctorRecords } = await import('../src/doctor.ts')
 const { encodeProjectDir, scratchParent, scratchDirFor } = await import('../src/engine.ts')
-const { writeAlternative, clearAlternatives } = await import('../src/reroute.ts')
+const { writeAlternative, clearAlternatives } = await import('../src/alternatives.ts')
 const { proseScenes } = await import('../src/story.ts')
 const { READ_MAP, sceneVersion } = await import('../src/reads.ts')
 

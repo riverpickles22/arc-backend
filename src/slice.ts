@@ -47,6 +47,7 @@ import { literalWithholds } from './gate-ctx'
 import { styleForPassRead } from './style-projection'
 import { styleContract } from './style'
 import type { Row } from './registry'
+import { estimateTokens } from './records'
 import { placeInChapter, siblingLadder, type Rung } from './ladder'
 import { loadStyleLayers } from './style'
 
@@ -366,7 +367,6 @@ export interface Intent {
   plan?: { moves: { move: string; how: string }[] }
 }
 
-const est = (text: string): number => Math.ceil(text.length / 4)
 const subjectOf = (s: WritingSubject): string => s.scene?.scene ?? s.sceneId ?? s.chapter
 
 /** The contract, as a layer. The reader-effect fields go only to the stage
@@ -948,7 +948,7 @@ export function assembleWritingSlice(
   // prevent (A69-4).
   const given = built.filter(c => c.status === 'given' && declared.includes(c.layer))
   const fits = (keep: Set<WritingLayer>): number =>
-    given.filter(c => keep.has(c.layer)).reduce((n, c) => n + est(rendered(c)), 0)
+    given.filter(c => keep.has(c.layer)).reduce((n, c) => n + estimateTokens(rendered(c)), 0)
 
   const keep = new Set<WritingLayer>(given.map(c => c.layer))
   const dropped: WritingLayer[] = []

@@ -39,7 +39,7 @@ import { describeViolation } from './locks'
 import { CRAFT_MOVES } from './registry'
 import type { GateId, LaunchSpec } from './registry'
 import { keepWithRun, recordLaunch, writeWorkingReceipt, type GateRecord, type Receipt, type Run } from './run'
-import { sha16 } from './records'
+import { sha16, estimateTokens } from './records'
 import { attachLaunch } from './runs'
 import { splitBriefing } from './gate-ctx'
 
@@ -1381,7 +1381,7 @@ async function launchOnce(job: GateJob, brief: Brief, attempt: string, n: 1 | 2,
   // under its own fingerprint — the same one the fixture engine keys on.
   receipt.brief = [...(receipt.brief ?? []), ...brief.blocks.map(b => ({ attempt, id: b.id, fingerprint: sha16(b.text), cached: b.cached }))]
   keepWithRun(run.id, 'brief', rendered)
-  const estimate = { input: Math.round(rendered.length / 4), output: row.budget.outputTokens }
+  const estimate = { input: estimateTokens(rendered), output: row.budget.outputTokens }
   receipt.tokens = {
     estimated: {
       input: (receipt.tokens?.estimated?.input ?? 0) + estimate.input,

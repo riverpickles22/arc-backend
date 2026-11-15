@@ -37,8 +37,6 @@ import type { DecisionHistoryResponse, PutBackPreview, PutBackResult, ProseDraft
   ProseDiscardResponse,
   ProsePartAcceptResponse,
   ProsePartRejectResponse,
-  ProseCheckHit,
-  ProseChecksResponse,
   ProseParagraphRequest,
   ProseResponse,
   ProseSentenceRequest,
@@ -98,25 +96,25 @@ function parsePlan(raw: unknown): CraftPlanned {
     }),
   }
 }
-import { currentEngine, noEngineSentence } from './engine'
-import { authorStylePath, commitAuthorStyle, loadStyleLayers, styleContract } from './style'
-import { countableChecks } from './countable'
+import { currentEngine, noEngineSentence, currentEngineReason } from './engine'
+import { authorStylePath, commitAuthorStyle, loadStyleLayers } from './style'
+import { manuscriptChecks } from './checks'
 import { DISMISSED_REL, QUEUE_REL, ratifyRule, ratifyTouchstone, readDismissed, readQueue, readTouchstones } from './style-queue'
 import { joinStyleReceipt, stampStyleDecision } from './style-receipt'
 import { runLearnStyle } from './learn-style'
 import { readJudgments } from './evidence'
 import { decisionHistory, previewPutBack, putBack } from './put-back'
 import { proposeTouchstoneRefresh, touchstoneStates } from './touchstones'
-import { proseChecks } from 'arc-canon-graph'
 import { runBootstrapStyle } from './bootstrap-style'
 import { runRedraft } from './redraft'
 import { runWorkNotes } from './work-notes'
-import { addRouteNote, adoptAlternative, deleteRouteNote, dropAlternative, listAlternatives, listRoutes, routeCounts, runReroute, runReceipt, runRevise } from './reroute'
+import { addRouteNote, adoptAlternative, deleteRouteNote, dropAlternative, listRoutes, runReroute, runReceipt, runRevise } from './reroute'
+import { listAlternatives, routeCounts } from './alternatives'
 import { doctorRecords } from './doctor'
 import { isSessionKind, pingSession, sessionState, startSession, stopSession } from './session'
 import type { SessionPingRequest, SessionState } from 'arc-canon-graph/api-types.ts'
 import type { AdoptRouteResponse, DoctorRecordsResponse, RerouteResponse, RouteListResponse, WorkNotesMode, WorkNotesResponse } from 'arc-canon-graph/api-types.ts'
-import { createLock, lockResolver, locks, removeLock } from './locks'
+import { createLock, locks, removeLock } from './locks'
 import { addNote, deleteNote, listNotes, updateNote as reviseNote } from './notes'
 import { decideWork, workNote } from './work'
 import { closeRun, deleteRunTranscripts, getRun, listRuns, observe, openRun, pendingOutcome, registerRun, stopRun } from './runs'
@@ -243,7 +241,7 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
   '/api/health': {
     GET: (_req, res) => {
       const check = validateStory()
-      json(res, check.ok ? 200 : 503, { ok: check.ok, validator: check.output, engine: currentEngine() } satisfies HealthResponse)
+      json(res, check.ok ? 200 : 503, { ok: check.ok, validator: check.output, engine: currentEngine(), engine_reason: currentEngineReason(), engine_next: currentEngine() ? null : noEngineSentence() } satisfies HealthResponse)
     },
   },
 
@@ -1196,42 +1194,10 @@ const routes: Record<string, Partial<Record<'GET' | 'POST', Handler>>> = {
     },
   },
 
-  // The mechanical checks: the proven channel over the manuscript. No
-  // engine guard, deliberately — nothing here needs a model, which is the
-  // whole point: a doubled space arrives as a fact, instantly and free,
-  // where every other reading this surface offers is a model's opinion.
+  // The mechanical checks: the proven channel over the manuscript, in
+  // checks.ts. No engine guard, deliberately — nothing there needs a model.
   '/api/prose/checks': {
-    GET: (_req, res) => {
-      const findings: ProseCheckHit[] = []
-      // The ratified contract, read once: the countable rules (A77-1) list a
-      // sentence only over a number the contract states, through the gates'
-      // own readers and counter. The proposed layer is never read here.
-      const style = styleContract()
-      const scenes = proseScenes()
-      const locksFor = lockResolver(scenes)
-      for (const sc of scenes) {
-        const hits = proseChecks(sc.body)
-        const standing = locksFor(sc.scene, sc.body).filter(l =>
-          l.resolution.state === 'resolved' || l.resolution.state === 'drifted')
-        // A finding inside settled prose names its lock — the author reads
-        // "there is a typo, and you locked it" and decides; nothing repairs.
-        const locked = new Map(standing
-          .filter(l => l.resolution.paragraph !== null)
-          .map(l => [l.resolution.paragraph!, l.id]))
-        const wide = standing.find(l => l.scope === 'scene' || l.scope === 'chapter')
-        for (const h of hits) {
-          const lock = locked.get(h.paragraph) ?? wide?.id
-          findings.push({ scene: sc.scene, file: sc.file, ...h, ...(lock ? { lock } : {}) })
-        }
-        // A count is never held against settled prose: a locked paragraph,
-        // or every paragraph under a scene or chapter lock, is not counted.
-        if (wide) continue
-        for (const h of countableChecks(sc.body, style, (_p, i) => locked.has(i))) {
-          findings.push({ scene: sc.scene, file: sc.file, ...h })
-        }
-      }
-      json(res, 200, { findings } satisfies ProseChecksResponse)
-    },
+    GET: (_req, res) => json(res, 200, manuscriptChecks()),
   },
 
   // U9 · WHAT WOULD THIS CHANGE DO TO THE STORY (A72-10). One pending scene,

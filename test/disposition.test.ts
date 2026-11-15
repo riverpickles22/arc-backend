@@ -20,7 +20,7 @@ git(STORY, 'add', '-A'); git(STORY, 'commit', '-qm', 'a contract')
 process.env.ARC_STORY_PATH = STORY
 process.env.ARC_DRAFT_ENGINE = 'none'
 
-const reroute = await import('../src/reroute.ts')
+const reroute = { ...(await import('../src/reroute.ts')), ...(await import('../src/alternatives.ts')) }
 const { addRouteNote, adoptAlternative, clearAlternatives, dropAlternative, listAlternatives, writeAlternative, KEEP_ALTERNATIVES } = reroute
 const { readDispositions, readJudgments, EVIDENCE_REL } = await import('../src/evidence.ts')
 const { proseScenes } = await import('../src/story.ts')

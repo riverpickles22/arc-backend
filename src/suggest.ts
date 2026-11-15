@@ -18,7 +18,7 @@ import { STORY } from './config'
 import { currentEngine, noEngineSentence, SDK_ENGINE_FIX } from './engine'
 import { parseOptions, runGates, type ProseGateCtx } from './gates'
 import { HttpError } from './http'
-import { andCapFromContract, wordCapFromContract } from './countable'
+import { countableBars } from './countable'
 import { endingOf, gateCtx as gateCtxOf } from './gate-ctx'
 import { type SealedRow } from './registry'
 import { resolveRequest } from './request'
@@ -145,14 +145,13 @@ export async function runSuggest(req: SuggestRequest): Promise<SuggestResponse> 
   // author's own caps and by nothing else.
   const gateCtx: ProseGateCtx = gateCtxOf({
     sceneName: '', sceneBody: '', sceneLocks: [], lockedTexts: [], literals: [],
-    andCap: andCapFromContract(styleContract()),
-    wordCap: wordCapFromContract(styleContract()),
+    ...countableBars(styleContract()),
     destination: [], known: [],
   })
 
   try {
     const out = await runGates({
-      row: { ...row, withholding: row.withholding, withheld: row.withheld, envelope: row.envelope },
+      row,
       run, receipt, brief,
       repair: (refusal, resumed) => ({
         blocks: resumed

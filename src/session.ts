@@ -22,7 +22,7 @@
 //   - input in the viewer: while a count runs the viewer checks in once a
 //     minute with the time of the author's last keystroke, click or scroll;
 //   - a change to the story's files: the newest modification time under the
-//     directories the prose and the record live in (ACTIVITY_DIRS) — read by
+//     directories the prose and the record live in (STORY_DIRS) — read by
 //     stat alone, never the contents — which is what proves the author
 //     writing in their own editor with the viewer shut or asleep in a tab.
 // When neither has shown anything for IDLE_MINUTES, the count is closed at
@@ -42,8 +42,29 @@ import { STORY } from './config'
  *  happened. The measure caps an inferred gap between commits at the same. */
 export const IDLE_MINUTES = 30
 
-/** Where the prose and the record live: a change under any is activity. */
-export const ACTIVITY_DIRS: readonly string[] = ['prose', 'canon', 'notes', 'docs', 'annotations', 'locks', 'material']
+/** WHERE THE AUTHOR'S WORK LIVES, ONE LIST FOR THE TWO THAT COUNT TIME (A81-3). The prose is writing;
+ *  the canon, the notes, the docs (the style contract among them), the
+ *  annotations, the locks and the material are the record. The timer reads
+ *  a change under any of them as activity, and the measure's fallback reads
+ *  a commit's files by the same two names (`kindOfCommit`) — one list, so a
+ *  directory the timer counts and the fallback has never heard of cannot
+ *  exist. Everything else in a story (history/, .arc/) is arc's own, and
+ *  research/ and assets/ are counted by neither. `watch.ts` keeps its own
+ *  list of what the viewer reloads on, which is a different question and
+ *  leaves the locks out. */
+export const PROSE_DIR = 'prose'
+export const RECORD_DIRS: readonly string[] = ['canon', 'notes', 'docs', 'annotations', 'locks', 'material']
+export const STORY_DIRS: readonly string[] = [PROSE_DIR, ...RECORD_DIRS]
+
+/** Which kind of author time a path in the story is, or null for arc's own. */
+export function kindOfPath(rel: string): SessionKind | null {
+  // A path INSIDE one of the directories: a file at the story's root that
+  // happens to be named for one is not in it.
+  const slash = rel.indexOf('/')
+  if (slash < 0) return null
+  const top = rel.slice(0, slash)
+  return top === PROSE_DIR ? 'writing' : RECORD_DIRS.includes(top) ? 'record' : null
+}
 
 export const SESSIONS_REL = path.join('.arc', 'sessions.jsonl')
 const OPEN_REL = path.join('.arc', 'session.json')
@@ -118,7 +139,7 @@ export function newestChange(story = STORY): number {
       try { newest = Math.max(newest, fs.statSync(abs).mtimeMs) } catch { /* gone */ }
     }
   }
-  for (const d of ACTIVITY_DIRS) walk(path.join(story, d))
+  for (const d of STORY_DIRS) walk(path.join(story, d))
   return newest
 }
 

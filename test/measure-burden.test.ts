@@ -13,7 +13,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { git, writeScene } from './fixture.ts'
-import { MEASURES, burdenSessions, burdenTrend, kindOfCommit, type StoryRecord } from '../src/measure.ts'
+import { MEASURES, STYLE_GATES, burdenSessions, burdenTrend, kindOfCommit, type StoryRecord } from '../src/measure.ts'
+import { newestChange } from '../src/session.ts'
+import { countIn } from '../src/countable.ts'
 
 const BACKEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const CLI = path.join(BACKEND, 'src', 'measure-cli.ts')
@@ -107,6 +109,7 @@ test('kinds, sessions and the trend, as pure functions', () => {
   assert.equal(kindOfCommit(['prose/ch-01/scene-01.md', 'docs/style.evidence.jsonl']), 'writing', 'an accept is writing')
   assert.equal(kindOfCommit(['docs/style.md']), 'record')
   assert.equal(kindOfCommit(['history/run.0001.yaml']), null, 'arc\'s receipts are no author time')
+  assert.equal(kindOfCommit(['canonical/x.yaml', 'prose-notes/y.md']), null, 'a directory is matched whole, never by its first letters')
   // one commit alone has no time before it: zero minutes, no burden
   const lone = burdenSessions([], [{ at: '2026-10-01T10:00:00.000Z', kind: 'writing' }])
   assert.deepEqual(lone.map(s => [s.writing_minutes, s.record_minutes, s.burden]), [[0, 0, null]])
@@ -140,4 +143,28 @@ test('the headline is the last session with writing time, and says when the last
   const lateRecord = { kind: 'record' as const, start: '2026-10-03T10:00:00.000Z', end: '2026-10-03T10:20:00.000Z', ended: 'stopped' as const }
   assert.match(compute(rec([w, r, lateRecord])).value, /^0\.5 record minutes per writing minute in the last session with writing time — no writing time in the last session — \(2026-10-01/)
   assert.match(compute(rec([lateRecord])).value, /^no writing time in any session yet, so nothing to divide by \(1 session, 20 minutes on the record\)/)
+})
+
+// ---- the directories are named once (A81-3) --------------------------------
+
+test('the timer\'s activity and the commit fallback agree on every directory', () => {
+  // Probed from a list of the test's OWN — every top-level directory a story
+  // has, the author's and arc's — not from the list the two sides share: a
+  // directory one side learned by its own means has to show up as a
+  // disagreement here, whichever side it was.
+  const everything = ['prose', 'canon', 'notes', 'docs', 'annotations', 'locks', 'material', 'history', '.arc', 'research', 'assets', 'view']
+  const counted: string[] = []
+  for (const dir of everything) {
+    const story = fs.mkdtempSync(path.join(os.tmpdir(), 'arc-dirs-'))
+    fs.mkdirSync(path.join(story, dir, 'deep'), { recursive: true })
+    fs.writeFileSync(path.join(story, dir, 'deep', 'file.md'), 'x')
+    const timerSees = newestChange(story) > 0
+    const fallback = kindOfCommit([`${dir}/deep/file.md`])
+    assert.equal(timerSees, fallback !== null, `${dir}: the timer ${timerSees ? 'counts' : 'ignores'} it and the fallback calls it ${fallback}`)
+    if (fallback) { counted.push(dir); assert.equal(fallback, dir === 'prose' ? 'writing' : 'record') }
+    fs.rmSync(story, { recursive: true, force: true })
+  }
+  assert.deepEqual(counted, ['prose', 'canon', 'notes', 'docs', 'annotations', 'locks', 'material'], 'the author\'s seven, and nothing of arc\'s own')
+  assert.equal(kindOfCommit(['prose']), null, 'a file at the root named for a directory is not in it')
+  assert.deepEqual([...STYLE_GATES].sort(), Object.keys(countIn).sort(), 'and the style gates are the countable rules, no list of their own')
 })

@@ -2,10 +2,10 @@
 // write (§4; A69-8). The draft, the clean pass and the notes revision all run
 // it, so it lives here rather than in any one of them (A80-1).
 import type { DraftSceneResponse } from 'arc-canon-graph'
-import { cellOf, endingOf, planGateCtx } from './gate-ctx'
+import { endingOf, planGateCtx } from './gate-ctx'
 import { parseCraftPlan, planSentence, runGates } from './gates'
 import { sha16 } from './records'
-import type { Stage, StagedRow } from './registry'
+import { stageLaunch, type Stage, type StagedRow } from './registry'
 import type { ResolvedRequest } from './request'
 import { closeReceipt, openRowRun } from './rowrun'
 import { outcomeSentence } from './run'
@@ -49,7 +49,7 @@ export async function planFirst(
 
   try {
     const out = await runGates({
-      row: { ...planStage, ...cellOf(row, 'craft-plan'), withholding: row.withholding, withheld: row.withheld, envelope: row.envelope },
+      row: stageLaunch(row, planStage),
       run, receipt, brief,
       repair: (refusal, resumed) => ({
         blocks: resumed

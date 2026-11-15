@@ -36,7 +36,7 @@ import path from 'node:path'
 import { openNotesOn } from './annotations'
 import { STORY } from './config'
 import { canonJson } from './canon'
-import { cellOf, planGateCtx } from './gate-ctx'
+import { planGateCtx } from './gate-ctx'
 import { currentEngine, noEngineSentence, SDK_ENGINE_FIX } from './engine'
 import { parseCraftPlan, runGates, type ProseGateCtx } from './gates'
 import { HttpError } from './http'
@@ -50,9 +50,9 @@ import { fingerprintsAtWrite } from './style-projection'
 import { locksOn } from './locks'
 import { sha16 } from './records'
 import { notesAnswerable, runRedraft } from './redraft'
-import { CRAFT_MOVES, jobFingerprint, rowKey, stageRuns, type Stage, type StagedRow } from './registry'
+import { CRAFT_MOVES, jobFingerprint, rowKey, stageLaunch, stageRuns, type Stage, type StagedRow } from './registry'
 import { resolveRequest } from './request'
-import { andCapFromContract, wordCapFromContract } from './countable'
+import { countableBars } from './countable'
 import { endingOf, gateCtx as gateCtxOf, literalWithholds } from './gate-ctx'
 import { clusterNotes, parseConflicts } from './revise'
 import { outcomeSentence, type Source } from './run'
@@ -226,7 +226,7 @@ async function runMinimalRevision(
   receipt.intent = { said: said || null, plan: null, ...(said ? {} : { note: 'nothing to translate' }) }
 
   const launch = (stage: Stage, name: string) => ({
-    row: { ...stage, ...cellOf(row, stage.id), withholding: row.withholding, withheld: row.withheld, envelope: row.envelope, minShareOfSubject: row.minShareOfSubject },
+    row: stageLaunch(row, stage),
     run, receipt,
     attempt: (n: 1 | 2) => `${name}-${n}`,
     render: (b: { blocks: { text: string }[] }) => b.blocks.map(x => x.text).join('\n\n'),
@@ -475,8 +475,7 @@ function writeGateCtx(live: { scene: string; body: string; contract: unknown }, 
       sceneLocks,
       lockedTexts: sceneLocks.map(l => paras[l.resolution.paragraph as number] ?? ''),
       literals: literalWithholds((live.contract as { must_withhold?: unknown } | null)?.must_withhold),
-      andCap: andCapFromContract(styleContract()),
-      wordCap: wordCapFromContract(styleContract()),
+      ...countableBars(styleContract()),
       destination: [],
       known: [],
     }),

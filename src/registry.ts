@@ -327,6 +327,20 @@ export interface Stage {
 
 export interface StagedRow extends RowBase { pattern: 'staged'; envelope: SealedEnvelope; stages: readonly Stage[] }
 
+/** WHAT THE SEAM IS HANDED FOR ONE STAGE OF A STAGED JOB (A81-2): the stage's
+ *  own gates, answer and budget, under the ROW's cell, withholding, envelope
+ *  and floor. One function, because four passes used to spread these by hand
+ *  and two of them left the floor out — which a row gaining `answer-whole` on
+ *  that stage would have met as a gate with nothing to measure against
+ *  (A75-2). The stage's id is the cell's stage, so `rowKey` names its
+ *  fixture directory. */
+export const stageLaunch = (row: StagedRow, stage: Stage): LaunchSpec & Stage => ({
+  ...stage,
+  job: row.job, scope: row.scope, mode: row.mode, depth: row.depth, stage: stage.id,
+  withholding: row.withholding, withheld: row.withheld, envelope: row.envelope,
+  minShareOfSubject: row.minShareOfSubject,
+})
+
 /** Does this stage run for this request? The one place `when` is read.
  *
  *  Whether a line "names an effect" is not something code can tell — that is

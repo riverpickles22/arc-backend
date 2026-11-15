@@ -16,7 +16,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { SCENE, STORY, reset } from './fixture-scenarios.ts'
 
-const { runReroute, listRoutes, listAlternatives, routeReceipt, addRouteNote, MAX_ROUTES } = await import('../src/reroute.ts')
+const { runReroute, listRoutes, routeReceipt, addRouteNote, MAX_ROUTES } = await import('../src/reroute.ts')
+const { listAlternatives } = await import('../src/alternatives.ts')
 const { readDispositions } = await import('../src/evidence.ts')
 const { readWorkingReceipt } = await import('../src/run.ts')
 
@@ -149,7 +150,7 @@ test('a re-issue is given the route AS RECORDED, not as the page reads it', asyn
 
   // So the guard against that mistake: a route with no `reads` is asked as
   // the scene stands today rather than as a job with no notes at all.
-  const { withStaleness } = await import('../src/reroute.ts')
+  const { withStaleness } = await import('../src/alternatives.ts')
   assert.equal(withStaleness({ ...recorded()[0], reads: undefined, run: undefined }).stale?.why,
     'written by an older arc')
 })
@@ -157,7 +158,7 @@ test('a re-issue is given the route AS RECORDED, not as the page reads it', asyn
 test('a route that recorded nothing about what it read is asked as the scene stands today', async () => {
   reset()
   await oneRoute()
-  const { withStaleness } = await import('../src/reroute.ts')
+  const { withStaleness } = await import('../src/alternatives.ts')
   // An older-arc route: no `reads`, so arc cannot say which notes it was
   // given. That is a different fact from "it was given none", and it is the
   // one `reissued_from` also refuses to guess at.
